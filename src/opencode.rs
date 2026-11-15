@@ -90,6 +90,30 @@ impl OpenCode {
             .await?;
         Ok(())
     }
+    /// Explicit user policy for this unattended bridge: approve owned action requests.
+    /// Do not approve other sessions or fabricate answers to forms.
+    pub async fn approve_pending(&self, sid: &str) -> Result<usize> {
+        let pending = self.get(&format!("/api/session/{sid}/permission")).await?;
+        let mut count = 0;
+        for request in pending.as_array().context("OpenCode 权限请求格式不兼容")? {
+            if request["sessionID"] != sid {
+                continue;
+            }
+            let id = request["id"].as_str().context("权限请求缺少 ID")?;
+            ensure!(
+                !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "权限请求 ID 无效"
+            );
+            // The installed 2.3.0 API uses `decision`, verified against its payload validator.
+            self.post(
+                &format!("/api/session/{sid}/permission/{id}/reply"),
+                json!({"decision":"once"}),
+            )
+            .await?;
+            count += 1;
+        }
+        Ok(count)
+    }
     pub async fn health(&self) -> Result<String> {
         let v = self.get("/api/info").await?;
         let version = v["version"].as_str().context("OpenCode V2 未返回版本")?;
@@ -410,6 +434,70 @@ mod tests {
             oc.prompt("ses_test", "hello", Some("opencode/chosen"))
                 .await?,
             "done"
+        );
+        server.join().unwrap();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn auto_approval_only_replies_to_owned_permissions_with_v23_payload() -> Result<()> {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut data = Vec::new();
+                let mut buf = [0u8; 2048];
+                let end = loop {
+                    let n = socket.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&buf[..n]);
+                    if let Some(i) = data.windows(4).position(|b| b == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&data[..end]);
+                let len = headers
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|n| n.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let route = headers.lines().next().unwrap().to_string();
+                while data.len() < end + len {
+                    let n = socket.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&buf[..n]);
+                }
+                let body = if index == 0 {
+                    assert!(route.starts_with("GET /api/session/ses_owned/permission "));
+                    json!({"data":[{"sessionID":"ses_foreign","id":"per_foreign"},{"sessionID":"ses_owned","id":"per_owned"}]}).to_string()
+                } else {
+                    assert!(
+                        route
+                            .starts_with("POST /api/session/ses_owned/permission/per_owned/reply ")
+                    );
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&data[end..end + len]).unwrap(),
+                        json!({"decision":"once"})
+                    );
+                    String::new()
+                };
+                write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            }
+        });
+        let mut cfg = Config::fixture();
+        cfg.opencode_url = format!("http://{address}");
+        assert_eq!(
+            OpenCode::new(Arc::new(cfg))?
+                .approve_pending("ses_owned")
+                .await?,
+            1
         );
         server.join().unwrap();
         Ok(())

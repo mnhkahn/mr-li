@@ -1,5 +1,6 @@
 /target/
 /dist/
+/artifacts/
 .env
 .env.*
 !.env.example
@@ -7,3 +8,7 @@
 logs/
 *.log
 .DS_Store
+
+/bin/mr-li-pose
+
+/bin/lib/

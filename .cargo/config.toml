@@ -1,0 +1,4 @@
+[env]
+# ort-sys rc.4 probes Homebrew before honoring load-dynamic. Keep deployment
+# binaries independent of a developer machine's newer ONNX Runtime installation.
+LIBONNXRUNTIME_NO_PKG_CONFIG = { value = "1", force = true }

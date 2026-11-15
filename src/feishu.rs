@@ -271,6 +271,8 @@ impl Feishu {
         );
         let (endpoint, field, key, mime, name) = if video {
             ("files", "file", "file_key", "video/mp4", "camera.mp4")
+        } else if path.extension().and_then(|s| s.to_str()) == Some("png") {
+            ("images", "image", "image_key", "image/png", "camera.png")
         } else {
             ("images", "image", "image_key", "image/jpeg", "camera.jpg")
         };

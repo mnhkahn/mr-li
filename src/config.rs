@@ -21,6 +21,12 @@ pub struct Config {
     pub homebridge_config: PathBuf,
     pub camera_did: String,
     pub ffmpeg_bin: String,
+    pub pose_bin: String,
+    pub pose_model: PathBuf,
+    pub pose_roi: String,
+    pub posture_speech: bool,
+    pub posture_voice: String,
+    pub posture_audio_device: String,
 }
 impl Config {
     pub fn load(enrollment: bool) -> Result<Self> {
@@ -116,6 +122,19 @@ impl Config {
             )),
             camera_did: get("MR_LI_CAMERA_DID", ""),
             ffmpeg_bin: get("MR_LI_FFMPEG_BIN", "ffmpeg"),
+            pose_bin: get("MR_LI_POSE_BIN", "bin/mr-li-pose"),
+            pose_model: PathBuf::from(get(
+                "MR_LI_POSE_MODEL",
+                ".data/pose-models/movenet-thunder.onnx",
+            )),
+            pose_roi: get("MR_LI_POSE_ROI", ""),
+            posture_speech: match get("MR_LI_POSTURE_SPEECH", "true").as_str() {
+                "true" => true,
+                "false" => false,
+                _ => bail!("MR_LI_POSTURE_SPEECH 必须是 true 或 false"),
+            },
+            posture_voice: get("MR_LI_POSTURE_VOICE", "Ting-Ting"),
+            posture_audio_device: get("MR_LI_POSTURE_AUDIO_DEVICE", "Built-in Output"),
             free_only: match get("MR_LI_FREE_ONLY", "true").as_str() {
                 "true" => true,
                 "false" => false,
@@ -153,6 +172,12 @@ impl Config {
             homebridge_config: std::env::temp_dir().join("mr-li-no-homebridge.json"),
             camera_did: String::new(),
             ffmpeg_bin: "ffmpeg".into(),
+            pose_bin: "mr-li-pose".into(),
+            pose_model: PathBuf::from("movenet-thunder.onnx"),
+            pose_roi: String::new(),
+            posture_speech: false,
+            posture_voice: "Ting-Ting".into(),
+            posture_audio_device: "Built-in Output".into(),
         }
     }
 }

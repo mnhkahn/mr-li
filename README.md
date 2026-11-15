@@ -91,7 +91,7 @@ cd ~/Services/mr-li
 
 也可以手动准备：复制 `.env.example` 为 `.env`，按注释填写，并将 `opencode.example.json` 复制到任务工作目录。OpenCode V2 的安装请参见[官方文档](https://opencode.ai/docs/)，macOS 12 需额外准备兼容包；[Rust 安装说明](https://rust-lang.org/install)提供 rustup 的官方流程。
 
-示例 OpenCode 权限允许常规读取和提问，其他工具请求授权。可按实际需求在工作目录 `opencode.json` 中调整；配置使用 V2 的 `permissions` 规则数组和 `action/resource/effect` 字段。`question` 的 `allow` 规则 使 Agent 能发起提问，答案仍由用户在飞书提供。
+示例 OpenCode 权限默认全部允许，适合本项目无人值守执行；桥接也会自动同意当前任务所属会话里挂起的操作权限请求，不再发送授权按钮或等待 `/approve`。可按实际需求在工作目录 `opencode.json` 中调整；配置使用 V2 的 `permissions` 规则数组和 `action/resource/effect` 字段。真正需要用户补充信息的提问仍通过 `/answer` 回答，操作授权和信息提问分别处理。
 
 `MR_LI_WORKSPACE` 指向 Agent 的任务目录；请与服务安装目录分开。`.env` 使用 dotenv 语法，路径含空格时用引号；不要用 shell 表达式、`~` 或 `$HOME`，填写绝对路径。环境变量优先于 `.env`。
 
@@ -151,6 +151,9 @@ sudo ./scripts/service.sh uninstall system
 |---|---|
 | 普通文字 | 在当前会话执行任务，忙时排队 |
 | `/help` | 帮助 |
+| `/posture` | 本地姿态模型试验：抓图、回传关键点图片、背面判断和分数说明，不调用 OpenCode |
+| `/posture start [秒数]` | 启动定时采样，默认每 60 秒，支持 30–3600 秒；有明确结果时在 Mac mini 语音播报，飞书每 10 分钟汇总，不连续发送图片 |
+| `/posture status`、`/posture stop` | 查询最近采样结果、停止定时试验 |
 | `/photo` | 获取小米摄像头当前照片，直接回复图片 |
 | `/video [秒数]` | 从现在录像并回复可播放的视频；默认 10 秒，支持 1–30 秒 |
 | `/models`、`/model` 或“切换模型” | 打开免费模型下拉卡片，点选即切换 |
@@ -172,6 +175,30 @@ sudo ./scripts/service.sh uninstall system
 3. 重启桥接后，在允许的飞书群里 @李老师 使用 `/photo`、`/video` 或 `/video 20`。应用需有 `im:resource` 或 `im:resource:upload` 媒体上传权限。
 
 这两个命令直接执行，不调用模型。录像不读取 SD 卡历史，也不会常驻录制；每次等待首个 I 帧后才截图或开始计时，避免缺少参考帧导致灰屏，录像保留完整指定时长；一次只抓取一个摄像头任务，控制命令和模型任务可继续处理，`/stop` 可停止当前话题的摄像头任务。视频以单线程、最多 960 像素宽、10 fps 编码为 H.264 MP4，关闭音频，限制文件大小；上传使用文件流。成功或失败后清理临时媒体，飞书发送失败只重试已有媒体标识，不重新拍摄。
+
+## 本地坐姿模型试验
+
+这一阶段提供 `/posture` 单次试验，以及手动启动的定时采样。新安装默认关闭定时采样；启动后默认每 60 秒检查并在 Mac mini 扬声器播报当次结果，无异常也播报；无法判断时保持静音，仅写入每 10 分钟的飞书汇总（仍归为未知，不当作正常）。飞书每 10 分钟汇总检查次数、疑似低头/歪头次数、未触发次数及未知次数，并列出每分钟的记录时间（北京时间）及结果；不附照片，也不调用在线视觉模型，取消原先连续异常立即推送的逻辑。单次 `/posture` 返回当次判断和关键点图。模型分数不是“实际可见”或准确率，桌椅遮挡处也可能被模型猜出高分点。背面规则只使用双耳、双肩（均需分数 ≥0.5），不使用椅子遮住的髋部。以耳朵中心到肩线的投影距离除以肩宽得到头肩高度比：<0.42 返回 `needs_reminder`；0.42–0.50 返回 `unknown`；≥0.50 且未歪头返回 `no_obvious_issue`，也不等于确认合格坐姿。头线相对肩线倾斜 ≥18° 提示疑似歪头；这是二维启发式规则，不能解释为真实颈部角度。关键点缺失、转头导致双耳重叠、头肩不匹配均返回 `unknown`，静音并计入未知次数。已根据同一机位的一张低头样本（高度比约 0.31）和一张用户确认较直的样本（原始检测记录约 0.54）校准范围；这两张是校准样本，不是独立准确率验证。带关键点的回传截图会干扰再次推理，因此以相应原始帧的检测记录为准。
+
+- 模型：MoveNet SinglePose Thunder，使用 [Xenova 的 ONNX 导出](https://huggingface.co/Xenova/movenet-singlepose-thunder)，固定 revision `bf87836467d0c9988f3d76b96b2fe9f4262b0394`，Apache-2.0，SHA-256 在 `scripts/setup-pose.sh` 中固定。
+- 运行时：独立 Rust 程序 `mr-li-pose`，调用 ONNX Runtime 1.18.0 的单线程 CPU 推理；桥接默认构建不依赖推理运行时。无需 Python、外部模型账号或在线推理请求。
+- 在开发电脑构建包含姿态程序的包：`MR_LI_BUILD_POSE=1 ./scripts/build-release.sh`。目标机运行 `scripts/setup-pose.sh` 下载并校验模型与 macOS 11+ 的 Intel CPU 运行库；也可在包的 `models/movenet-thunder.onnx` 放入相同权重以离线安装。
+- `.env` 可配置 `MR_LI_POSTURE_SPEECH`（默认 true）、`MR_LI_POSTURE_VOICE`（默认 Ting-Ting）、`MR_LI_POSTURE_AUDIO_DEVICE`（默认 Built-in Output），使用 macOS 自带 `/usr/bin/say`，不修改系统音量。模型相关配置为 `MR_LI_POSE_BIN`、`MR_LI_POSE_MODEL`、`MR_LI_POSE_ROI`。ROI 为 `x,y,width,height` 四个 0–1 比例；空值使用全图。调整后重启桥接。只裁剪分析区域，关键点仍映射回原图坐标。
+
+离线试验示例：
+
+```bash
+cargo build --locked --release --features pose --bin mr-li-pose
+target/release/mr-li-pose --model .data/pose-models/movenet-thunder.onnx \
+  --image photo.jpg --output artifacts/posture/sample --repeat 5 \
+  --roi 0.08,0.4,0.42,0.6
+```
+
+输出 `.png` 关键点图片、`.json` 原始关键点/模型分数/耗时、可独立打开的 `.html` 报告。绿色点及骨架分数 ≥ 0.5，橙色点为 0.35–0.5，更低分或落在裁剪区域外的点不绘制、不参与测量。姿态程序只能在头部点足够时输出二维头部连线角度，不能将该值直接解释成真实颈部角度。飞书试验完成后清理临时照片与报告。
+
+定时设置与最近采样说明保存在 SQLite，服务重启后恢复；不补跑离线期间的采样，不积压同类任务。`/posture stop` 或 `/stop` 可停止本聊天的采样。后台采样不调用在线模型服务、不上传照片到飞书；每 10 分钟只发送文字汇总。采样次数不代表持续时长，未知不并入正常计数。采样失败和语音失败也会记录并进入汇总；采样与汇总是独立计时器。汇总计时、计数与逐次文字记录保存在 SQLite，重启后恢复，不补发离线期间的一串汇总；尚未送达的同一汇总不重复排队。文字明细随汇总写入可靠发送队列后清理，失败重试复用同一份文字，不重新抓图。正常每批约 10 条明细；如果长期发送失败，汇总保留完整计数、仅展开最近 60 条并注明省略数量。临时图像处理完即清理，播报进程支持取消与 20 秒超时。停止监测会停止在播语音并取消尚未发送的后台汇总。
+
+之前的 Lightning 在用户低头样本上仅有 1 个高分点；换成 Thunder 并裁剪书桌区域后，双耳、双肩均达到阈值，头肩高度比约 0.31，返回疑似低头过多。改变裁剪范围的另两次试验得到 0.26、0.30，同样触发。这仅是同一张照片的鲁棒性检查，不是三个独立验证样本。 Mac mini（i5-4260U、4 GB、macOS 12.7.6）原生 Thunder 实测 10 次推理中位数约 97 ms，加载约 197 ms，峰值 RSS 78.5 MiB。
 
 ## 联调状态
 

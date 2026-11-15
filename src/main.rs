@@ -4,6 +4,7 @@ mod config;
 mod feishu;
 mod models;
 mod opencode;
+mod posture;
 mod service;
 mod store;
 use anyhow::{Context, Result};

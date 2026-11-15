@@ -17,7 +17,7 @@ pub struct Bridge {
     pub feishu: Arc<Feishu>,
     pub oc: Arc<OpenCode>,
 }
-const HELP: &str = "我是李老师。直接发文字即可执行任务。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+const HELP: &str = "我是李老师。直接发文字即可执行任务，操作权限默认自动允许。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/posture 本地姿态模型试验（关键点图片与说明）\n/posture start [秒数] 定时采样，默认 60 秒\n/posture status 最近结果\n/posture stop 停止采样\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
 fn in_thread(j: &Job) -> bool {
     serde_json::from_str::<Value>(&j.key)
         .ok()
@@ -89,6 +89,11 @@ impl Bridge {
     }
     pub async fn recover(&self) -> Result<()> {
         for j in self.store.jobs("running")? {
+            if j.id.starts_with("posture-sample:") {
+                self.store
+                    .finish_posture_sample(&j, "上次采样因服务中断未完成；等待下一次采样。")?;
+                continue;
+            }
             if !camera::is_capture(&j.text)
                 && let Some(sid) = self.store.session(&j.key)?
             {
@@ -99,8 +104,25 @@ impl Bridge {
         Ok(())
     }
     async fn capture_camera(&self, j: &Job) -> Result<()> {
-        self.start_processing(j).await;
-        let media = camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?;
+        let background = j.id.starts_with("posture-sample:");
+        if !background {
+            self.start_processing(j).await;
+        }
+        let mut media = camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?;
+        let mut assessment = crate::posture::Assessment::Unknown;
+        let note = if j.text.trim() == "/posture" {
+            let observation = crate::posture::analyze(&self.cfg, &media.path).await?;
+            media.path = observation.image;
+            assessment = observation.assessment;
+            Some(observation.note)
+        } else {
+            None
+        };
+        if background {
+            self.record_posture(j, note.as_deref().context("定时姿态结果缺失")?, assessment)
+                .await?;
+            return Ok(());
+        }
         let video = media.cover.is_some();
         let key = self
             .feishu
@@ -110,10 +132,36 @@ impl Bridge {
             let image_key = self.feishu.upload_camera_media(cover, false, 0).await?;
             json!({"msg_type":"media", "content":{"file_key":key,"image_key":image_key}})
         } else {
-            json!({"msg_type":"image", "content":{"image_key":key}})
+            json!({"msg_type":"image", "content":{"image_key":key},"note":note})
         };
         // Persist uploaded keys before attempting delivery; retries never recapture video.
         self.store.finish_output(&j.id, "camera_media", &payload)?;
+        Ok(())
+    }
+    async fn record_posture(
+        &self,
+        j: &Job,
+        note: &str,
+        assessment: crate::posture::Assessment,
+    ) -> Result<()> {
+        if !self.store.posture_enabled(&j.key)? {
+            self.store.status(&j.id, "done")?;
+            return Ok(());
+        }
+        let error = crate::posture::speak(&self.cfg, assessment)
+            .await
+            .err()
+            .map(|e| e.to_string());
+        if let Some(e) = &error {
+            tracing::warn!(error=%e,"坐姿语音播报失败");
+        }
+        let note = if let Some(e) = &error {
+            format!("{note}\n语音播报失败：{e}")
+        } else {
+            note.to_owned()
+        };
+        self.store
+            .finish_posture_observation(j, &note, assessment, error.as_deref())?;
         Ok(())
     }
     async fn execute(&self, j: &Job) -> Result<()> {
@@ -145,6 +193,20 @@ impl Bridge {
         let sid = self.store.session(&j.key)?;
         match cmd {
             "/help" => Ok(HELP.into()),
+            "/posture" => {
+                let words: Vec<_> = args.split_whitespace().collect();
+                match words.as_slice() {
+                    ["start"] | ["start",_] => {
+                        ensure!(self.cfg.pose_model.is_file() && std::path::Path::new(&self.cfg.pose_bin).is_file(),"请先安装本地姿态模型和程序");
+                        let seconds=words.get(1).map(|s|s.parse::<u64>()).transpose()?.unwrap_or(60);
+                        self.store.start_posture_watch(j,seconds)?;
+                        Ok(format!("已开始每 {seconds} 秒检查并在 Mac mini 语音播报，飞书每 10 分钟汇总一次。无法判断时保持静音，仍记入汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
+                    }
+                    ["stop"] => {self.store.stop_posture_watch(&models::scope(&j.key)?)?;Ok("已停止此聊天的定时姿态试验。".into())}
+                    ["status"] => self.store.posture_watch_status(&models::scope(&j.key)?),
+                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 定时采样，默认 60 秒\n/posture status 最近结果\n/posture stop 停止".into()),
+                }
+            }
             "/status" => {
                 let pending = self
                     .store
@@ -177,6 +239,9 @@ impl Bridge {
                 Ok("下条消息将创建新会话，旧会话仍保存在 OpenCode。".into())
             }
             "/stop" => {
+                if let Ok(scope) = models::scope(&j.key) {
+                    self.store.stop_posture_watch(&scope)?;
+                }
                 if let Some(sid) = sid {
                     self.oc.abort(&sid).await?;
                 }
@@ -290,50 +355,37 @@ impl Bridge {
         let Some(sid) = self.store.session(&j.key)? else {
             return Ok(());
         };
-        for kind in ["permission", "question"] {
-            let path = if kind == "permission" {
-                format!("/api/session/{sid}/permission")
-            } else {
-                format!("/api/session/{sid}/form")
-            };
-            let list = self.oc.get(&path).await?;
-            for p in list.as_array().context("OpenCode 待处理请求格式不兼容")? {
-                if p["sessionID"] != sid {
-                    continue;
-                }
-                let id = p["id"].as_str().context("待处理请求缺少 ID")?;
-                if seen.contains(id) {
-                    continue;
-                }
-                let detail = if kind == "permission" {
-                    format!(
-                        "需要授权：{}\n范围：{}\n/approve {id}\n/deny {id}",
-                        p["action"], p["resources"]
-                    )
-                } else {
-                    format!(
-                        "需要补充信息：{}\n/answer {id} [[\"答案\"]]\n/deny {id}",
-                        p["fields"]
-                    )
-                };
-                let detail = detail.chars().take(5000).collect::<String>();
-                for (i, part) in chunks(&detail).iter().enumerate() {
-                    self.feishu
-                        .reply(
-                            &j.message_id,
-                            part,
-                            &uuid::Uuid::new_v5(
-                                &uuid::Uuid::NAMESPACE_OID,
-                                format!("notice:{}:{id}:{i}", j.id).as_bytes(),
-                            )
-                            .to_string(),
-                            in_thread(j),
-                        )
-                        .await?;
-                }
-                seen.insert(id.into());
-                return Ok(());
+        self.oc.approve_pending(&sid).await?;
+        let list = self.oc.get(&format!("/api/session/{sid}/form")).await?;
+        for p in list.as_array().context("OpenCode 待处理提问格式不兼容")? {
+            if p["sessionID"] != sid {
+                continue;
             }
+            let id = p["id"].as_str().context("待处理提问缺少 ID")?;
+            if seen.contains(id) {
+                continue;
+            }
+            let detail = format!(
+                "需要补充信息：{}\n/answer {id} [[\"答案\"]]\n/deny {id}",
+                p["fields"]
+            );
+            let detail = detail.chars().take(5000).collect::<String>();
+            for (i, part) in chunks(&detail).iter().enumerate() {
+                self.feishu
+                    .reply(
+                        &j.message_id,
+                        part,
+                        &uuid::Uuid::new_v5(
+                            &uuid::Uuid::NAMESPACE_OID,
+                            format!("notice:{}:{id}:{i}", j.id).as_bytes(),
+                        )
+                        .to_string(),
+                        in_thread(j),
+                    )
+                    .await?;
+            }
+            seen.insert(id.into());
+            return Ok(());
         }
         Ok(())
     }
@@ -358,6 +410,25 @@ impl Bridge {
                         return Err(e);
                     }
                     self.store.sent(&j.id, 1)?;
+                }
+                let payload: Value = serde_json::from_str(&j.result)?;
+                if j.sent <= 1
+                    && let Some(note) = payload["note"].as_str()
+                {
+                    let uuid = uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        format!("result:{}:posture-note", j.id).as_bytes(),
+                    )
+                    .to_string();
+                    if let Err(e) = self
+                        .feishu
+                        .reply(&j.message_id, note, &uuid, in_thread(j))
+                        .await
+                    {
+                        self.store.retry_delivery(&j.id)?;
+                        return Err(e);
+                    }
+                    self.store.sent(&j.id, 2)?;
                 }
                 self.store.status(&j.id, "done")?;
                 return Ok(());
@@ -457,9 +528,20 @@ impl Bridge {
                 let (j, h) = camera_active.take().unwrap();
                 if let Err(e) = h.await.context("摄像头执行器异常退出").and_then(|r| r) {
                     tracing::warn!(error=%e, "摄像头任务失败");
-                    self.store.finish(&j.id, &format!("摄像头操作失败：{e}"))?;
+                    if j.id.starts_with("posture-sample:") {
+                        self.record_posture(
+                            &j,
+                            &format!("本次采样失败：{e}，无法判断坐姿。"),
+                            crate::posture::Assessment::Unknown,
+                        )
+                        .await?;
+                    } else {
+                        self.store.finish(&j.id, &format!("摄像头操作失败：{e}"))?;
+                    }
                 }
             }
+            self.store.queue_due_posture_reports()?;
+            self.store.queue_due_posture()?;
             let queued = self.store.jobs("queued")?;
             if camera_active.is_none()
                 && let Some(j) = queued.iter().find(|j| camera::is_capture(&j.text))
@@ -478,6 +560,17 @@ impl Bridge {
                 .filter(|j| is_command(j) && !camera::is_capture(&j.text))
                 .take(1)
             {
+                if (j.text.trim() == "/posture stop" || j.text.trim() == "/stop")
+                    && camera_active.as_ref().is_some_and(|(c, _)| {
+                        c.id.starts_with("posture-sample:")
+                            && models::scope(&c.key).ok() == models::scope(&j.key).ok()
+                    })
+                {
+                    let (c, h) = camera_active.take().unwrap();
+                    h.abort();
+                    let _ = h.await;
+                    self.store.status(&c.id, "done")?;
+                }
                 if j.text.split_whitespace().next() == Some("/stop")
                     && camera_active.as_ref().is_some_and(|(c, _)| c.key == j.key)
                 {

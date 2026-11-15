@@ -19,7 +19,7 @@ impl Capture {
     pub fn parse(text: &str) -> Result<Self> {
         let words: Vec<_> = text.split_whitespace().collect();
         match words.as_slice() {
-            ["/photo"] => Ok(Self::Photo),
+            ["/photo"] | ["/posture"] => Ok(Self::Photo),
             ["/video"] => Ok(Self::Video(10)),
             ["/video", seconds] => {
                 let seconds: u64 = seconds
@@ -33,7 +33,7 @@ impl Capture {
     }
 }
 pub fn is_capture(text: &str) -> bool {
-    matches!(text.split_whitespace().next(), Some("/photo" | "/video"))
+    matches!(text.split_whitespace().next(), Some("/photo" | "/video")) || text.trim() == "/posture"
 }
 pub struct Media {
     pub path: PathBuf,

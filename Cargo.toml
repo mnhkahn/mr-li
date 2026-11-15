@@ -4,6 +4,15 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "李老师：飞书与 OpenCode 的轻量桥接"
+default-run = "mr-li"
+
+[features]
+pose = ["dep:ort", "dep:ort-sys", "dep:image"]
+
+[[bin]]
+name = "mr-li-pose"
+path = "src/bin/pose.rs"
+required-features = ["pose"]
 
 [dependencies]
 anyhow = "1"
@@ -22,6 +31,9 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "v5"] }
+ort = { version = "=2.0.0-rc.4", default-features = false, features = ["load-dynamic"], optional = true }
+ort-sys = { version = "=2.0.0-rc.4", default-features = false, features = ["load-dynamic"], optional = true }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
 
 [profile.release]
 opt-level = "s"

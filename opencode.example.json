@@ -5,31 +5,6 @@
     {
       "action": "*",
       "resource": "*",
-      "effect": "ask"
-    },
-    {
-      "action": "read",
-      "resource": "*",
-      "effect": "allow"
-    },
-    {
-      "action": "glob",
-      "resource": "*",
-      "effect": "allow"
-    },
-    {
-      "action": "grep",
-      "resource": "*",
-      "effect": "allow"
-    },
-    {
-      "action": "list",
-      "resource": "*",
-      "effect": "allow"
-    },
-    {
-      "action": "question",
-      "resource": "*",
       "effect": "allow"
     }
   ]

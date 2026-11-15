@@ -15,6 +15,7 @@ path = "src/bin/pose.rs"
 required-features = ["pose"]
 
 [dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"

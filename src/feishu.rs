@@ -383,23 +383,29 @@ impl Feishu {
         uuid: &str,
         thread: bool,
     ) -> Result<Value> {
-        // IDs originate from Feishu, but constrain path segments defensively.
+        // A chat ID creates a top-level message; a message ID retains the private reply path.
+        let group = message.starts_with("oc_");
         ensure!(
-            message.starts_with("om_")
+            (group || message.starts_with("om_"))
                 && message
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_'),
-            "无效消息 ID"
+            "无效消息或群 ID"
         );
-        let v: Value = self
-            .http
-            .post(format!(
-                "{}/open-apis/im/v1/messages/{message}/reply",self.cfg.feishu_base_url
-            ))
+        let base = format!("{}/open-apis/im/v1/messages", self.cfg.feishu_base_url);
+        let mut payload = json!({"msg_type":msg_type,"content":content.to_string(),"uuid":uuid});
+        let request = if group {
+            payload["receive_id"] = json!(message);
+            self.http
+                .post(base)
+                .query(&[("receive_id_type", "chat_id")])
+        } else {
+            payload["reply_in_thread"] = json!(thread);
+            self.http.post(format!("{base}/{message}/reply"))
+        };
+        let v: Value = request
             .bearer_auth(self.token().await?)
-            .json(
-                &json!({"msg_type":msg_type,"content":content.to_string(),"uuid":uuid,"reply_in_thread":thread}),
-            )
+            .json(&payload)
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("飞书回复网络请求失败"))?
@@ -694,6 +700,90 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn group_messages_create_top_level_text_images_videos_and_cards() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for kind in ["text", "image", "media", "interactive"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let end = loop {
+                    let mut chunk = [0u8; 2048];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    if let Some(i) = buf.windows(4).position(|s| s == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let header = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                assert!(
+                    header.starts_with("post /open-apis/im/v1/messages?receive_id_type=chat_id ")
+                );
+                let size = header
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .map(|n| n.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap();
+                while buf.len() < end + size {
+                    let mut chunk = [0u8; 2048];
+                    let n = socket.read(&mut chunk).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                let body: Value = serde_json::from_slice(&buf[end..end + size]).unwrap();
+                assert_eq!(body["receive_id"], "oc_group");
+                assert_eq!(body["msg_type"], kind);
+                assert!(body.get("reply_in_thread").is_none());
+                assert!(body.get("root_id").is_none());
+                assert_eq!(body["uuid"], format!("group-{kind}"));
+                assert!(
+                    serde_json::from_str::<Value>(body["content"].as_str().unwrap())
+                        .unwrap()
+                        .is_object()
+                );
+                let out = json!({"code":0,"data":{"message_id":"om_sent_group"}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",out.len(),out).as_bytes()).await.unwrap();
+            }
+        });
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{address}");
+        let feishu = Feishu::new(Arc::new(cfg))?;
+        *feishu.token.lock().await = (
+            "group-token".into(),
+            Instant::now() + Duration::from_secs(60),
+        );
+        feishu
+            .reply("oc_group", "hello", "group-text", false)
+            .await?;
+        for kind in ["image", "media"] {
+            feishu
+                .reply_camera_media(
+                    "oc_group",
+                    &json!({"msg_type":kind,"content":{"image_key":"img_test"}}),
+                    &format!("group-{kind}"),
+                    false,
+                )
+                .await?;
+        }
+        assert_eq!(
+            feishu
+                .reply_card(
+                    "oc_group",
+                    &json!({"elements":[]}),
+                    "group-interactive",
+                    false
+                )
+                .await?,
+            "om_sent_group"
+        );
+        server.await?;
+        Ok(())
+    }
     #[tokio::test]
     async fn processing_reaction_contract_and_escaped_removal() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

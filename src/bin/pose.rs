@@ -1,4 +1,4 @@
-//! Local MoveNet posture worker. No Feishu credentials or network access needed.
+//! Local CPU posture worker. No Feishu credentials or network access needed.
 use anyhow::{Context, Result, ensure};
 use image::{
     Rgb, RgbImage,
@@ -8,6 +8,20 @@ use ort::{GraphOptimizationLevel, Session, TensorElementType, ValueType};
 use serde::Serialize;
 use std::{collections::HashMap, path::PathBuf, time::Instant};
 
+#[path = "pose/rtm.rs"]
+mod rtm;
+struct Inference {
+    model: &'static str,
+    points: Vec<Point>,
+    roi: [u32; 4],
+    model_load_ms: f64,
+    preprocess_ms: f64,
+    inference_ms: f64,
+    detector_ms: f64,
+    presence: Option<&'static str>,
+    person_score: Option<f32>,
+    detected_people: Vec<[f32; 5]>,
+}
 const NAMES: [&str; 17] = [
     "鼻子", "左眼", "右眼", "左耳", "右耳", "左肩", "右肩", "左肘", "右肘", "左腕", "右腕", "左髋",
     "右髋", "左膝", "右膝", "左踝", "右踝",
@@ -48,6 +62,10 @@ struct Report {
     preprocess_ms: f64,
     inference_ms: f64,
     repeats: usize,
+    detector_ms: f64,
+    person_score: Option<f32>,
+    detected_people: Vec<[f32; 5]>,
+    measurement_method: &'static str,
     keypoints: Vec<Point>,
     head_roll_deg: Option<f32>,
     shoulder_roll_deg: Option<f32>,
@@ -183,71 +201,82 @@ fn assess_back_view(
         ("needs_reminder", "疑似低头过多，请抬头、坐正")
     } else if tilt.is_some_and(|t| t.abs() >= 18.) {
         ("needs_reminder", "疑似歪头，请把头摆正")
-    } else if clearance >= 0.50 {
+    } else if clearance >= 0.46 {
         (
             "no_obvious_issue",
             "本次未触发头低或歪头规则，不等于确认坐姿合格",
         )
     } else {
-        ("unknown", "头肩高度处于待确认区间，暂不提醒")
+        ("observe", "头肩指标已识别，处于临界待观察区间，暂不提醒")
     };
     (
         Some(clearance),
         tilt,
         assessment,
         format!(
-            "{reason}。头肩高度比 {clearance:.2}；试验阈值 <0.42 提醒，0.42–0.50 待确认。固定背面机位规则，已用一张低头和一张坐直样本校准，准确率仍需验证。"
+            "{reason}。头肩高度比 {clearance:.2}；试验阈值 <0.42 提醒，0.42–0.46 待确认。固定背面机位规则，已用一张低头和一张坐直样本校准，准确率仍需验证。"
         ),
     )
 }
-fn main() -> Result<()> {
-    let mut args = HashMap::new();
-    let mut it = std::env::args().skip(1);
-    while let Some(k) = it.next() {
-        ensure!(
-            [
-                "--model",
-                "--image",
-                "--output",
-                "--roi",
-                "--repeat",
-                "--runtime"
-            ]
-            .contains(&k.as_str()),
-            "用法：mr-li-pose --model 模型.onnx --image 照片.jpg --output 输出前缀 [--roi x,y,w,h] [--repeat 5]"
-        );
-        args.insert(k, it.next().context("参数缺少值")?);
+fn assess_head_neck(p: &[Point]) -> Option<(&'static str, String)> {
+    if [5, 6, 17, 18]
+        .iter()
+        .any(|&i| !p[i].in_roi || p[i].score < 0.60)
+    {
+        return None;
     }
-    let model_path = args.get("--model").context("缺少 --model")?;
-    let image_path = args.get("--image").context("缺少 --image")?;
-    let prefix = PathBuf::from(args.get("--output").context("缺少 --output")?);
-    let repeats: usize = args
-        .get("--repeat")
-        .map(|s| s.parse())
-        .transpose()?
-        .unwrap_or(1);
-    ensure!((1..=100).contains(&repeats), "重复次数支持 1–100");
-    let image = image::ImageReader::open(image_path)?
-        .with_guessed_format()?
-        .decode()?
-        .to_rgb8();
-    let [x, y, w, h] = roi(args.get("--roi"), image.width(), image.height())?;
+    let (a, b) = if p[5].x < p[6].x {
+        (&p[5], &p[6])
+    } else {
+        (&p[6], &p[5])
+    };
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let width = dx.hypot(dy);
+    if width < 20. || dx < 12. || dy.abs() / dx > 0.6 {
+        return None;
+    }
+    let sx = (a.x + b.x) / 2.;
+    let sy = (a.y + b.y) / 2.;
+    let head = &p[17];
+    let neck = &p[18];
+    let neck_height = ((neck.x - sx) * dy - (neck.y - sy) * dx) / (width * width);
+    let neck_offset = ((neck.x - sx) * dx + (neck.y - sy) * dy) / (width * width);
+    let height = ((head.x - sx) * dy - (head.y - sy) * dx) / (width * width);
+    let hx = head.x - neck.x;
+    let hy = head.y - neck.y;
+    let length = hx.hypot(hy) / width;
+    if !(-0.15..=0.45).contains(&neck_height)
+        || neck_offset.abs() > 0.45
+        || !(0.35..=1.6).contains(&length)
+        || !(0.2..=1.8).contains(&height)
+    {
+        return None;
+    }
+    let tilt = (dy * hy + dx * hx).atan2(dy * hx - dx * hy).to_degrees();
+    let (result, reason) = if height < 0.82 {
+        ("needs_reminder", "疑似低头过多，请抬头坐正")
+    } else if tilt.abs() >= 18. {
+        ("needs_reminder", "疑似歪头，请把头摆正")
+    } else if height >= 0.95 {
+        ("no_obvious_issue", "本次未触发提醒")
+    } else {
+        ("observe", "头颈指标已识别，位于临界待观察区间")
+    };
+    Some((
+        result,
+        format!(
+            "{reason}。双耳点不稳定，改用头顶/颈部与双肩测量；头顶高度比 {height:.2}，相对倾斜 {tilt:.1}°。固定机位二维规则，不是实际颈部角度。"
+        ),
+    ))
+}
+fn infer_movenet(
+    model_path: &str,
+    image: &RgbImage,
+    [x, y, w, h]: [u32; 4],
+    repeats: usize,
+) -> Result<Inference> {
     let start = Instant::now();
-    let runtime = args.get("--runtime").map(PathBuf::from).unwrap_or(
-        std::env::current_exe()?
-            .parent()
-            .context("程序目录缺失")?
-            .join("lib/libonnxruntime.1.18.0.dylib"),
-    );
-    ensure!(
-        runtime.is_file(),
-        "缺少 ONNX Runtime：{}，请运行 scripts/setup-pose.sh",
-        runtime.display()
-    );
-    ort::init_from(runtime.to_string_lossy())
-        .with_name("mr-li-pose")
-        .with_telemetry(false)
-        .commit()?;
     let model = Session::builder()?
         .with_intra_threads(1)?
         .with_inter_threads(1)?
@@ -274,7 +303,7 @@ fn main() -> Result<()> {
         ((h as f32 * scale).round() as u32).max(1),
     );
     let (px, py) = ((size - rw) / 2, (size - rh) / 2);
-    let crop = imageops::crop_imm(&image, x, y, w, h).to_image();
+    let crop = imageops::crop_imm(image, x, y, w, h).to_image();
     let resized = imageops::resize(&crop, rw, rh, FilterType::Triangle);
     let mut input = RgbImage::new(size, size);
     imageops::replace(&mut input, &resized, px as i64, py as i64);
@@ -323,30 +352,138 @@ fn main() -> Result<()> {
             }
         })
         .collect();
-    let head = angle(&points, 1, 2).or_else(|| angle(&points, 3, 4));
-    let shoulder = angle(&points, 5, 6);
-    let high = points.iter().filter(|p| p.score >= 0.5 && p.in_roi).count();
-    let (clearance, relative_tilt, assessment, explanation) = assess_back_view(&points, w);
-    let report = Report {
+    Ok(Inference {
         model: if size == 256 {
             "MoveNet SinglePose Thunder ONNX"
         } else {
             "MoveNet SinglePose Lightning ONNX"
         },
+        points,
+        roi: [x, y, w, h],
+        model_load_ms,
+        preprocess_ms,
+        inference_ms: times[times.len() / 2],
+        detector_ms: 0.,
+        presence: None,
+        person_score: None,
+        detected_people: Vec::new(),
+    })
+}
+fn main() -> Result<()> {
+    let mut args = HashMap::new();
+    let mut it = std::env::args().skip(1);
+    while let Some(k) = it.next() {
+        ensure!(
+            [
+                "--model",
+                "--image",
+                "--output",
+                "--roi",
+                "--repeat",
+                "--runtime",
+                "--detector"
+            ]
+            .contains(&k.as_str()),
+            "用法：mr-li-pose --model 模型.onnx --image 照片.jpg --output 输出前缀 [--roi x,y,w,h] [--repeat 5]"
+        );
+        args.insert(k, it.next().context("参数缺少值")?);
+    }
+    let model_path = args.get("--model").context("缺少 --model")?;
+    let image_path = args.get("--image").context("缺少 --image")?;
+    let prefix = PathBuf::from(args.get("--output").context("缺少 --output")?);
+    let repeats: usize = args
+        .get("--repeat")
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(1);
+    ensure!((1..=100).contains(&repeats), "重复次数支持 1–100");
+    let image = image::ImageReader::open(image_path)?
+        .with_guessed_format()?
+        .decode()?
+        .to_rgb8();
+    let [x, y, w, h] = roi(args.get("--roi"), image.width(), image.height())?;
+    let runtime = args.get("--runtime").map(PathBuf::from).unwrap_or(
+        std::env::current_exe()?
+            .parent()
+            .context("程序目录缺失")?
+            .join("lib/libonnxruntime.1.18.0.dylib"),
+    );
+    ensure!(
+        runtime.is_file(),
+        "缺少 ONNX Runtime：{}，请运行 scripts/setup-pose.sh",
+        runtime.display()
+    );
+    ort::init_from(runtime.to_string_lossy())
+        .with_name("mr-li-pose")
+        .with_telemetry(false)
+        .commit()?;
+    let inference = if let Some(detector) = args.get("--detector") {
+        rtm::infer(
+            model_path,
+            detector,
+            &image,
+            args.contains_key("--roi").then_some([x, y, w, h]),
+            repeats,
+        )?
+    } else {
+        infer_movenet(model_path, &image, [x, y, w, h], repeats)?
+    };
+    let Inference {
+        model,
+        points,
+        roi: [x, y, w, h],
+        model_load_ms,
+        preprocess_ms,
+        inference_ms,
+        detector_ms,
+        presence,
+        person_score,
+        detected_people,
+    } = inference;
+    let head = angle(&points, 1, 2).or_else(|| angle(&points, 3, 4));
+    let shoulder = angle(&points, 5, 6);
+    let high = points.iter().filter(|p| p.score >= 0.5 && p.in_roi).count();
+    let (clearance, relative_tilt, mut assessment, mut explanation) = assess_back_view(&points, w);
+    let mut measurement = "ears";
+    if presence == Some("away") {
+        assessment = "away";
+        measurement = "none";
+        explanation =
+            "未检测到学习位内可判断的半身坐姿目标（可能离座、站立或处于画面边缘），本次不评坐姿。"
+                .into();
+    } else if presence == Some("ambiguous") {
+        assessment = "unknown";
+        measurement = "none";
+        explanation = "检测到多个候选人，无法确认应检查谁，暂不判断。".into();
+    } else if points.len() >= 19
+        && clearance.is_none()
+        && let Some((a, n)) = assess_head_neck(&points)
+    {
+        assessment = a;
+        explanation = n;
+        measurement = "head_neck";
+    }
+    let count = points.len();
+    let report = Report {
+        model,
         image_size: [image.width(), image.height()],
         roi: [x, y, w, h],
         threshold: 0.5,
         model_load_ms,
         preprocess_ms,
-        inference_ms: times[times.len() / 2],
+        inference_ms,
         repeats,
+        detector_ms,
+        person_score,
+        detected_people,
+        measurement_method: measurement,
         keypoints: points,
         head_roll_deg: head,
         shoulder_roll_deg: shoulder,
         head_clearance_ratio: clearance,
         head_tilt_relative_shoulders_deg: relative_tilt,
         assessment,
-        note: format!("{explanation} 关键点：{high}/17 个点分数 ≥ 0.5。"),
+        note: format!("{explanation} 关键点：{high}/{count} 个点分数 ≥ 0.5。"),
     };
     if let Some(parent) = prefix.parent() {
         std::fs::create_dir_all(parent)?;
@@ -364,7 +501,10 @@ fn main() -> Result<()> {
             line(&mut painted, (a.x, a.y), (b.x, b.y), green);
         }
     }
-    for p in report.keypoints.iter().take(11) {
+    for (i, p) in report.keypoints.iter().enumerate() {
+        if i > 10 && i != 17 && i != 18 {
+            continue;
+        }
         if p.in_roi && p.score >= 0.35 {
             dot(
                 &mut painted,
@@ -373,6 +513,14 @@ fn main() -> Result<()> {
                 5,
                 if p.score >= 0.5 { green } else { amber },
             );
+        }
+    }
+    if report.keypoints.len() >= 19 {
+        for (a, b) in [(17, 18), (18, 5), (18, 6)] {
+            let (a, b) = (&report.keypoints[a], &report.keypoints[b]);
+            if a.score >= 0.5 && b.score >= 0.5 && a.in_roi && b.in_roi {
+                line(&mut painted, (a.x, a.y), (b.x, b.y), cyan);
+            }
         }
     }
     if report.head_clearance_ratio.is_some() {
@@ -505,11 +653,17 @@ mod tests {
             points
         };
         assert_eq!(assess_back_view(&make(30.), 300).2, "needs_reminder");
-        assert_eq!(assess_back_view(&make(46.), 300).2, "unknown");
+        assert_eq!(assess_back_view(&make(44.), 300).2, "observe");
         assert_eq!(assess_back_view(&make(70.), 300).2, "no_obvious_issue");
         // User-labelled examples (ratios from original, unannotated camera frames).
         assert_eq!(assess_back_view(&make(30.8174), 300).2, "needs_reminder");
         assert_eq!(assess_back_view(&make(54.), 300).2, "no_obvious_issue");
+        // Parent-labelled 18:42 must remind; 18:48 must not remind (RTMPose-M readings).
+        assert_eq!(assess_back_view(&make(40.897_49), 300).2, "needs_reminder");
+        assert_eq!(
+            assess_back_view(&make(47.206584), 300).2,
+            "no_obvious_issue"
+        );
         assert_eq!(assess_back_view(&make(50.), 300).2, "no_obvious_issue");
         let mut points = make(30.);
         points[5].score = 0.49;
@@ -531,6 +685,43 @@ mod tests {
             p.y = p.y * 2. + 50.;
         }
         assert_eq!(assess_back_view(&scaled, 600).2, "needs_reminder");
+    }
+    #[test]
+    fn head_neck_fallback_requires_confident_points_and_valid_collar_geometry() {
+        let make = |height: f32| {
+            let mut p: Vec<_> = (0..26)
+                .map(|_| Point {
+                    name: "test",
+                    x: 0.,
+                    y: 0.,
+                    score: 0.,
+                    in_roi: true,
+                })
+                .collect();
+            for (i, x, y) in [
+                (5, 100., 200.),
+                (6, 200., 200.),
+                (17, 150., 200. - height),
+                (18, 150., 180.),
+            ] {
+                p[i].x = x;
+                p[i].y = y;
+                p[i].score = 0.8;
+            }
+            p
+        };
+        assert_eq!(assess_head_neck(&make(100.)).unwrap().0, "no_obvious_issue");
+        assert_eq!(assess_head_neck(&make(75.)).unwrap().0, "needs_reminder");
+        assert_eq!(assess_head_neck(&make(90.)).unwrap().0, "observe");
+        let mut p = make(100.);
+        p[18].score = 0.59;
+        assert!(assess_head_neck(&p).is_none());
+        p = make(100.);
+        p[18].x = 20.;
+        assert!(assess_head_neck(&p).is_none());
+        p = make(100.);
+        p[17].in_roi = false;
+        assert!(assess_head_neck(&p).is_none());
     }
     #[test]
     fn roi_rejects_invalid_coordinates() {

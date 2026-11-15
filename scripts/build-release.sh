@@ -20,11 +20,13 @@ if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
     mkdir -p "$DEST/bin/lib"
     cp .data/pose-runtime/lib/* "$DEST/bin/lib/"
   fi
-  if [[ -f .data/pose-models/movenet-thunder.onnx ]]; then
-    mkdir -p "$DEST/models"
-    cp .data/pose-models/movenet-thunder.onnx "$DEST/models/"
-    cp .data/pose-models/manifest.json "$DEST/models/"
-  fi
+  mkdir -p "$DEST/models"
+  for obsolete in movenet-lightning.onnx movenet-thunder.onnx rtmpose-s-halpe26.onnx; do
+    rm -f -- "$DEST/models/$obsolete"
+  done
+  for name in rtmpose-m-halpe26.onnx yolox-tiny-person.onnx manifest.json; do
+    if [[ -f ".data/pose-models/$name" ]]; then cp ".data/pose-models/$name" "$DEST/models/"; fi
+  done
 fi
 cp README.md .env.example opencode.example.json "$DEST/"
 chmod +x "$DEST/bin/mr-li" "$DEST/scripts/"*.sh

@@ -23,7 +23,9 @@ pub struct Config {
     pub ffmpeg_bin: String,
     pub pose_bin: String,
     pub pose_model: PathBuf,
+    pub pose_detector: Option<PathBuf>,
     pub pose_roi: String,
+    pub photo_archive_dir: PathBuf,
     pub posture_speech: bool,
     pub posture_voice: String,
     pub posture_audio_device: String,
@@ -125,9 +127,16 @@ impl Config {
             pose_bin: get("MR_LI_POSE_BIN", "bin/mr-li-pose"),
             pose_model: PathBuf::from(get(
                 "MR_LI_POSE_MODEL",
-                ".data/pose-models/movenet-thunder.onnx",
+                ".data/pose-models/rtmpose-m-halpe26.onnx",
             )),
+            pose_detector: Some(get(
+                "MR_LI_POSE_DETECTOR",
+                ".data/pose-models/yolox-tiny-person.onnx",
+            ))
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
             pose_roi: get("MR_LI_POSE_ROI", ""),
+            photo_archive_dir: PathBuf::from(get("MR_LI_PHOTO_ARCHIVE_DIR", "photos")),
             posture_speech: match get("MR_LI_POSTURE_SPEECH", "true").as_str() {
                 "true" => true,
                 "false" => false,
@@ -173,8 +182,10 @@ impl Config {
             camera_did: String::new(),
             ffmpeg_bin: "ffmpeg".into(),
             pose_bin: "mr-li-pose".into(),
-            pose_model: PathBuf::from("movenet-thunder.onnx"),
+            pose_model: PathBuf::from("rtmpose-m-halpe26.onnx"),
+            pose_detector: None,
             pose_roi: String::new(),
+            photo_archive_dir: std::env::temp_dir().join("mr-li-test-photo-archive"),
             posture_speech: false,
             posture_voice: "Ting-Ting".into(),
             posture_audio_device: "Built-in Output".into(),

@@ -17,11 +17,16 @@ pub struct Bridge {
     pub feishu: Arc<Feishu>,
     pub oc: Arc<OpenCode>,
 }
-const HELP: &str = "我是李老师。直接发文字即可执行任务，操作权限默认自动允许。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/posture 本地姿态模型试验（关键点图片与说明）\n/posture start [秒数] 定时采样，默认 60 秒\n/posture status 最近结果\n/posture stop 停止采样\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
-fn in_thread(j: &Job) -> bool {
-    serde_json::from_str::<Value>(&j.key)
-        .ok()
-        .is_some_and(|v| v[3].as_str().is_some_and(|s| !s.is_empty()))
+const HELP: &str = "我是李老师。直接发文字即可执行任务，操作权限默认自动允许。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/posture 本地姿态模型试验（关键点图片与说明）\n/posture start [秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止采样\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+fn destination(j: &Job) -> Result<String> {
+    let values: Vec<String> = serde_json::from_str(&j.key).context("会话标识无效")?;
+    ensure!(values.len() == 4, "会话标识无效");
+    // Nonempty root marks group input. Send directly to its chat, regardless of the source thread.
+    Ok(if !values[3].is_empty() {
+        values[2].clone()
+    } else {
+        j.message_id.clone()
+    })
 }
 fn is_command(j: &Job) -> bool {
     j.text.starts_with('/')
@@ -105,10 +110,27 @@ impl Bridge {
     }
     async fn capture_camera(&self, j: &Job) -> Result<()> {
         let background = j.id.starts_with("posture-sample:");
+        if background && !self.store.posture_enabled(&j.key)? {
+            self.store.status(&j.id, "done")?;
+            return Ok(());
+        }
         if !background {
             self.start_processing(j).await;
         }
         let mut media = camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?;
+        if background && !self.store.posture_enabled(&j.key)? {
+            self.store.status(&j.id, "done")?;
+            return Ok(());
+        }
+        if media.cover.is_none() {
+            crate::posture::archive_photo(&self.cfg, &j.id, &media.path).context("照片归档失败")?;
+        }
+        if background
+            && self.store.posture_enabled(&j.key)?
+            && let Err(e) = crate::posture::cache_frame(&self.cfg, &j.key, &media.path)
+        {
+            tracing::warn!(error=%e,"无法保留坐姿汇总图片");
+        }
         let mut assessment = crate::posture::Assessment::Unknown;
         let note = if j.text.trim() == "/posture" {
             let observation = crate::posture::analyze(&self.cfg, &media.path).await?;
@@ -197,14 +219,14 @@ impl Bridge {
                 let words: Vec<_> = args.split_whitespace().collect();
                 match words.as_slice() {
                     ["start"] | ["start",_] => {
-                        ensure!(self.cfg.pose_model.is_file() && std::path::Path::new(&self.cfg.pose_bin).is_file(),"请先安装本地姿态模型和程序");
+                        ensure!(self.cfg.pose_model.is_file() && self.cfg.pose_detector.as_ref().is_none_or(|p|p.is_file()) && std::path::Path::new(&self.cfg.pose_bin).is_file(),"请先安装人体检测/姿态模型和程序");
                         let seconds=words.get(1).map(|s|s.parse::<u64>()).transpose()?.unwrap_or(60);
                         self.store.start_posture_watch(j,seconds)?;
-                        Ok(format!("已开始每 {seconds} 秒检查并在 Mac mini 语音播报，飞书每 10 分钟汇总一次。无法判断时保持静音，仍记入汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
+                        Ok(format!("已启用每日北京时间 17:00–21:30 每 {seconds} 秒检查，仅低头或歪头时在 Mac mini 播报，其余静音。21:30 停止检查，次日 17:00 自动恢复；飞书每 10 分钟图文汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
                     }
-                    ["stop"] => {self.store.stop_posture_watch(&models::scope(&j.key)?)?;Ok("已停止此聊天的定时姿态试验。".into())}
+                    ["stop"] => {self.store.stop_posture_watch(&models::scope(&j.key)?)?;crate::posture::clear_frames(&self.cfg,&j.key)?;Ok("已停止此聊天的定时姿态试验。".into())}
                     ["status"] => self.store.posture_watch_status(&models::scope(&j.key)?),
-                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 定时采样，默认 60 秒\n/posture status 最近结果\n/posture stop 停止".into()),
+                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止".into()),
                 }
             }
             "/status" => {
@@ -241,6 +263,7 @@ impl Bridge {
             "/stop" => {
                 if let Ok(scope) = models::scope(&j.key) {
                     self.store.stop_posture_watch(&scope)?;
+                    crate::posture::clear_frames(&self.cfg, &j.key)?;
                 }
                 if let Some(sid) = sid {
                     self.oc.abort(&sid).await?;
@@ -373,14 +396,14 @@ impl Bridge {
             for (i, part) in chunks(&detail).iter().enumerate() {
                 self.feishu
                     .reply(
-                        &j.message_id,
+                        &destination(j)?,
                         part,
                         &uuid::Uuid::new_v5(
                             &uuid::Uuid::NAMESPACE_OID,
                             format!("notice:{}:{id}:{i}", j.id).as_bytes(),
                         )
                         .to_string(),
-                        in_thread(j),
+                        false,
                     )
                     .await?;
             }
@@ -389,10 +412,65 @@ impl Bridge {
         }
         Ok(())
     }
+    async fn prepare_posture_report(&self, j: &Job) -> Result<()> {
+        let mut payload = serde_json::from_str::<Value>(&j.result)
+            .ok()
+            .filter(|p| p["note"].is_string())
+            .unwrap_or_else(|| json!({"note":j.result}));
+        if payload["snapshot"].is_null() {
+            let Some((path, at)) = crate::posture::freeze_report_frame(&self.cfg, &j.key, &j.id)?
+            else {
+                self.store.finish(
+                    &j.id,
+                    &format!(
+                        "{}\n本批未取得近 10 分钟内的图片，先发送文字记录。",
+                        payload["note"].as_str().context("汇总文字缺失")?
+                    ),
+                )?;
+                return Ok(());
+            };
+            payload["snapshot"] = json!(path);
+            payload["captured_at"] = json!(at);
+            // Freeze before upload: retries and restarts use the same image and original report.
+            self.store
+                .finish_output(&j.id, "posture_report", &payload)?;
+        }
+        let path =
+            std::path::PathBuf::from(payload["snapshot"].as_str().context("汇总图片路径缺失")?);
+        ensure!(
+            path == crate::posture::report_frame_path(&self.cfg, &j.key, &j.id)?,
+            "汇总图片路径不匹配"
+        );
+        let key = self.feishu.upload_camera_media(&path, false, 0).await?;
+        let at = payload["captured_at"]
+            .as_u64()
+            .context("汇总图片时间缺失")?;
+        let seconds = (at + 8 * 3600) % 86400;
+        let note = format!(
+            "{}\n附图：最近一次监控画面（北京时间 {:02}:{:02}）。",
+            payload["note"].as_str().context("汇总文字缺失")?,
+            seconds / 3600,
+            seconds % 3600 / 60
+        );
+        self.store.finish_output(
+            &j.id,
+            "camera_media",
+            &json!({"msg_type":"image","content":{"image_key":key},"note":note}),
+        )?;
+        let _ = std::fs::remove_file(path);
+        Ok(())
+    }
     async fn deliver(&self) -> Result<()> {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
             let kind = self.store.output_kind(&j.id)?;
+            if kind == "posture_report" {
+                if let Err(e) = self.prepare_posture_report(j).await {
+                    self.store.retry_delivery(&j.id)?;
+                    return Err(e);
+                }
+                return Ok(());
+            }
             if kind == "camera_media" {
                 if j.sent == 0 {
                     let payload: Value = serde_json::from_str(&j.result)?;
@@ -403,7 +481,7 @@ impl Bridge {
                     .to_string();
                     if let Err(e) = self
                         .feishu
-                        .reply_camera_media(&j.message_id, &payload, &uuid, in_thread(j))
+                        .reply_camera_media(&destination(j)?, &payload, &uuid, false)
                         .await
                     {
                         self.store.retry_delivery(&j.id)?;
@@ -422,7 +500,7 @@ impl Bridge {
                     .to_string();
                     if let Err(e) = self
                         .feishu
-                        .reply(&j.message_id, note, &uuid, in_thread(j))
+                        .reply(&destination(j)?, note, &uuid, false)
                         .await
                     {
                         self.store.retry_delivery(&j.id)?;
@@ -449,7 +527,7 @@ impl Bridge {
                 let result = if kind == "model_card" {
                     match self
                         .feishu
-                        .reply_card(&j.message_id, &payload["card"], &uuid, in_thread(j))
+                        .reply_card(&destination(j)?, &payload["card"], &uuid, false)
                         .await
                     {
                         Ok(message) => self.store.attach_model_card(
@@ -476,7 +554,7 @@ impl Bridge {
                 );
                 if let Err(e) = self
                     .feishu
-                    .reply(&j.message_id, part, &uuid.to_string(), in_thread(j))
+                    .reply(&destination(j)?, part, &uuid.to_string(), false)
                     .await
                 {
                     self.store.retry_delivery(&j.id)?;
@@ -524,6 +602,16 @@ impl Bridge {
                 }
                 seen.clear();
             }
+            if !crate::posture::schedule_active()
+                && camera_active
+                    .as_ref()
+                    .is_some_and(|(j, _)| j.id.starts_with("posture-sample:"))
+            {
+                let (j, h) = camera_active.take().unwrap();
+                h.abort();
+                let _ = h.await;
+                self.store.status(&j.id, "done")?;
+            }
             if camera_active.as_ref().is_some_and(|(_, h)| h.is_finished()) {
                 let (j, h) = camera_active.take().unwrap();
                 if let Err(e) = h.await.context("摄像头执行器异常退出").and_then(|r| r) {
@@ -551,7 +639,21 @@ impl Bridge {
                 let job = j.clone();
                 camera_active = Some((
                     j.clone(),
-                    tokio::spawn(async move { b.capture_camera(&job).await }),
+                    tokio::spawn(async move {
+                        if job.id.starts_with("posture-sample:") {
+                            match tokio::time::timeout(
+                                crate::posture::remaining_window(),
+                                b.capture_camera(&job),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => b.store.status(&job.id, "done"),
+                            }
+                        } else {
+                            b.capture_camera(&job).await
+                        }
+                    }),
                 ));
             }
             // Commands stay responsive while the sole model task waits for an approval.
@@ -669,6 +771,26 @@ mod tests {
                 .contains("不属于")
         );
         server.join().unwrap();
+        Ok(())
+    }
+    #[test]
+    fn group_delivery_ignores_source_thread_but_private_replies_stay_private() -> Result<()> {
+        let mut j = Job {
+            id: "job".into(),
+            message_id: "om_origin".into(),
+            key: String::new(),
+            text: String::new(),
+            result: String::new(),
+            sent: 0,
+        };
+        for root in ["om_first", "om_other", "om_saved_yesterday"] {
+            j.key = json!(["workspace", "owner", "oc_group", root]).to_string();
+            assert_eq!(destination(&j)?, "oc_group");
+        }
+        j.key = json!(["workspace", "owner", "oc_private", ""]).to_string();
+        assert_eq!(destination(&j)?, "om_origin");
+        j.key = json!(["workspace", "owner"]).to_string();
+        assert!(destination(&j).is_err());
         Ok(())
     }
     #[test]

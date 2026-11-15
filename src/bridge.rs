@@ -1,6 +1,7 @@
 use crate::{
     config::Config,
     feishu::Feishu,
+    models,
     opencode::OpenCode,
     store::{Job, Store},
 };
@@ -15,7 +16,7 @@ pub struct Bridge {
     pub feishu: Arc<Feishu>,
     pub oc: Arc<OpenCode>,
 }
-const HELP: &str = "我是李老师。直接发文字即可执行任务。\n/help 帮助\n/status 当前会话\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+const HELP: &str = "我是李老师。直接发文字即可执行任务。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
 fn in_thread(j: &Job) -> bool {
     serde_json::from_str::<Value>(&j.key)
         .ok()
@@ -40,6 +41,13 @@ pub fn chunks(text: &str) -> Vec<String> {
     result
 }
 impl Bridge {
+    fn selected_model(&self, key: &str) -> Result<String> {
+        Ok(self
+            .store
+            .model(&models::scope(key)?)?
+            .or_else(|| self.cfg.model.clone())
+            .unwrap_or_else(|| "opencode/glm-5.3-flash-free".into()))
+    }
     pub async fn recover(&self) -> Result<()> {
         for j in self.store.jobs("running")? {
             if let Some(sid) = self.store.session(&j.key)? {
@@ -50,19 +58,21 @@ impl Bridge {
         Ok(())
     }
     async fn execute(&self, j: &Job) -> Result<()> {
+        // Freeze the choice when execution starts; later card clicks affect queued work only.
+        let model = self.selected_model(&j.key)?;
         let sid = if let Some(sid) = self.store.session(&j.key)? {
             // A missing session must not silently discard the conversation history.
             self.oc
-                .get(&format!("/session/{sid}"))
+                .get(&format!("/api/session/{sid}"))
                 .await
                 .context("会话不可用，请用 /new 创建新会话")?;
             sid
         } else {
-            let sid = self.oc.create().await?;
+            let sid = self.oc.create(Some(&model)).await?;
             self.store.set_session(&j.key, &sid)?;
             sid
         };
-        let text = self.oc.prompt(&sid, &j.text).await?;
+        let text = self.oc.prompt(&sid, &j.text, Some(&model)).await?;
         self.store.finish(&j.id, &text)?;
         Ok(())
     }
@@ -83,8 +93,9 @@ impl Bridge {
                     .filter(|q| q.key == j.key && !is_command(q))
                     .count();
                 Ok(format!(
-                    "会话：{}\n执行中：{}\n排队：{}",
+                    "会话：{}\n模型：{}\n执行中：{}\n排队：{}",
                     sid.as_deref().unwrap_or("尚未创建"),
+                    self.selected_model(&j.key)?,
                     active.is_some_and(|a| a.key == j.key),
                     pending
                 ))
@@ -123,8 +134,11 @@ impl Bridge {
                     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
                     "请提供有效请求 ID"
                 );
-                let permissions = self.oc.get("/permission").await?;
-                let questions = self.oc.get("/question").await?;
+                let permissions = self
+                    .oc
+                    .get(&format!("/api/session/{sid}/permission"))
+                    .await?;
+                let questions = self.oc.get(&format!("/api/session/{sid}/form")).await?;
                 let owns = |v: &Value| {
                     v.as_array()
                         .is_some_and(|a| a.iter().any(|r| r["id"] == id && r["sessionID"] == sid))
@@ -133,21 +147,30 @@ impl Bridge {
                     ensure!(cmd != "/answer", "权限请求请用 /approve 或 /deny");
                     self.oc
                         .post(
-                            &format!("/permission/{id}/reply"),
-                            json!({"reply":if cmd=="/approve"{"once"}else{"reject"}}),
+                            &format!("/api/session/{sid}/permission/{id}/reply"),
+                            json!({"decision":if cmd=="/approve"{"once"}else{"reject"}}),
                         )
                         .await?;
                 } else if owns(&questions) {
                     ensure!(cmd != "/approve", "提问请用 /answer 或 /deny");
                     if cmd == "/deny" {
                         self.oc
-                            .post(&format!("/question/{id}/reject"), json!({}))
+                            .delete(&format!("/api/session/{sid}/form/{id}"))
                             .await?;
                     } else {
-                        let answers: Vec<Vec<String>> = serde_json::from_str(answer.trim())
-                            .context("答案需为二维 JSON 字符串数组，例如 [[\"A\"]]")?;
+                        let form = questions
+                            .as_array()
+                            .and_then(|forms| forms.iter().find(|f| f["id"] == id))
+                            .context("表单已失效")?;
+                        let answers = crate::opencode::form_answers(
+                            form,
+                            serde_json::from_str(answer.trim()).context("请输入 JSON 答案")?,
+                        )?;
                         self.oc
-                            .post(&format!("/question/{id}/reply"), json!({"answers":answers}))
+                            .post(
+                                &format!("/api/session/{sid}/form/{id}/reply"),
+                                json!({"answer":answers}),
+                            )
                             .await?;
                     }
                 } else {
@@ -158,12 +181,62 @@ impl Bridge {
             _ => Ok(HELP.into()),
         }
     }
+    async fn handle_command(&self, j: &Job, active: Option<&Job>) -> Result<()> {
+        let mut words = j.text.split_whitespace();
+        let cmd = words.next().unwrap_or("");
+        if matches!(cmd, "/models" | "/model") {
+            let available = models::free_models(&self.oc.catalog().await?);
+            ensure!(
+                !available.is_empty(),
+                "暂未找到可用的 OpenCode 免费模型，请稍后重试"
+            );
+            let token = uuid::Uuid::new_v4().simple().to_string();
+            let selected = self.selected_model(&j.key)?;
+            let card = models::picker(&available, &selected, &token, false);
+            self.store.register_model_card(&token, &j.key)?;
+            self.store
+                .finish_output(&j.id, "model_card", &json!({"token":token,"card":card}))?;
+        } else if cmd == "/_model-select" {
+            ensure!(j.id.starts_with("card:"), "请在模型选择卡片中点选模型");
+            let token = words.next().context("卡片标识缺失")?;
+            let selected = words.next().context("请选择模型")?;
+            let card = self
+                .store
+                .model_card(token)?
+                .context("卡片已过期，请重新打开模型选择")?;
+            ensure!(
+                card.origin_key == j.key && card.message_id == j.message_id,
+                "卡片不属于当前会话"
+            );
+            let available = models::free_models(&self.oc.catalog().await?);
+            ensure!(
+                available.iter().any(|m| m.id == selected),
+                "此模型已下线或不再免费，请重新打开模型选择"
+            );
+            let updated = models::picker(&available, selected, token, true);
+            self.store.switch_model_and_finish(
+                &j.id,
+                &models::scope(&j.key)?,
+                selected,
+                &updated,
+            )?;
+        } else {
+            let text = self.command(j, active).await?;
+            self.store.finish(&j.id, &text)?;
+        }
+        Ok(())
+    }
     async fn notify_pending(&self, j: &Job, seen: &mut HashSet<String>) -> Result<()> {
         let Some(sid) = self.store.session(&j.key)? else {
             return Ok(());
         };
-        for (path, kind) in [("/permission", "permission"), ("/question", "question")] {
-            let list = self.oc.get(path).await?;
+        for kind in ["permission", "question"] {
+            let path = if kind == "permission" {
+                format!("/api/session/{sid}/permission")
+            } else {
+                format!("/api/session/{sid}/form")
+            };
+            let list = self.oc.get(&path).await?;
             for p in list.as_array().context("OpenCode 待处理请求格式不兼容")? {
                 if p["sessionID"] != sid {
                     continue;
@@ -175,12 +248,12 @@ impl Bridge {
                 let detail = if kind == "permission" {
                     format!(
                         "需要授权：{}\n范围：{}\n/approve {id}\n/deny {id}",
-                        p["permission"], p["patterns"]
+                        p["action"], p["resources"]
                     )
                 } else {
                     format!(
                         "需要补充信息：{}\n/answer {id} [[\"答案\"]]\n/deny {id}",
-                        p["questions"]
+                        p["fields"]
                     )
                 };
                 let detail = detail.chars().take(5000).collect::<String>();
@@ -207,6 +280,43 @@ impl Bridge {
     async fn deliver(&self) -> Result<()> {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
+            let kind = self.store.output_kind(&j.id)?;
+            if kind == "model_card" || kind == "model_card_update" {
+                let mut payload: Value = serde_json::from_str(&j.result)?;
+                let current = self.selected_model(&j.key)?;
+                if kind == "model_card" {
+                    payload["card"] = models::refresh_selection(&payload["card"], &current)?;
+                } else {
+                    payload = models::refresh_selection(&payload, &current)?;
+                }
+                let uuid = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    format!("result:{}:card", j.id).as_bytes(),
+                )
+                .to_string();
+                let result = if kind == "model_card" {
+                    match self
+                        .feishu
+                        .reply_card(&j.message_id, &payload["card"], &uuid, in_thread(j))
+                        .await
+                    {
+                        Ok(message) => self.store.attach_model_card(
+                            payload["token"].as_str().context("卡片标识缺失")?,
+                            &message,
+                        ),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    self.feishu.update_card(&j.message_id, &payload).await
+                };
+                if let Err(e) = result {
+                    self.store.retry_delivery(&j.id)?;
+                    return Err(e);
+                }
+                self.store.sent(&j.id, 1)?;
+                self.store.status(&j.id, "done")?;
+                return Ok(());
+            }
             if let Some((i, part)) = chunks(&j.result).iter().enumerate().nth(j.sent) {
                 let uuid = uuid::Uuid::new_v5(
                     &uuid::Uuid::NAMESPACE_OID,
@@ -265,11 +375,12 @@ impl Bridge {
             // Commands stay responsive while the sole model task waits for an approval.
             for j in queued.iter().filter(|j| is_command(j)).take(1) {
                 self.store.status(&j.id, "running")?;
-                let result = self
-                    .command(j, active.as_ref().map(|(j, _)| j))
+                if let Err(e) = self
+                    .handle_command(j, active.as_ref().map(|(j, _)| j))
                     .await
-                    .unwrap_or_else(|e| format!("操作失败：{e}"));
-                self.store.finish(&j.id, &result)?;
+                {
+                    self.store.finish(&j.id, &format!("操作失败：{e}"))?;
+                }
             }
             if active.is_none() {
                 // Reload: /stop may have cancelled queued work in this tick.

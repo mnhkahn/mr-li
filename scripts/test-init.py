@@ -62,10 +62,10 @@ with tempfile.TemporaryDirectory(prefix='mr-li wizard ') as temp:
     workspace = Path(temp)/'work space'
     secret = 'test-only-$UNDEFINED "quoted" \\end $(touch SHOULD_NOT_EXIST)'
     transcript = drive(root, ['--configure-only'], [
-        ('飞书 App ID', ''), ('飞书 App Secret（隐藏输入）', secret),
-        ('允许使用的用户 open_id', 'ou_test'), ('OpenCode 本地服务密码', ''),
-        ('Agent 任务工作目录', str(workspace)), ('OpenCode 模型 provider/model', 'test/model'),
-        ('OpenCode 1.19.0 可执行文件路径', '/tmp/test-opencode'),
+        ('应用区域：', 'lark'), ('飞书 App ID', ''), ('飞书 App Secret（隐藏输入）', secret),
+        ('允许使用的用户 open_id', 'ou_test'), ('限定工作群 chat_id', 'oc_test'), ('OpenCode 本地服务密码', ''),
+        ('Agent 任务工作目录', str(workspace)), ('OpenCode 免费模型 provider/model', ''),
+        ('OpenCode V2.3.x 启动器绝对路径', '/tmp/test-opencode'),
     ])
     assert secret not in transcript, 'Secret was echoed'
     assert (root/'.env').stat().st_mode & 0o777 == 0o600

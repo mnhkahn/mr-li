@@ -1,6 +1,7 @@
 mod bridge;
 mod config;
 mod feishu;
+mod models;
 mod opencode;
 mod service;
 mod store;
@@ -14,9 +15,29 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| "mr_li=info".into()),
         )
         .init();
-    let cfg = Arc::new(config::Config::load()?);
-    let oc = Arc::new(opencode::OpenCode::new(cfg.clone())?);
     let mode = std::env::args().nth(1).unwrap_or_else(|| "bridge".into());
+    let cfg = Arc::new(config::Config::load(mode == "enroll")?);
+    if mode == "enroll" {
+        let chat = std::env::args()
+            .nth(2)
+            .context("enroll 需要群 chat_id 或 p2p")?;
+        let challenge = std::env::args()
+            .nth(3)
+            .context("enroll 需要匹配的确认短语")?;
+        anyhow::ensure!(challenge.len() >= 8, "确认短语至少 8 字节");
+        let feishu = feishu::Feishu::new(cfg)?;
+        feishu.identify().await?;
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        tokio::select! {
+            r=feishu.observe(&chat,&challenge)=>r?,
+            _=tokio::signal::ctrl_c()=>{},
+            _=terminate.recv()=>{},
+            _=tokio::time::sleep(std::time::Duration::from_secs(600))=>{},
+        }
+        return Ok(());
+    }
+    let oc = Arc::new(opencode::OpenCode::new(cfg.clone())?);
     if mode == "opencode" {
         return service::opencode(&cfg);
     }
@@ -36,7 +57,7 @@ async fn main() -> Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("health") {
         oc.health().await?;
-        println!("OpenCode 1.19.0 healthy");
+        println!("OpenCode V2 healthy");
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("check") {
@@ -55,6 +76,7 @@ async fn main() -> Result<()> {
     oc.health()
         .await
         .context("请先启动受支持的 OpenCode 服务")?;
+    store.use_v2_sessions()?;
     feishu.identify().await?;
     let bridge = Arc::new(bridge::Bridge {
         cfg,

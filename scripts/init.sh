@@ -5,11 +5,11 @@ set +x
 umask 077
 ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$ROOT"
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.opencode/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$HOME/.opencode/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 MODE="${1:-}"
 if [[ "$MODE" == --help ]]; then
   echo 'Usage: ./scripts/init.sh [--configure-only]'
-  echo 'Default: check/install build tools, build if needed, configure secrets, offer model login and service installation.'
+  echo 'Default: check/install build tools, build if needed, configure Feishu secrets and a free model, offer service installation.'
   echo '--configure-only: configure local files only; no downloads, builds, model login, or service installation.'
   exit 0
 fi
@@ -84,20 +84,6 @@ build_if_needed() {
   echo '正在编译本机架构的桥接二进制（首次需要下载 crates）……'
   cargo build --locked --release
 }
-install_opencode() {
-  local asset digest
-  case "$(uname -m)" in
-    arm64) asset=opencode-darwin-arm64.zip; digest=0d5f511948d6fbfedf9bb16753c0ac42613dcc8de75d9deb7e8d0cf584c8fba6;;
-    x86_64) asset=opencode-darwin-x64-baseline.zip; digest=e96a33a56d1e1a8cfe33e49497a6d2069b63331bdfd02c4d215a22d3cbfc0601;;
-    *) echo '不支持的 Mac 架构。' >&2; exit 1;;
-  esac
-  curl --proto '=https' --tlsv1.2 -fL "https://github.com/anomalyco/opencode/releases/download/v1.19.0/$asset" -o "$TEMP_DIR/opencode.zip"
-  printf '%s  %s\n' "$digest" "$TEMP_DIR/opencode.zip" | /usr/bin/shasum -a 256 -c -
-  /usr/bin/ditto -xk "$TEMP_DIR/opencode.zip" "$TEMP_DIR/opencode"
-  mkdir -p "$ROOT/bin"
-  /usr/bin/install -m 700 "$TEMP_DIR/opencode/opencode" "$ROOT/bin/opencode-1.19.0"
-  OPENCODE_BIN="$ROOT/bin/opencode-1.19.0"
-}
 echo '李老师初始化向导：在目标 Mac mini 的最终安装目录运行。'
 if [[ "$MODE" != --configure-only ]]; then build_if_needed; fi
 WRITE_ENV=true
@@ -106,6 +92,11 @@ if [[ -e .env ]]; then
   if ! confirm '是否重新输入并替换现有 .env？选择 N 保留原配置'; then WRITE_ENV=false; fi
 fi
 if [[ "$WRITE_ENV" == true ]]; then
+  while :; do
+    ask '应用区域：feishu=国内飞书，lark=国际版' feishu; DOMAIN="$REPLY"
+    [[ "$DOMAIN" == feishu || "$DOMAIN" == lark ]] && break
+    echo '请输入 feishu 或 lark。'
+  done
   ask '飞书 App ID' cli_aa9b39cf2f789eef; APP_ID="$REPLY"
   while :; do secret '飞书 App Secret（隐藏输入）'; APP_SECRET="$REPLY"; [[ -n "$APP_SECRET" ]] && break; echo 'App Secret 不能为空。'; done
   while :; do
@@ -114,6 +105,8 @@ if [[ "$WRITE_ENV" == true ]]; then
     [[ "$ALLOWED" =~ ^ou_[a-zA-Z0-9_-]+(,ou_[a-zA-Z0-9_-]+)*$ ]] && break
     echo '请填写有效的 open_id 白名单，不能留空。'
   done
+  ask '限定工作群 chat_id（oc_ 开头，可留空）'; ALLOWED_CHAT="$REPLY"
+  [[ -z "$ALLOWED_CHAT" || "$ALLOWED_CHAT" =~ ^oc_[a-zA-Z0-9_-]+$ ]] || { echo '工作群 chat_id 格式错误。' >&2; exit 1; }
   secret 'OpenCode 本地服务密码（隐藏输入，回车自动生成）'; PASSWORD="$REPLY"
   if [[ -z "$PASSWORD" ]]; then PASSWORD="$(/usr/bin/openssl rand -hex 32)"; echo '已生成随机密码，将仅写入 .env。'; fi
   while :; do
@@ -124,30 +117,33 @@ if [[ "$WRITE_ENV" == true ]]; then
   WORKSPACE="$(cd -- "$WORKSPACE" && pwd -P)"
   [[ "$WORKSPACE" != "$ROOT" ]] || { echo '任务目录请与服务安装目录分开。' >&2; exit 1; }
   while :; do
-    ask 'OpenCode 模型 provider/model（可留空，使用 OpenCode 默认配置）'; MODEL="$REPLY"
-    [[ -z "$MODEL" || "$MODEL" == ?*/?* ]] && break; echo '格式应为 provider/model。'
+    ask 'OpenCode 免费模型 provider/model' opencode/glm-5.3-flash-free; MODEL="$REPLY"
+    [[ "$MODEL" == opencode/?* ]] && break; echo '请输入 opencode/免费模型ID。'
   done
   FOUND_OC="$(command -v opencode || true)"
-  if [[ -x "$ROOT/bin/opencode-1.19.0" ]]; then FOUND_OC="$ROOT/bin/opencode-1.19.0"; fi
-  ask 'OpenCode 1.19.0 可执行文件路径（留空可下载）' "$FOUND_OC"; OPENCODE_BIN="$REPLY"
-  if [[ "$MODE" != --configure-only ]]; then
-    if [[ -z "$OPENCODE_BIN" || ! -x "$OPENCODE_BIN" ]] || [[ "$("$OPENCODE_BIN" --version 2>/dev/null || true)" != 1.19.0 ]]; then
-      if confirm '未找到 OpenCode 1.19.0。是否下载并校验官方对应架构版本？'; then install_opencode;
-      else echo '请准备 OpenCode 1.19.0 后重试。' >&2; exit 1; fi
-    fi
-  fi
-  [[ -n "$OPENCODE_BIN" ]] || OPENCODE_BIN="$ROOT/bin/opencode-1.19.0"
+  if [[ -x "$HOME/.local/bin/opencode" ]]; then FOUND_OC="$HOME/.local/bin/opencode"; fi
+  while :; do
+    ask 'OpenCode V2.3.x 启动器绝对路径' "$FOUND_OC"; OPENCODE_BIN="$REPLY"
+    [[ -n "$OPENCODE_BIN" ]] || OPENCODE_BIN="$HOME/.local/bin/opencode"
+    if [[ "$MODE" == --configure-only ]]; then break; fi
+    if [[ -x "$OPENCODE_BIN" ]] && [[ "$("$OPENCODE_BIN" --version 2>/dev/null || true)" =~ (^|[[:space:]])v?2\.3\. ]]; then break; fi
+    echo '需要可运行的 OpenCode V2.3.x。macOS 12 请先准备兼容启动器；向导不会替换你的兼容内核，也不会安装 V1。'
+  done
   [[ "$OPENCODE_BIN" == /* ]] || { echo 'OpenCode 路径必须是绝对路径。' >&2; exit 1; }
   {
+    write_var FEISHU_DOMAIN "$DOMAIN"
     write_var FEISHU_APP_ID "$APP_ID"
     write_var FEISHU_APP_SECRET "$APP_SECRET"
     write_var FEISHU_ALLOWED_OPEN_IDS "$ALLOWED"
+    write_var FEISHU_ALLOWED_CHAT_IDS "$ALLOWED_CHAT"
     write_var OPENCODE_URL http://127.0.0.1:4096
     write_var OPENCODE_SERVER_USERNAME opencode
     write_var OPENCODE_SERVER_PASSWORD "$PASSWORD"
     write_var OPENCODE_BIN "$OPENCODE_BIN"
     write_var OPENCODE_MODEL "$MODEL"
     write_var OPENCODE_AGENT build
+    write_var MR_LI_FREE_ONLY true
+    write_var MR_LI_DIRECT_NETWORK true
     write_var MR_LI_WORKSPACE "$WORKSPACE"
     write_var MR_LI_DATA_DIR .data
     write_var MR_LI_TASK_TIMEOUT_SECONDS 1800
@@ -167,11 +163,7 @@ if [[ "$WRITE_ENV" == true ]]; then
 fi
 if [[ "$MODE" == --configure-only ]]; then echo '仅配置模式完成，未下载、编译、登录模型或安装服务。'; exit 0; fi
 "$ROOT/scripts/run.sh" check
-if [[ "$WRITE_ENV" == true ]]; then
-  if confirm '是否现在运行 OpenCode 模型认证向导（供应商 API Key / 登录）？'; then
-    (cd "$WORKSPACE" && "$OPENCODE_BIN" auth login)
-  fi
-else echo '保留配置时如需模型认证，请运行已配置的 OpenCode auth login。'; fi
+echo '使用 OpenCode 官方免费模型，无需模型 API Key；免费额度不足时不会切换付费模型。'
 echo '飞书后台还需启用机器人、消息权限和 im.message.receive_v1 长连接事件，并发布应用。'
 echo '配置完成。下面可安装守护服务，这会开始连接飞书。'
 ask '安装守护服务？输入 system=开机运行，user=登录后运行，none=暂不安装' none

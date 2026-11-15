@@ -4,6 +4,7 @@ use crate::{
     store::{Job, Store},
 };
 use anyhow::{Context, Result, bail, ensure};
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use prost::Message as ProstMessage;
 use serde_json::{Value, json};
@@ -128,7 +129,10 @@ impl Feishu {
         if token.0.is_empty() || Instant::now() >= token.1 {
             let r: Value = self
                 .http
-                .post("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal")
+                .post(format!(
+                    "{}/open-apis/auth/v3/tenant_access_token/internal",
+                    self.cfg.feishu_base_url
+                ))
                 .json(&json!({"app_id":self.cfg.app_id,"app_secret":self.cfg.app_secret}))
                 .send()
                 .await
@@ -154,7 +158,10 @@ impl Feishu {
     pub async fn identify(&self) -> Result<()> {
         let v: Value = self
             .http
-            .get("https://open.feishu.cn/open-apis/bot/v3/info")
+            .get(format!(
+                "{}/open-apis/bot/v3/info",
+                self.cfg.feishu_base_url
+            ))
             .bearer_auth(self.token().await?)
             .send()
             .await
@@ -174,6 +181,62 @@ impl Feishu {
         Ok(())
     }
     pub async fn reply(&self, message: &str, text: &str, uuid: &str, thread: bool) -> Result<()> {
+        self.reply_message(message, "text", json!({"text":text}), uuid, thread)
+            .await?;
+        Ok(())
+    }
+    pub async fn reply_card(
+        &self,
+        message: &str,
+        card: &Value,
+        uuid: &str,
+        thread: bool,
+    ) -> Result<String> {
+        let v = self
+            .reply_message(message, "interactive", card.clone(), uuid, thread)
+            .await?;
+        Ok(v["data"]["message_id"]
+            .as_str()
+            .context("卡片发送成功但未返回消息 ID")?
+            .into())
+    }
+    pub async fn update_card(&self, message: &str, card: &Value) -> Result<()> {
+        ensure!(
+            message.starts_with("om_")
+                && message
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "无效消息 ID"
+        );
+        let v: Value = self
+            .http
+            .patch(format!(
+                "{}/open-apis/im/v1/messages/{message}",
+                self.cfg.feishu_base_url
+            ))
+            .bearer_auth(self.token().await?)
+            .json(&json!({"content":card.to_string()}))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("卡片更新请求失败"))?
+            .error_for_status()?
+            .json()
+            .await?;
+        ensure!(
+            v["code"].as_i64() == Some(0),
+            "卡片更新错误码 {:?}",
+            v["code"]
+        );
+        Ok(())
+    }
+    async fn reply_message(
+        &self,
+        message: &str,
+        msg_type: &str,
+        content: Value,
+        uuid: &str,
+        thread: bool,
+    ) -> Result<Value> {
         // IDs originate from Feishu, but constrain path segments defensively.
         ensure!(
             message.starts_with("om_")
@@ -185,11 +248,11 @@ impl Feishu {
         let v: Value = self
             .http
             .post(format!(
-                "https://open.feishu.cn/open-apis/im/v1/messages/{message}/reply"
+                "{}/open-apis/im/v1/messages/{message}/reply",self.cfg.feishu_base_url
             ))
             .bearer_auth(self.token().await?)
             .json(
-                &json!({"msg_type":"text","content":json!({"text":text}).to_string(),"uuid":uuid,"reply_in_thread":thread}),
+                &json!({"msg_type":msg_type,"content":content.to_string(),"uuid":uuid,"reply_in_thread":thread}),
             )
             .send()
             .await
@@ -202,13 +265,24 @@ impl Feishu {
             self.token.lock().await.0.clear();
         }
         ensure!(code == Some(0), "飞书回复错误码 {:?}", code);
-        Ok(())
+        Ok(v)
     }
     pub async fn run(&self, store: Arc<Store>) -> Result<()> {
+        self.run_mode(store, None).await
+    }
+    pub async fn observe(&self, chat: &str, challenge: &str) -> Result<()> {
+        tracing::info!("身份识别模式：仅匹配指定会话和确认短语，不执行任务、不自动修改白名单");
+        self.run_mode(
+            Arc::new(Store::open(std::path::Path::new(":memory:"))?),
+            Some((chat, challenge)),
+        )
+        .await
+    }
+    async fn run_mode(&self, store: Arc<Store>, observe: Option<(&str, &str)>) -> Result<()> {
         let mut retry = 1u64;
         loop {
             let started = Instant::now();
-            if let Err(e) = self.connection(&store).await {
+            if let Err(e) = self.connection(&store, observe).await {
                 tracing::warn!(error=%e,"飞书连接断开，准备重连");
             }
             if started.elapsed() > Duration::from_secs(60) {
@@ -221,10 +295,10 @@ impl Feishu {
             retry = (retry * 2).min(60);
         }
     }
-    async fn connection(&self, store: &Store) -> Result<()> {
+    async fn connection(&self, store: &Store, observe: Option<(&str, &str)>) -> Result<()> {
         let r: Value = self
             .http
-            .post("https://open.feishu.cn/callback/ws/endpoint")
+            .post(format!("{}/callback/ws/endpoint", self.cfg.feishu_base_url))
             .json(&json!({"AppID":self.cfg.app_id,"AppSecret":self.cfg.app_secret}))
             .send()
             .await
@@ -277,16 +351,26 @@ impl Feishu {
                                     }
                                 continue;
                             }
-                            if f.method!=1 || f.header("type")!="event" { continue; }
+                            if f.method!=1 || !matches!(f.header("type"),"event"|"card") { continue; }
                             let Some(payload)=fragments.push(&f)? else { continue; };
                             let start=Instant::now();
-                            // Persist first, ACK immediately, execute on the independent worker.
-                            let result = serde_json::from_slice::<Value>(&payload).context("事件 JSON 无效")
-                                .and_then(|v| parse_job(&v,&self.cfg,&self.bot_id.try_lock().map(|s|s.clone()).unwrap_or_default())
-                                    .and_then(|j| j.map(|j| store.insert(&j)).transpose()).map(|_| ()));
-                            let code=if result.is_ok() {200} else {500};
-                            if let Err(e)=result { tracing::error!(error=%e,"飞书事件持久化失败"); }
-                            f.payload=Some(json!({"code":code}).to_string().into_bytes());
+                            // Only local persistence happens before ACK; HTTP work runs on the worker.
+                            let mut callback=false;
+                            let result=serde_json::from_slice::<Value>(&payload).context("事件 JSON 无效").and_then(|v| {
+                                callback=v["header"]["event_type"]=="card.action.trigger";
+                                if let Some((chat,challenge))=observe {
+                                    if let Some(id)=observed_sender(&v,chat,challenge){tracing::info!(open_id=id,"已匹配身份确认消息；没有执行任务");}
+                                }else if callback {
+                                    let job=parse_model_action(&v,&self.cfg,store)?.context("卡片已失效，或你没有操作权限。请重新打开模型选择")?;
+                                    store.insert(&job)?;
+                                }else if let Some(job)=parse_job(&v,&self.cfg,&self.bot_id.try_lock().map(|s|s.clone()).unwrap_or_default())? {
+                                    store.insert(&job)?;
+                                }
+                                Ok(())
+                            });
+                            let ack=event_response(&result,callback);
+                            if let Err(e)=result {tracing::warn!(error=%e,"消息或卡片操作处理失败");}
+                            f.payload=Some(ack.to_string().into_bytes());
                             f.headers.push(Header{key:"biz_rt".into(),value:start.elapsed().as_millis().to_string()});
                             ws.send(Message::Binary(f.encode_to_vec().into())).await.map_err(|_|anyhow::anyhow!("飞书 ACK 发送失败"))?;
                         },
@@ -304,12 +388,107 @@ impl Feishu {
         }
     }
 }
+fn event_response(result: &Result<()>, callback: bool) -> Value {
+    if callback {
+        let (kind, text) = match result {
+            Ok(()) => ("info", "已收到，正在切换模型"),
+            Err(_) => ("error", "卡片已失效或无操作权限，请重新打开模型选择"),
+        };
+        let response = json!({"toast":{"type":kind,"content":text}}).to_string();
+        json!({"code":200,"data":base64::engine::general_purpose::STANDARD.encode(response.as_bytes())})
+    } else {
+        json!({"code":if result.is_ok(){200}else{500}})
+    }
+}
+fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<Job>> {
+    if v["header"]["event_type"] != "card.action.trigger" {
+        return Ok(None);
+    }
+    let e = &v["event"];
+    let owner = e["operator"]["open_id"].as_str().unwrap_or("");
+    let chat = e["context"]["open_chat_id"].as_str().unwrap_or("");
+    let message = e["context"]["open_message_id"].as_str().unwrap_or("");
+    if !cfg.allowed.iter().any(|id| id == owner)
+        || (!cfg.allowed_chats.is_empty() && !cfg.allowed_chats.iter().any(|id| id == chat))
+    {
+        return Ok(None);
+    }
+    let a = &e["action"];
+    if a["tag"] != "select_static" || a["value"]["action"] != "select_model" {
+        return Ok(None);
+    }
+    let token = a["value"]["token"].as_str().context("卡片缺少标识")?;
+    let Some(card) = store.model_card(token)? else {
+        return Ok(None);
+    };
+    let key: Value = serde_json::from_str(&card.origin_key)?;
+    if key[0] != cfg.workspace.to_string_lossy().as_ref()
+        || key[1] != owner
+        || key[2] != chat
+        || card.message_id != message
+    {
+        return Ok(None);
+    }
+    let model = a["option"].as_str().context("请选择模型")?;
+    ensure!(
+        model.len() <= 200
+            && model.starts_with("opencode/")
+            && model
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)),
+        "模型选项无效"
+    );
+    let event_id = v["header"]["event_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .context("回调缺少事件 ID")?;
+    Ok(Some(Job {
+        id: format!("card:{event_id}"),
+        key: card.origin_key,
+        message_id: message.into(),
+        text: format!("/_model-select {token} {model}"),
+        result: String::new(),
+        sent: 0,
+    }))
+}
+fn observed_sender<'a>(v: &'a Value, chat: &str, challenge: &str) -> Option<&'a str> {
+    if v["header"]["event_type"] != "im.message.receive_v1"
+        || v["event"]["sender"]["sender_type"] != "user"
+    {
+        return None;
+    }
+    let message = &v["event"]["message"];
+    if message["message_type"] != "text" {
+        return None;
+    }
+    if chat == "p2p" {
+        if message["chat_type"] != "p2p" {
+            return None;
+        }
+    } else if message["chat_id"] != chat {
+        return None;
+    }
+    let content: Value = serde_json::from_str(message["content"].as_str()?).ok()?;
+    if !content["text"].as_str()?.contains(challenge) {
+        return None;
+    }
+    v["event"]["sender"]["sender_id"]["open_id"]
+        .as_str()
+        .filter(|id| id.starts_with("ou_"))
+}
 pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
     if v["header"]["event_type"] != "im.message.receive_v1" {
         return Ok(None);
     }
     let e = &v["event"];
     let m = &e["message"];
+    if !c.allowed_chats.is_empty()
+        && !m["chat_id"]
+            .as_str()
+            .is_some_and(|id| c.allowed_chats.iter().any(|allowed| allowed == id))
+    {
+        return Ok(None);
+    }
     let sender = e["sender"]["sender_id"]["open_id"].as_str().unwrap_or("");
     if e["sender"]["sender_type"] != "user" || !c.allowed.iter().any(|s| s == sender) {
         return Ok(None);
@@ -333,7 +512,11 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
             }
         }
     }
-    let text = text.trim().to_string();
+    let text = match text.trim() {
+        "切换模型" | "选择模型" | "模型列表" => "/models",
+        other => other,
+    }
+    .to_string();
     if text.is_empty() {
         return Ok(None);
     }
@@ -365,6 +548,62 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn card_callbacks_bind_owner_chat_message_and_are_deduplicated() -> Result<()> {
+        let mut cfg = Config::fixture();
+        cfg.allowed.push("ou_other".into());
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        store.register_model_card("nonce", &key)?;
+        store.attach_model_card("nonce", "om_card")?;
+        let mut v = json!({"header":{"event_type":"card.action.trigger","event_id":"evt1"},"event":{
+            "operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_card"},
+            "action":{"tag":"select_static","option":"opencode/free","value":{"action":"select_model","token":"nonce"}}}});
+        let job = parse_model_action(&v, &cfg, &store)?.unwrap();
+        assert_eq!(job.key, key);
+        assert!(store.insert(&job)?);
+        assert!(!store.insert(&job)?);
+        for (field, value) in [
+            ("open_chat_id", "oc_forwarded"),
+            ("open_message_id", "om_copied"),
+        ] {
+            let old = v["event"]["context"][field].clone();
+            v["event"]["context"][field] = json!(value);
+            assert!(parse_model_action(&v, &cfg, &store)?.is_none());
+            v["event"]["context"][field] = old;
+        }
+        v["event"]["operator"]["open_id"] = json!("ou_other");
+        assert!(parse_model_action(&v, &cfg, &store)?.is_none());
+        let ack = event_response(&Ok(()), true);
+        let bytes =
+            base64::engine::general_purpose::STANDARD.decode(ack["data"].as_str().unwrap())?;
+        assert_eq!(
+            serde_json::from_slice::<Value>(&bytes)?["toast"]["type"],
+            "info"
+        );
+        assert_eq!(
+            event_response(&Err(anyhow::anyhow!("error")), false)["code"],
+            500
+        );
+        Ok(())
+    }
+    #[test]
+    fn enrollment_requires_chat_and_challenge() {
+        let v = json!({"header":{"event_type":"im.message.receive_v1"},"event":{
+            "sender":{"sender_type":"user","sender_id":{"open_id":"ou_owner"}},
+            "message":{"message_type":"text","chat_type":"group","chat_id":"oc_expected",
+                "content":json!({"text":"初始化 challenge-1234"}).to_string()}}});
+        assert_eq!(
+            observed_sender(&v, "oc_expected", "challenge-1234"),
+            Some("ou_owner")
+        );
+        assert_eq!(observed_sender(&v, "oc_other", "challenge-1234"), None);
+        assert_eq!(observed_sender(&v, "oc_expected", "wrong-challenge"), None);
+        assert_eq!(observed_sender(&v, "p2p", "challenge-1234"), None);
+        let mut cfg = Config::fixture();
+        cfg.allowed_chats = vec!["oc_other".into()];
+        assert!(parse_job(&v, &cfg, "ou_bot").unwrap().is_none());
+    }
     #[test]
     fn sender_mention_and_thread_isolation() -> Result<()> {
         let cfg = Config::fixture();

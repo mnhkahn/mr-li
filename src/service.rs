@@ -7,9 +7,13 @@ pub fn opencode(cfg: &Config) -> Result<()> {
         .arg("--version")
         .output()
         .context("找不到 OpenCode，请配置 OPENCODE_BIN")?;
+    let version = String::from_utf8_lossy(&v.stdout);
     ensure!(
-        v.status.success() && String::from_utf8_lossy(&v.stdout).trim() == "1.19.0",
-        "需要 OpenCode 1.19.0"
+        v.status.success()
+            && version
+                .split_whitespace()
+                .any(|part| part.trim_start_matches('v').starts_with("2.3.")),
+        "需要 OpenCode V2.3.x；macOS 12 请使用现有兼容启动器，不要换成官方不兼容的内核"
     );
     let url = reqwest::Url::parse(&cfg.opencode_url)?;
     let mut cmd = Command::new(&cfg.opencode_bin);
@@ -25,8 +29,25 @@ pub fn opencode(cfg: &Config) -> Result<()> {
     .env("OPENCODE_SERVER_USERNAME", &cfg.username)
     .env_remove("FEISHU_APP_SECRET")
     .env_remove("FEISHU_ALLOWED_OPEN_IDS");
+    configure_network(&mut cmd, cfg.direct_network);
     Err(cmd.exec()).context("无法启动 OpenCode")
 }
+fn configure_network(cmd: &mut Command, direct: bool) {
+    if direct {
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            cmd.env_remove(key);
+        }
+        cmd.env("NO_PROXY", "*").env("no_proxy", "*");
+    }
+}
+
 fn restart(domain: &str, name: &str) -> Result<()> {
     ensure!(
         matches!(domain, "system") || domain.starts_with("gui/"),
@@ -70,4 +91,37 @@ pub async fn watchdog(cfg: Arc<Config>, oc: &OpenCode, domain: &str) -> Result<(
         restart(domain, "bridge")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn direct_mode_clears_inherited_proxies_without_global_changes() {
+        let mut cmd = Command::new("opencode");
+        configure_network(&mut cmd, true);
+        let vars = cmd
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for key in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            assert_eq!(vars.get(key), Some(&None));
+        }
+        assert_eq!(vars.get("NO_PROXY"), Some(&Some("*".into())));
+        let mut untouched = Command::new("opencode");
+        configure_network(&mut untouched, false);
+        assert_eq!(untouched.get_envs().count(), 0);
+    }
 }

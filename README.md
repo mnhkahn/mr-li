@@ -17,20 +17,24 @@ flowchart LR
 
 OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交任务、中止任务和处理权限/提问。桥接层用 `reqwest` 直接调用这些接口，无需额外的 JS SDK、Node、ACP JSON-RPC 客户端或终端模拟。ACP 更适合将来需要兼容多种 Agent/编辑器的场景；目前只接 OpenCode，HTTP 更直接。`opencode run --format json` 也可做一次性调用，但长期桥接还需要自行处理子进程、会话、授权和提问，因此当前选择常驻 HTTP 服务。
 
-**本版明确适配 OpenCode 1.19.0（V1 API）**。OpenCode 最新文档已进入 V2，接口发生变化；服务会拒绝不匹配的版本，避免升级后静默失败。这里的 V1 指 OpenCode 的产品/API 代际。
+**本版只接入 OpenCode V2.3.x，已验证 macOS 12 兼容版 2.3.0**。使用 `/api/info`、`/api/model`、`/api/session` 等 V2 接口，不再运行独立的 V1。macOS 12 必须保留可运行的兼容启动器及其底层包，不能用普通官方二进制覆盖。
 
-参考：[V1 Server](https://opencode.ai/v1/docs/server/)、[V1 SDK](https://opencode.ai/v1/docs/sdk/)、[当前 V2 API](https://opencode.ai/docs/api)、[飞书官方长连接实现](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py)。
+参考：[V2 API](https://opencode.ai/docs/api)、[飞书官方长连接实现](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py)。
 
 ## 当前支持
 
 - 飞书企业自建应用 WebSocket：发现地址、Protobuf 帧、心跳、分片重组、ACK、断线退避重连；不需要公网端口。
 - 应用 ID 默认 `cli_aa9b39cf2f789eef`，Secret 从部署机的 `.env` 读取。
-- 用户 open_id 白名单；私聊直接接收，群聊必须 @当前机器人；过滤机器人消息。当前只处理文字，图片、文件、音频和卡片交互尚未接入。
+- 支持飞书和 Lark 国际版（`FEISHU_DOMAIN=feishu` / `lark`）；可通过 `FEISHU_ALLOWED_CHAT_IDS` 限定群 ID。
+- 用户 open_id 白名单；私聊直接接收，群聊必须 @当前机器人；过滤机器人消息。支持文字消息和模型选择卡片；图片、文件和音频尚未接入。
 - 私聊按用户和聊天保留会话；群聊再按话题根消息隔离。不同用户不共享 OpenCode 会话，但共用配置的工作目录和文件。
 - 默认全局只执行 **1 个模型任务**，其他消息进持久队列（上限 500）；指令和授权回复仍可处理。单线程 Tokio，避免为桥接创建大量工作线程。
 - 消息先落 SQLite 再 ACK；按 message_id 去重（完成记录保留 30 天）。回复分片并记录进度，失败指数退避重试；UUID 减少飞书重试产生的重复回复。跨平台/跨进程不承诺端到端 exactly-once。
 - 重启保留会话、未执行任务和结果发件箱；执行中的任务先请求中止并提示，不自动重跑。操作可能已发生，用户检查后再决定是否重发。
+- `/models` 或“切换模型”打开交互卡片：下拉点选免费模型，按用户与聊天保存选择，跨话题及重启保留；不改变正在执行的任务。卡片只允许发起者在原聊天操作，回调幂等处理。
 - `/approve` 只批准一次，并核对请求是否属于当前用户/聊天/话题对应的会话。不会自动批准所有工具。
+- OpenCode 默认使用独立直连进程：清除该进程继承的大小写 HTTP/HTTPS/ALL_PROXY，设置 NO_PROXY=*；不修改系统代理。`MR_LI_DIRECT_NETWORK=false` 可显式恢复继承网络环境。桥接访问本机 OpenCode API 始终不走代理。
+- 上游 429 只表示免费请求被限流或拒绝，不能直接当成账号额度耗尽；代理出口和不兼容的内核也可能触发拒绝。
 - 任务默认 30 分钟超时并请求中止；同一数据目录只允许一个桥接进程。
 - `launchd` 分别保护两个进程，退出后自动重启；独立 watchdog 检测 OpenCode HTTP 失联和桥接心跳停滞。
 
@@ -54,7 +58,7 @@ cargo clippy --locked --all-targets -- -D warnings
 python3 scripts/smoke-opencode.py /absolute/path/to/opencode
 ```
 
-这个检查使用临时 HOME/XDG 和工作目录，不连接飞书、不提交模型任务、不触碰日常 OpenCode 会话。它验证真实 1.19.0 的健康、鉴权、会话、权限/提问列表和配置接口；模型执行仍需部署机联调。
+这个检查保留兼容启动器所需的 HOME，使用临时 XDG、数据库和工作目录，不连接飞书、不提交模型任务、不触碰日常 OpenCode 会话。它验证真实 V2 的健康、鉴权、会话、权限/表单和配置接口。
 
 ## Mac mini 首次部署
 
@@ -72,9 +76,9 @@ cd ~/Services/mr-li
 
 - 检查本机架构。有可用二进制就跳过编译环境；源码部署时检查 Apple Command Line Tools 和 Rust 1.88+，询问是否安装缺少的工具，再执行 `cargo build --locked --release`。Command Line Tools 的系统窗口安装完成后需重新运行向导。
 - 隐藏输入飞书 App Secret；输入允许的用户 open_id、工作目录和模型名称；本地 OpenCode 服务密码可隐藏输入，也可回车生成随机密码。
-- 检查 OpenCode 1.19.0，缺失或版本不符时可下载官方对应架构版本并校验固定 SHA-256。下载到服务目录的 `bin/`，不替换系统中的其他版本。
+- 检查 OpenCode V2.3.x 启动器路径。macOS 12 请选择已安装并验证过的兼容启动器；不自动下载替换内核，不安装 V1。
 - 生成权限为 600 的 `.env`，创建工作目录；已有 `.env` 默认保留，已有工作目录 OpenCode 配置也保留。
-- 可运行 `opencode auth login` 原生模型认证向导，输入供应商 API Key 或登录。模型凭证由 OpenCode 管理，不写入桥接 `.env`。
+- 默认使用 OpenCode 官方免费模型，任务前检查模型的输入和输出价格为零；免费额度不足或模型下线时返回错误，不自动切到付费模型。会话只提交到所选免费模型，使用显式会话标题，无需迁移开发机的账号配置。
 - 最后选择开机运行、登录后运行或暂不安装服务。选择安装才会启动实际服务。
 
 如只想填写配置，不下载、不编译、不认证或启动服务：
@@ -83,9 +87,9 @@ cd ~/Services/mr-li
 ./scripts/init.sh --configure-only
 ```
 
-也可以手动准备：复制 `.env.example` 为 `.env`，按注释填写，并将 `opencode.example.json` 复制到任务工作目录。OpenCode 可从官方 [1.19.0 发布资源](https://github.com/anomalyco/opencode/releases/tag/v1.19.0)安装；[Rust 安装说明](https://rust-lang.org/install)提供 rustup 的官方流程。
+也可以手动准备：复制 `.env.example` 为 `.env`，按注释填写，并将 `opencode.example.json` 复制到任务工作目录。OpenCode V2 的安装请参见[官方文档](https://opencode.ai/docs/)，macOS 12 需额外准备兼容包；[Rust 安装说明](https://rust-lang.org/install)提供 rustup 的官方流程。
 
-示例 OpenCode 权限允许常规读取和提问，其他工具请求授权。可按实际需求在工作目录 `opencode.json` 中调整；配置使用 1.19.0 的 `permission` 字段。`question: allow` 使 Agent 能发起提问，答案仍由用户在飞书提供。
+示例 OpenCode 权限允许常规读取和提问，其他工具请求授权。可按实际需求在工作目录 `opencode.json` 中调整；配置使用 V2 的 `permissions` 规则数组和 `action/resource/effect` 字段。`question` 的 `allow` 规则 使 Agent 能发起提问，答案仍由用户在飞书提供。
 
 `MR_LI_WORKSPACE` 指向 Agent 的任务目录；请与服务安装目录分开。`.env` 使用 dotenv 语法，路径含空格时用引号；不要用 shell 表达式、`~` 或 `$HOME`，填写绝对路径。环境变量优先于 `.env`。
 
@@ -94,6 +98,7 @@ cd ~/Services/mr-li
    - 启用机器人能力，配置应用可用范围。
    - 开通接收单聊消息 `im:message.p2p_msg:readonly`、接收群聊 @机器人消息 `im:message.group_at_msg:readonly`、以应用发送消息 `im:message:send_as_bot` 权限。
    - 事件与回调选择**使用长连接接收事件**，订阅 `im.message.receive_v1`，并发布生效版本。
+   - 在独立的“回调配置”页选择**使用长连接接收回调**，订阅新版 `card.action.trigger`，用于模型选择卡片；不要选择旧版 `_v1`。消息事件订阅与卡片回调订阅需要分别配置。
    - 白名单填用户在这个应用下的 `open_id`（`ou_...`），不是 user_id、union_id 或邮箱。可以通过飞书 API 调试台查询。
    - 同一应用不要在多台机器同时运行此桥接；飞书多连接会分配事件，而不是广播全部消息。
 
@@ -121,7 +126,7 @@ sudo ./scripts/service.sh restart system
 sudo ./scripts/service.sh uninstall system
 ```
 
-请从**实际部署用户**运行 sudo。桥接与 OpenCode 通过 LaunchDaemon 的 `UserName` 以这个用户运行，使用其 HOME 和模型认证，不以 root 执行 Agent。仅系统 watchdog 的固定包装脚本安装为 root 所有；它始终先降权再检查用户服务，再以 root 请求 launchd 重启。
+请从**实际部署用户**运行 sudo。桥接与 OpenCode 通过 LaunchDaemon 的 `UserName` 以这个用户运行，使用其 HOME，不以 root 执行 Agent。仅系统 watchdog 的固定包装脚本安装为 root 所有；它始终先降权再检查用户服务，再以 root 请求 launchd 重启。
 
 不需要登录前运行时，可以用用户模式，**无需 sudo**：
 
@@ -144,15 +149,26 @@ sudo ./scripts/service.sh uninstall system
 |---|---|
 | 普通文字 | 在当前会话执行任务，忙时排队 |
 | `/help` | 帮助 |
-| `/status` | 当前会话、执行和排队状态 |
+| `/models`、`/model` 或“切换模型” | 打开免费模型下拉卡片，点选即切换 |
+| `/status` | 当前会话、模型、执行和排队状态 |
 | `/new` | 下条消息新建会话；旧会话保留。忙时先 `/stop` |
 | `/stop` | 请求中止当前会话，取消它的排队任务 |
 | `/approve <ID>` | 本次批准权限请求 |
 | `/deny <ID>` | 拒绝权限请求或提问 |
 | `/answer <ID> [["答案1"],["答案2"]]` | 按问题顺序提供二维字符串数组；多选放在同一个内层数组 |
 
-群聊中，指令也需要 @李老师，并在发起任务的同一话题回复。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片、附件收发或过程工具日志展示。
+群聊中，文字指令需要 @李老师。模型选择在你当前聊天的所有话题中生效；`/stop`、权限回复等会话操作请在发起任务的同一话题发送。卡片点选无需再 @机器人，卡片 30 分钟有效，转发后不可操作。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片、附件收发或过程工具日志展示。
 
 ## 联调状态
 
-本地测试不能替代目标机验证。交付包含单元测试、真实 OpenCode API 冒烟脚本和可构建部署包；尚未使用真实 App Secret 连接飞书，也未在目标 Mac mini 安装、重启或断网测试。部署后应确认文字往返、连续上下文、群 @过滤、授权/提问、停止和系统重启恢复。
+2026-11-15 已在 Intel Mac mini（macOS 12.7.6）安装用户 LaunchAgent，验证 Lark 国际版长连接、群内 `/help` 往返、模型卡片展开/点选/原卡更新、选择持久保存及进程退出后的自动重启。执行模型限于 OpenCode 官方免费模型，没有保留开发机模型账号。已定位并修复 V1 接入与原生 V2 后台继承代理导致的 429 差异，兼容版 V2 直连的 CLI 和 HTTP 均成功返回免费模型文本，已部署的桥接专用服务也通过 MiMo 免费模型实测。群聊普通任务已完成端到端验收：MiMo 返回文本与飞书实收一致，任务状态 done、成功回发一次。整机重启及系统 LaunchDaemon 模式尚未在目标机验证。
+
+首次部署不知道用户 open_id 时，可用只读身份识别模式：
+
+```bash
+./scripts/run.sh enroll oc_目标群ID 一次性确认短语123
+```
+
+让目标用户在该群发送包含这段短语的文字。此模式最长运行 10 分钟，只输出匹配消息的用户 open_id，不执行任务、不自动添加白名单；识别后将 ID 写入 `FEISHU_ALLOWED_OPEN_IDS` 并停止该进程，再启动正式服务。若要从私聊识别，把群 ID 改为 `p2p`。
+
+V1 升级到 V2 时，旧会话映射会一次性归档到本地 `legacy_sessions` 表，新的任务创建 V2 会话。用户与聊天的模型选择、卡片和任务记录保留；不把 V1 的会话 ID 直接当作 V2 会话继续执行。

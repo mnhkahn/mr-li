@@ -4,7 +4,9 @@ use std::{env, path::PathBuf, time::Duration};
 pub struct Config {
     pub app_id: String,
     pub app_secret: String,
+    pub feishu_base_url: String,
     pub allowed: Vec<String>,
+    pub allowed_chats: Vec<String>,
     pub opencode_url: String,
     pub password: String,
     pub username: String,
@@ -14,9 +16,11 @@ pub struct Config {
     pub agent: String,
     pub task_timeout: Duration,
     pub opencode_bin: String,
+    pub free_only: bool,
+    pub direct_network: bool,
 }
 impl Config {
-    pub fn load() -> Result<Self> {
+    pub fn load(enrollment: bool) -> Result<Self> {
         let env_path = env::var("MR_LI_ENV").unwrap_or_else(|_| ".env".into());
         let values = if std::path::Path::new(&env_path).exists() {
             dotenvy::from_path_iter(&env_path)
@@ -38,10 +42,16 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
             .collect();
-        if allowed.is_empty() {
+        if allowed.is_empty() && !enrollment {
             bail!("请配置 FEISHU_ALLOWED_OPEN_IDS（逗号分隔的用户 open_id）");
         }
         let app_secret = get("FEISHU_APP_SECRET", "");
+        let feishu_base_url = match get("FEISHU_DOMAIN", "feishu").as_str() {
+            "feishu" => "https://open.feishu.cn",
+            "lark" => "https://open.larksuite.com",
+            _ => bail!("FEISHU_DOMAIN 仅支持 feishu 或 lark"),
+        }
+        .to_string();
         let password = get("OPENCODE_SERVER_PASSWORD", "");
         if app_secret.is_empty() || password.is_empty() {
             bail!("密钥不能为空");
@@ -65,7 +75,9 @@ impl Config {
         if timeout < 10 {
             bail!("任务超时至少为 10 秒");
         }
-        let model = Some(get("OPENCODE_MODEL", "")).filter(|s| !s.is_empty());
+        let model = Some(get("OPENCODE_MODEL", "opencode/glm-5.3-flash-free"))
+            .filter(|s| !s.is_empty())
+            .or_else(|| Some("opencode/glm-5.3-flash-free".into()));
         if let Some(m) = &model {
             anyhow::ensure!(
                 m.split_once('/').is_some(),
@@ -75,7 +87,14 @@ impl Config {
         Ok(Self {
             app_id: get("FEISHU_APP_ID", "cli_aa9b39cf2f789eef"),
             app_secret,
+            feishu_base_url,
             allowed,
+            allowed_chats: get("FEISHU_ALLOWED_CHAT_IDS", "")
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
             opencode_url: opencode_url.trim_end_matches('/').into(),
             password,
             username: get("OPENCODE_SERVER_USERNAME", "opencode"),
@@ -85,6 +104,16 @@ impl Config {
             agent: get("OPENCODE_AGENT", "build"),
             task_timeout: Duration::from_secs(timeout),
             opencode_bin: get("OPENCODE_BIN", "opencode"),
+            free_only: match get("MR_LI_FREE_ONLY", "true").as_str() {
+                "true" => true,
+                "false" => false,
+                _ => bail!("MR_LI_FREE_ONLY 必须是 true 或 false"),
+            },
+            direct_network: match get("MR_LI_DIRECT_NETWORK", "true").as_str() {
+                "true" => true,
+                "false" => false,
+                _ => bail!("MR_LI_DIRECT_NETWORK 必须是 true 或 false"),
+            },
         })
     }
 }
@@ -95,7 +124,9 @@ impl Config {
         Self {
             app_id: "app".into(),
             app_secret: "test-only".into(),
+            feishu_base_url: "https://open.feishu.cn".into(),
             allowed: vec!["ou_owner".into()],
+            allowed_chats: vec![],
             opencode_url: "http://127.0.0.1:4096".into(),
             password: "test-only".into(),
             username: "opencode".into(),
@@ -105,6 +136,8 @@ impl Config {
             agent: "build".into(),
             task_timeout: Duration::from_secs(30),
             opencode_bin: "opencode".into(),
+            free_only: true,
+            direct_network: true,
         }
     }
 }

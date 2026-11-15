@@ -9,7 +9,7 @@ PLATFORM="$(uname -s)-$(uname -m)"
 DEST="$ROOT/dist/mr-li-$PLATFORM"
 mkdir -p "$DEST/bin" "$DEST/scripts"
 cp target/release/mr-li "$DEST/bin/"
-cp scripts/init.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh "$DEST/scripts/"
+cp scripts/init.sh scripts/init-camera.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh "$DEST/scripts/"
 cp README.md .env.example opencode.example.json "$DEST/"
 chmod +x "$DEST/bin/mr-li" "$DEST/scripts/"*.sh
 COPYFILE_DISABLE=1 tar -czf "$ROOT/dist/mr-li-$PLATFORM.tar.gz" -C "$ROOT/dist" "mr-li-$PLATFORM"

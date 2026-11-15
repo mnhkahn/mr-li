@@ -1,4 +1,5 @@
 use crate::{
+    camera,
     config::Config,
     feishu::Feishu,
     models,
@@ -16,7 +17,7 @@ pub struct Bridge {
     pub feishu: Arc<Feishu>,
     pub oc: Arc<OpenCode>,
 }
-const HELP: &str = "我是李老师。直接发文字即可执行任务。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+const HELP: &str = "我是李老师。直接发文字即可执行任务。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
 fn in_thread(j: &Job) -> bool {
     serde_json::from_str::<Value>(&j.key)
         .ok()
@@ -41,6 +42,44 @@ pub fn chunks(text: &str) -> Vec<String> {
     result
 }
 impl Bridge {
+    async fn start_processing(&self, j: &Job) {
+        match tokio::time::timeout(
+            Duration::from_secs(8),
+            self.feishu.add_processing_reaction(&j.message_id),
+        )
+        .await
+        {
+            Ok(Ok(id)) => {
+                if let Err(e) = self.store.save_processing_reaction(j, &id) {
+                    tracing::warn!(error=%e,"保存处理表情失败");
+                    let _ = self
+                        .feishu
+                        .remove_processing_reaction(&j.message_id, &id)
+                        .await;
+                }
+            }
+            Ok(Err(e)) => tracing::warn!(error=%e,"添加处理表情失败，继续任务"),
+            Err(_) => tracing::warn!("添加处理表情超时，继续任务"),
+        }
+    }
+    async fn clear_completed_reactions(&self) -> Result<()> {
+        for r in self.store.completed_reactions()? {
+            match tokio::time::timeout(
+                Duration::from_secs(8),
+                self.feishu
+                    .remove_processing_reaction(&r.message_id, &r.reaction_id),
+            )
+            .await
+            {
+                Ok(Ok(())) => self.store.processing_reaction_removed(&r.job_id)?,
+                _ => {
+                    self.store.retry_reaction_cleanup(&r.job_id)?;
+                    tracing::warn!(job=%r.job_id,"撤除处理表情失败，将重试");
+                }
+            }
+        }
+        Ok(())
+    }
     fn selected_model(&self, key: &str) -> Result<String> {
         Ok(self
             .store
@@ -50,16 +89,37 @@ impl Bridge {
     }
     pub async fn recover(&self) -> Result<()> {
         for j in self.store.jobs("running")? {
-            if let Some(sid) = self.store.session(&j.key)? {
+            if !camera::is_capture(&j.text)
+                && let Some(sid) = self.store.session(&j.key)?
+            {
                 self.oc.abort(&sid).await?;
             }
             self.store.finish(&j.id,"服务曾中断，已请求停止当时的任务。为避免重复副作用，没有自动重跑；请检查结果后重新发送任务。")?;
         }
         Ok(())
     }
+    async fn capture_camera(&self, j: &Job) -> Result<()> {
+        self.start_processing(j).await;
+        let media = camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?;
+        let video = media.cover.is_some();
+        let key = self
+            .feishu
+            .upload_camera_media(&media.path, video, media.duration_ms)
+            .await?;
+        let payload = if let Some(cover) = &media.cover {
+            let image_key = self.feishu.upload_camera_media(cover, false, 0).await?;
+            json!({"msg_type":"media", "content":{"file_key":key,"image_key":image_key}})
+        } else {
+            json!({"msg_type":"image", "content":{"image_key":key}})
+        };
+        // Persist uploaded keys before attempting delivery; retries never recapture video.
+        self.store.finish_output(&j.id, "camera_media", &payload)?;
+        Ok(())
+    }
     async fn execute(&self, j: &Job) -> Result<()> {
         // Freeze the choice when execution starts; later card clicks affect queued work only.
         let model = self.selected_model(&j.key)?;
+        self.start_processing(j).await;
         let sid = if let Some(sid) = self.store.session(&j.key)? {
             // A missing session must not silently discard the conversation history.
             self.oc
@@ -121,7 +181,7 @@ impl Bridge {
                     self.oc.abort(&sid).await?;
                 }
                 for q in self.store.jobs("queued")? {
-                    if q.key == j.key && !is_command(&q) {
+                    if q.key == j.key && (!is_command(&q) || camera::is_capture(&q.text)) {
                         self.store.finish(&q.id, "任务已由 /stop 取消。")?;
                     }
                 }
@@ -281,6 +341,27 @@ impl Bridge {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
             let kind = self.store.output_kind(&j.id)?;
+            if kind == "camera_media" {
+                if j.sent == 0 {
+                    let payload: Value = serde_json::from_str(&j.result)?;
+                    let uuid = uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        format!("result:{}:camera", j.id).as_bytes(),
+                    )
+                    .to_string();
+                    if let Err(e) = self
+                        .feishu
+                        .reply_camera_media(&j.message_id, &payload, &uuid, in_thread(j))
+                        .await
+                    {
+                        self.store.retry_delivery(&j.id)?;
+                        return Err(e);
+                    }
+                    self.store.sent(&j.id, 1)?;
+                }
+                self.store.status(&j.id, "done")?;
+                return Ok(());
+            }
             if kind == "model_card" || kind == "model_card_update" {
                 let mut payload: Value = serde_json::from_str(&j.result)?;
                 let current = self.selected_model(&j.key)?;
@@ -340,6 +421,7 @@ impl Bridge {
     pub async fn run(self: Arc<Self>) -> Result<()> {
         self.recover().await?;
         let mut active: Option<(Job, JoinHandle<Result<()>>)> = None;
+        let mut camera_active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut seen = HashSet::new();
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         let mut count = 0u64;
@@ -371,9 +453,39 @@ impl Bridge {
                 }
                 seen.clear();
             }
+            if camera_active.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+                let (j, h) = camera_active.take().unwrap();
+                if let Err(e) = h.await.context("摄像头执行器异常退出").and_then(|r| r) {
+                    tracing::warn!(error=%e, "摄像头任务失败");
+                    self.store.finish(&j.id, &format!("摄像头操作失败：{e}"))?;
+                }
+            }
             let queued = self.store.jobs("queued")?;
+            if camera_active.is_none()
+                && let Some(j) = queued.iter().find(|j| camera::is_capture(&j.text))
+            {
+                self.store.status(&j.id, "running")?;
+                let b = self.clone();
+                let job = j.clone();
+                camera_active = Some((
+                    j.clone(),
+                    tokio::spawn(async move { b.capture_camera(&job).await }),
+                ));
+            }
             // Commands stay responsive while the sole model task waits for an approval.
-            for j in queued.iter().filter(|j| is_command(j)).take(1) {
+            for j in queued
+                .iter()
+                .filter(|j| is_command(j) && !camera::is_capture(&j.text))
+                .take(1)
+            {
+                if j.text.split_whitespace().next() == Some("/stop")
+                    && camera_active.as_ref().is_some_and(|(c, _)| c.key == j.key)
+                {
+                    let (c, h) = camera_active.take().unwrap();
+                    h.abort();
+                    let _ = h.await;
+                    self.store.finish(&c.id, "摄像头任务已停止。")?;
+                }
                 self.store.status(&j.id, "running")?;
                 if let Err(e) = self
                     .handle_command(j, active.as_ref().map(|(j, _)| j))
@@ -403,6 +515,9 @@ impl Bridge {
             }
             if let Err(e) = self.deliver().await {
                 tracing::warn!(error=%e,"飞书结果暂未送达，将重试");
+            }
+            if let Err(e) = self.clear_completed_reactions().await {
+                tracing::warn!(error=%e,"处理表情清理失败");
             }
             if count.is_multiple_of(1800) {
                 self.store.prune()?;

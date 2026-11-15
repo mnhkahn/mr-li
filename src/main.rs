@@ -1,4 +1,5 @@
 mod bridge;
+mod camera;
 mod config;
 mod feishu;
 mod models;
@@ -93,6 +94,9 @@ async fn main() -> Result<()> {
     }
     tracing::info!("正在停止李老师");
     for j in store.jobs("running")? {
+        if camera::is_capture(&j.text) {
+            continue;
+        }
         if let Some(sid) = store.session(&j.key)?
             && let Err(e) = oc.abort(&sid).await
         {

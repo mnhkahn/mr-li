@@ -15,6 +15,11 @@ pub struct ModelCard {
     pub origin_key: String,
     pub message_id: String,
 }
+pub struct ProcessingReaction {
+    pub job_id: String,
+    pub message_id: String,
+    pub reaction_id: String,
+}
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
@@ -28,6 +33,7 @@ impl Store {
           CREATE TABLE IF NOT EXISTS model_cards (token TEXT PRIMARY KEY, origin_key TEXT NOT NULL,
           message_id TEXT NOT NULL DEFAULT '', expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
           CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS processing_reactions (job_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,reaction_id TEXT NOT NULL,due INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS legacy_sessions (key TEXT NOT NULL,id TEXT NOT NULL,archived_at INTEGER DEFAULT (unixepoch()),PRIMARY KEY(key,id));
           CREATE INDEX IF NOT EXISTS job_status ON jobs(status, created);")?;
         let has_kind = c
@@ -106,6 +112,39 @@ impl Store {
             .lock()
             .unwrap()
             .execute("UPDATE jobs SET status=?2 WHERE id=?1", params![id, status])?;
+        Ok(())
+    }
+    pub fn save_processing_reaction(&self, j: &Job, reaction: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO processing_reactions(job_id,message_id,reaction_id) VALUES (?1,?2,?3)",
+            params![j.id, j.message_id, reaction],
+        )?;
+        Ok(())
+    }
+    pub fn completed_reactions(&self) -> Result<Vec<ProcessingReaction>> {
+        let c = self.0.lock().unwrap();
+        let mut s = c.prepare("SELECT r.job_id,r.message_id,r.reaction_id FROM processing_reactions r LEFT JOIN jobs j ON j.id=r.job_id WHERE (j.status='done' OR j.id IS NULL) AND r.due<=unixepoch() ORDER BY r.rowid LIMIT 1")?;
+        Ok(s.query_map([], |r| {
+            Ok(ProcessingReaction {
+                job_id: r.get(0)?,
+                message_id: r.get(1)?,
+                reaction_id: r.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    pub fn processing_reaction_removed(&self, id: &str) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM processing_reactions WHERE job_id=?1", [id])?;
+        Ok(())
+    }
+    pub fn retry_reaction_cleanup(&self, id: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "UPDATE processing_reactions SET due=unixepoch()+30 WHERE job_id=?1",
+            [id],
+        )?;
         Ok(())
     }
     pub fn finish(&self, id: &str, text: &str) -> Result<()> {
@@ -218,6 +257,49 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn processing_reaction_survives_restart_and_waits_for_delivery() -> Result<()> {
+        let path =
+            std::env::temp_dir().join(format!("mr-li-reaction-{}.sqlite3", uuid::Uuid::new_v4()));
+        let j = Job {
+            id: "job".into(),
+            key: "key".into(),
+            message_id: "om_task".into(),
+            text: "hello".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        {
+            let s = Store::open(&path)?;
+            s.insert(&j)?;
+            s.status(&j.id, "running")?;
+            s.save_processing_reaction(&j, "reaction_id")?;
+            assert!(s.completed_reactions()?.is_empty());
+            s.finish(&j.id, "answer")?;
+            assert!(s.completed_reactions()?.is_empty());
+        }
+        {
+            let s = Store::open(&path)?;
+            assert!(s.completed_reactions()?.is_empty());
+            s.status(&j.id, "done")?;
+            let r = s.completed_reactions()?.pop().unwrap();
+            assert_eq!(r.message_id, "om_task");
+            assert_eq!(r.reaction_id, "reaction_id");
+            s.retry_reaction_cleanup(&j.id)?;
+            assert!(s.completed_reactions()?.is_empty());
+            s.processing_reaction_removed(&j.id)?;
+            assert_eq!(
+                s.0.lock().unwrap().query_row(
+                    "SELECT count(*) FROM processing_reactions",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                0
+            );
+        }
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
     #[test]
     fn v1_session_maps_are_archived_once_without_losing_model_choices() -> Result<()> {
         let s = Store::open(Path::new(":memory:"))?;

@@ -185,6 +185,150 @@ impl Feishu {
             .await?;
         Ok(())
     }
+    pub async fn add_processing_reaction(&self, message: &str) -> Result<String> {
+        // Same processing emojis as xiaoli/server/internal/admin/adapters.go.
+        let emojis = ["Typing", "OnIt", "THINKING", "OneSecond"];
+        let emoji = emojis[rand::random_range(0..emojis.len())];
+        let v = self
+            .reaction_request(reqwest::Method::POST, message, None, Some(emoji))
+            .await?;
+        Ok(v["data"]["reaction_id"]
+            .as_str()
+            .context("飞书未返回表情标识")?
+            .into())
+    }
+    pub async fn remove_processing_reaction(&self, message: &str, reaction: &str) -> Result<()> {
+        self.reaction_request(reqwest::Method::DELETE, message, Some(reaction), None)
+            .await?;
+        Ok(())
+    }
+    async fn reaction_request(
+        &self,
+        method: reqwest::Method,
+        message: &str,
+        reaction: Option<&str>,
+        emoji: Option<&str>,
+    ) -> Result<Value> {
+        ensure!(
+            message.starts_with("om_")
+                && message
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+            "无效消息 ID"
+        );
+        let mut url = reqwest::Url::parse(&format!(
+            "{}/open-apis/im/v1/messages/{message}/reactions",
+            self.cfg.feishu_base_url
+        ))?;
+        if let Some(id) = reaction {
+            ensure!(!id.is_empty() && id.len() <= 512, "无效表情标识");
+            url.path_segments_mut()
+                .map_err(|_| anyhow::anyhow!("表情地址无效"))?
+                .push(id);
+        }
+        let mut request = self
+            .http
+            .request(method, url)
+            .bearer_auth(self.token().await?)
+            .timeout(Duration::from_secs(5));
+        if let Some(emoji) = emoji {
+            request = request.json(&json!({"reaction_type":{"emoji_type":emoji}}));
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("飞书表情网络请求失败"))?;
+        let status = response.status();
+        ensure!(status.is_success(), "飞书表情 HTTP {}", status.as_u16());
+        let v: Value = response.json().await?;
+        let code = v["code"].as_i64();
+        if matches!(code, Some(99991663 | 99991668)) {
+            self.token.lock().await.0.clear();
+        }
+        ensure!(
+            code == Some(0),
+            "飞书表情错误码 {:?}，请检查 im:message.reactions:write_only 权限",
+            code
+        );
+        Ok(v)
+    }
+    /// Stream local camera media to Feishu rather than buffering a video in memory.
+    pub async fn upload_camera_media(
+        &self,
+        path: &std::path::Path,
+        video: bool,
+        duration_ms: u64,
+    ) -> Result<String> {
+        let size = tokio::fs::metadata(path).await?.len();
+        let limit = if video {
+            30 * 1024 * 1024
+        } else {
+            10 * 1024 * 1024
+        };
+        ensure!(
+            size > 0 && size < limit,
+            "摄像头文件为空或超过飞书上传大小限制"
+        );
+        let (endpoint, field, key, mime, name) = if video {
+            ("files", "file", "file_key", "video/mp4", "camera.mp4")
+        } else {
+            ("images", "image", "image_key", "image/jpeg", "camera.jpg")
+        };
+        let part = reqwest::multipart::Part::file(path)
+            .await?
+            .file_name(name)
+            .mime_str(mime)?;
+        let mut form = reqwest::multipart::Form::new().part(field, part);
+        if video {
+            form = form
+                .text("file_type", "mp4")
+                .text("file_name", name)
+                .text("duration", duration_ms.to_string());
+        } else {
+            form = form.text("image_type", "message");
+        }
+        let response = self
+            .http
+            .post(format!(
+                "{}/open-apis/im/v1/{endpoint}",
+                self.cfg.feishu_base_url
+            ))
+            .bearer_auth(self.token().await?)
+            .multipart(form)
+            .timeout(Duration::from_secs(90))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("飞书媒体上传网络请求失败"))?;
+        let status = response.status();
+        ensure!(status.is_success(), "飞书媒体上传 HTTP {}", status.as_u16());
+        let v: Value = response.json().await?;
+        let code = v["code"].as_i64();
+        if matches!(code, Some(99991663 | 99991668)) {
+            self.token.lock().await.0.clear();
+        }
+        ensure!(
+            code == Some(0),
+            "飞书媒体上传错误码 {:?}（请确认应用已开通 im:resource 上传权限）",
+            code
+        );
+        Ok(v["data"][key]
+            .as_str()
+            .context("飞书上传未返回媒体标识")?
+            .to_owned())
+    }
+    pub async fn reply_camera_media(
+        &self,
+        message: &str,
+        payload: &Value,
+        uuid: &str,
+        thread: bool,
+    ) -> Result<()> {
+        let kind = payload["msg_type"].as_str().context("媒体类型缺失")?;
+        ensure!(matches!(kind, "image" | "media"), "未知媒体类型");
+        self.reply_message(message, kind, payload["content"].clone(), uuid, thread)
+            .await?;
+        Ok(())
+    }
     pub async fn reply_card(
         &self,
         message: &str,
@@ -548,6 +692,168 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn processing_reaction_contract_and_escaped_removal() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for i in 0..2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let (header_end, length) = loop {
+                    let mut bytes = [0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&bytes[..n]);
+                    if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let h = String::from_utf8_lossy(&buf[..p]).to_ascii_lowercase();
+                        let length = h
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length: "))
+                            .map(|l| l.trim().parse::<usize>().unwrap())
+                            .unwrap_or(0);
+                        break (p + 4, length);
+                    }
+                };
+                while buf.len() < header_end + length {
+                    let mut bytes = [0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&bytes[..n]);
+                }
+                let header = String::from_utf8_lossy(&buf[..header_end]);
+                assert!(
+                    header
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer test-reaction-token")
+                );
+                if i == 0 {
+                    assert!(
+                        header.starts_with("POST /open-apis/im/v1/messages/om_task/reactions ")
+                    );
+                    let body: Value = serde_json::from_slice(&buf[header_end..]).unwrap();
+                    assert!(
+                        ["Typing", "OnIt", "THINKING", "OneSecond"]
+                            .contains(&body["reaction_type"]["emoji_type"].as_str().unwrap())
+                    );
+                } else {
+                    assert!(header.starts_with(
+                        "DELETE /open-apis/im/v1/messages/om_task/reactions/id%2Fwith%3Fsymbols "
+                    ));
+                }
+                let body = json!({"code":0,"data":{"reaction_id":"id/with?symbols"}}).to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).as_bytes()).await.unwrap();
+            }
+        });
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{address}");
+        let f = Feishu::new(Arc::new(cfg))?;
+        *f.token.lock().await = (
+            "test-reaction-token".into(),
+            Instant::now() + Duration::from_secs(60),
+        );
+        let id = f.add_processing_reaction("om_task").await?;
+        f.remove_processing_reaction("om_task", &id).await?;
+        assert!(f.add_processing_reaction("bad/path").await.is_err());
+        server.await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn camera_upload_and_video_reply_use_native_media_contract() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            for i in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let header_end = loop {
+                    let mut bytes = [0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&bytes[..n]);
+                    if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break pos + 4;
+                    }
+                };
+                let header = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                assert!(header.contains("authorization: bearer test-camera-token"));
+                let length: usize = header
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length: "))
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap();
+                while buf.len() < header_end + length {
+                    let mut bytes = [0; 4096];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    buf.extend_from_slice(&bytes[..n]);
+                }
+                let body = String::from_utf8_lossy(&buf[header_end..]);
+                let response = match i {
+                    0 => {
+                        assert!(header.starts_with("post /open-apis/im/v1/images "));
+                        assert!(body.contains("name=\"image_type\"\r\n\r\nmessage"));
+                        assert!(body.contains("name=\"image\"; filename=\"camera.jpg\""));
+                        json!({"code":0,"data":{"image_key":"img_cover"}})
+                    }
+                    1 => {
+                        assert!(header.starts_with("post /open-apis/im/v1/files "));
+                        assert!(body.contains("name=\"file_type\"\r\n\r\nmp4"));
+                        assert!(body.contains("name=\"duration\"\r\n\r\n10000"));
+                        json!({"code":0,"data":{"file_key":"file_video"}})
+                    }
+                    _ => {
+                        assert!(
+                            header.starts_with("post /open-apis/im/v1/messages/om_camera/reply ")
+                        );
+                        let v: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(v["msg_type"], "media");
+                        assert_eq!(v["uuid"], "camera-idempotency");
+                        assert_eq!(v["reply_in_thread"], true);
+                        let content: Value =
+                            serde_json::from_str(v["content"].as_str().unwrap()).unwrap();
+                        assert_eq!(
+                            content,
+                            json!({"file_key":"file_video","image_key":"img_cover"})
+                        );
+                        json!({"code":0})
+                    }
+                }
+                .to_string();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).as_bytes()).await.unwrap();
+            }
+        });
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{address}");
+        let feishu = Feishu::new(Arc::new(cfg))?;
+        *feishu.token.lock().await = (
+            "test-camera-token".into(),
+            Instant::now() + Duration::from_secs(60),
+        );
+        let path = std::env::temp_dir().join(format!("mr-li-upload-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"camera media test fixture").await?;
+        let result = async {
+            let image = feishu.upload_camera_media(&path, false, 0).await?;
+            let video = feishu.upload_camera_media(&path, true, 10000).await?;
+            feishu
+                .reply_camera_media(
+                    "om_camera",
+                    &json!({"msg_type":"media","content":{"image_key":image,"file_key":video}}),
+                    "camera-idempotency",
+                    true,
+                )
+                .await
+        }
+        .await;
+        tokio::fs::remove_file(&path).await?;
+        result?;
+        server.await?;
+        Ok(())
+    }
     #[test]
     fn card_callbacks_bind_owner_chat_message_and_are_deduplicated() -> Result<()> {
         let mut cfg = Config::fixture();

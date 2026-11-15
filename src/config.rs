@@ -18,6 +18,9 @@ pub struct Config {
     pub opencode_bin: String,
     pub free_only: bool,
     pub direct_network: bool,
+    pub homebridge_config: PathBuf,
+    pub camera_did: String,
+    pub ffmpeg_bin: String,
 }
 impl Config {
     pub fn load(enrollment: bool) -> Result<Self> {
@@ -104,6 +107,15 @@ impl Config {
             agent: get("OPENCODE_AGENT", "build"),
             task_timeout: Duration::from_secs(timeout),
             opencode_bin: get("OPENCODE_BIN", "opencode"),
+            homebridge_config: PathBuf::from(get(
+                "MR_LI_HOMEBRIDGE_CONFIG",
+                &format!(
+                    "{}/.homebridge-server/config.json",
+                    env::var("HOME").unwrap_or_default()
+                ),
+            )),
+            camera_did: get("MR_LI_CAMERA_DID", ""),
+            ffmpeg_bin: get("MR_LI_FFMPEG_BIN", "ffmpeg"),
             free_only: match get("MR_LI_FREE_ONLY", "true").as_str() {
                 "true" => true,
                 "false" => false,
@@ -138,6 +150,9 @@ impl Config {
             opencode_bin: "opencode".into(),
             free_only: true,
             direct_network: true,
+            homebridge_config: std::env::temp_dir().join("mr-li-no-homebridge.json"),
+            camera_did: String::new(),
+            ffmpeg_bin: "ffmpeg".into(),
         }
     }
 }

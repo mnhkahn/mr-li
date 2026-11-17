@@ -16,6 +16,12 @@ pub struct ModelCard {
     pub origin_key: String,
     pub message_id: String,
 }
+pub struct FormCard {
+    pub origin_key: String,
+    pub session: String,
+    pub message_id: String,
+    pub state: serde_json::Value,
+}
 pub struct ProcessingReaction {
     pub job_id: String,
     pub message_id: String,
@@ -33,6 +39,7 @@ impl Store {
           CREATE TABLE IF NOT EXISTS selected_models (scope TEXT PRIMARY KEY, model TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS model_cards (token TEXT PRIMARY KEY, origin_key TEXT NOT NULL,
           message_id TEXT NOT NULL DEFAULT '', expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
+          CREATE TABLE IF NOT EXISTS form_cards (token TEXT PRIMARY KEY,origin_key TEXT NOT NULL,session TEXT NOT NULL,message_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS processing_reactions (job_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,reaction_id TEXT NOT NULL,due INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS posture_watch (scope TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL,interval_seconds INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_due INTEGER NOT NULL DEFAULT (unixepoch()),last_note TEXT NOT NULL DEFAULT '',last_at INTEGER NOT NULL DEFAULT 0);
@@ -443,6 +450,75 @@ impl Store {
             )
             .optional()?)
     }
+    pub fn save_form_card(
+        &self,
+        token: &str,
+        key: &str,
+        session: &str,
+        state: &serde_json::Value,
+    ) -> Result<()> {
+        self.0.lock().unwrap().execute("INSERT INTO form_cards(token,origin_key,session,state) VALUES (?1,?2,?3,?4) ON CONFLICT(token) DO UPDATE SET state=excluded.state",params![token,key,session,state.to_string()])?;
+        Ok(())
+    }
+    pub fn open_form_tokens(&self) -> Result<Vec<String>> {
+        let c = self.0.lock().unwrap();
+        let mut query =
+            c.prepare("SELECT token FROM form_cards WHERE json_extract(state,'$.done') IS NOT 1")?;
+        Ok(query
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    pub fn form_card(&self, token: &str) -> Result<Option<FormCard>> {
+        let row = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT origin_key,session,message_id,state FROM form_cards WHERE token=?1",
+                [token],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|(origin_key, session, message_id, state)| {
+            Ok(FormCard {
+                origin_key,
+                session,
+                message_id,
+                state: serde_json::from_str(&state)?,
+            })
+        })
+        .transpose()
+    }
+    pub fn finish_form_card(
+        &self,
+        job: &str,
+        token: &str,
+        state: &serde_json::Value,
+    ) -> Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute(
+            "UPDATE form_cards SET state=?2 WHERE token=?1",
+            params![token, state.to_string()],
+        )?;
+        tx.execute("UPDATE jobs SET status='replying',output_kind='form_card_update',result=?2 WHERE id=?1",params![job,serde_json::json!({"token":token}).to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn attach_form_card(&self, token: &str, message: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "UPDATE form_cards SET message_id=?2 WHERE token=?1",
+            params![token, message],
+        )?;
+        Ok(())
+    }
     pub fn register_model_card(&self, token: &str, key: &str) -> Result<()> {
         self.0.lock().unwrap().execute(
             "INSERT INTO model_cards(token,origin_key) VALUES (?1,?2)",
@@ -542,7 +618,9 @@ mod tests {
             result: String::new(),
             sent: 0,
         };
-        let start = 1794733200;
+        // Keep the simulated next day ahead of the wall-clock timestamp used
+        // when finish_posture_sample updates next_due.
+        let (start, _) = crate::posture::schedule_bounds_at(active_time());
         let end = start + 16200;
         s.start_posture_watch_at(&j, 60, start - 60)?;
         s.queue_due_posture_at(start - 1)?;

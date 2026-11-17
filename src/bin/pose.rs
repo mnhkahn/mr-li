@@ -10,6 +10,8 @@ use std::{collections::HashMap, path::PathBuf, time::Instant};
 
 #[path = "pose/rtm.rs"]
 mod rtm;
+#[path = "pose/watermark.rs"]
+mod watermark;
 struct Inference {
     model: &'static str,
     points: Vec<Point>,
@@ -546,6 +548,7 @@ fn main() -> Result<()> {
     ] {
         line(&mut painted, s, e, cyan);
     }
+    watermark::paint(&mut painted, &report)?;
     painted.save(prefix.with_extension("png"))?;
     let json = serde_json::to_string_pretty(&report)?;
     std::fs::write(prefix.with_extension("json"), &json)?;

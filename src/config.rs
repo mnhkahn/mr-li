@@ -2,6 +2,8 @@ use anyhow::{Context, Result, bail};
 use std::{env, path::PathBuf, time::Duration};
 #[derive(Clone)]
 pub struct Config {
+    pub tablet_listen: String,
+    pub tablet_public_url: String,
     pub app_id: String,
     pub app_secret: String,
     pub feishu_base_url: String,
@@ -96,6 +98,8 @@ impl Config {
             );
         }
         Ok(Self {
+            tablet_listen: get("MR_LI_TABLET_LISTEN", "127.0.0.1:8787"),
+            tablet_public_url: get("MR_LI_TABLET_PUBLIC_URL", ""),
             app_id: get("FEISHU_APP_ID", "cli_aa9b39cf2f789eef"),
             app_secret,
             feishu_base_url,
@@ -162,6 +166,8 @@ impl Config {
 impl Config {
     pub fn fixture() -> Self {
         Self {
+            tablet_listen: "127.0.0.1:8787".into(),
+            tablet_public_url: String::new(),
             app_id: "app".into(),
             app_secret: "test-only".into(),
             feishu_base_url: "https://open.feishu.cn".into(),

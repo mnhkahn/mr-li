@@ -13,7 +13,7 @@ PLATFORM="$(uname -s)-$(uname -m)"
 DEST="$ROOT/dist/mr-li-$PLATFORM"
 mkdir -p "$DEST/bin" "$DEST/scripts"
 cp target/release/mr-li "$DEST/bin/"
-cp scripts/init.sh scripts/init-camera.sh scripts/setup-pose.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh "$DEST/scripts/"
+cp scripts/init.sh scripts/init-camera.sh scripts/setup-pose.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh scripts/boot-start.sh "$DEST/scripts/"
 if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
   cp target/release/mr-li-pose "$DEST/bin/"
   if [[ -f .data/pose-runtime/lib/libonnxruntime.1.18.0.dylib ]]; then

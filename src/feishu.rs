@@ -326,7 +326,7 @@ impl Feishu {
         thread: bool,
     ) -> Result<()> {
         let kind = payload["msg_type"].as_str().context("媒体类型缺失")?;
-        ensure!(matches!(kind, "image" | "media"), "未知媒体类型");
+        ensure!(matches!(kind, "image" | "media" | "post"), "未知媒体类型");
         self.reply_message(message, kind, payload["content"].clone(), uuid, thread)
             .await?;
         Ok(())
@@ -543,8 +543,8 @@ impl Feishu {
 fn event_response(result: &Result<()>, callback: bool) -> Value {
     if callback {
         let (kind, text) = match result {
-            Ok(()) => ("info", "已收到，正在切换模型"),
-            Err(_) => ("error", "卡片已失效或无操作权限，请重新打开模型选择"),
+            Ok(()) => ("info", "已收到，正在处理"),
+            Err(_) => ("error", "卡片已失效或无操作权限"),
         };
         let response = json!({"toast":{"type":kind,"content":text}}).to_string();
         json!({"code":200,"data":base64::engine::general_purpose::STANDARD.encode(response.as_bytes())})
@@ -566,6 +566,34 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
         return Ok(None);
     }
     let a = &e["action"];
+    if a["value"]["action"] == "opencode_form" {
+        let token = a["value"]["token"].as_str().context("卡片缺少标识")?;
+        let Some(card) = store.form_card(token)? else {
+            return Ok(None);
+        };
+        let key: Value = serde_json::from_str(&card.origin_key)?;
+        if key[0] != cfg.workspace.to_string_lossy().as_ref()
+            || key[1] != owner
+            || key[2] != chat
+            || card.message_id != message
+        {
+            return Ok(None);
+        }
+        let event_id = v["header"]["event_id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("回调缺少事件 ID")?;
+        let payload = json!({"token":token,"revision":a["value"]["revision"],"operation":a["value"]["operation"],"input":a["form_value"]});
+        ensure!(payload.to_string().len() <= 64 * 1024, "表单答案过长");
+        return Ok(Some(Job {
+            id: format!("card:{event_id}"),
+            key: card.origin_key,
+            message_id: message.into(),
+            text: format!("/_form {}", payload),
+            result: String::new(),
+            sent: 0,
+        }));
+    }
     if a["tag"] != "select_static" || a["value"]["action"] != "select_model" {
         return Ok(None);
     }
@@ -857,7 +885,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let server = tokio::spawn(async move {
-            for i in 0..3 {
+            for i in 0..4 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut buf = Vec::new();
                 let header_end = loop {
@@ -898,7 +926,7 @@ mod tests {
                         assert!(body.contains("name=\"duration\"\r\n\r\n10000"));
                         json!({"code":0,"data":{"file_key":"file_video"}})
                     }
-                    _ => {
+                    2 => {
                         assert!(
                             header.starts_with("post /open-apis/im/v1/messages/om_camera/reply ")
                         );
@@ -912,6 +940,27 @@ mod tests {
                             content,
                             json!({"file_key":"file_video","image_key":"img_cover"})
                         );
+                        json!({"code":0})
+                    }
+                    _ => {
+                        assert!(header.starts_with(
+                            "post /open-apis/im/v1/messages?receive_id_type=chat_id "
+                        ));
+                        let v: Value = serde_json::from_str(&body).unwrap();
+                        assert_eq!(v["msg_type"], "post");
+                        assert_eq!(v["receive_id"], "oc_report");
+                        assert_eq!(v["uuid"], "report-idempotency");
+                        let content: Value =
+                            serde_json::from_str(v["content"].as_str().unwrap()).unwrap();
+                        assert_eq!(
+                            content,
+                            json!({"zh_cn":{"content":[
+                                [{"tag":"text","text":"坐姿汇总"}],
+                                [{"tag":"text","text":"20:44 · 未触发提醒"}],
+                                [{"tag":"img","image_key":"img_cover"}]
+                            ]}})
+                        );
+                        assert!(v.get("reply_in_thread").is_none());
                         json!({"code":0})
                     }
                 }
@@ -938,12 +987,41 @@ mod tests {
                     "camera-idempotency",
                     true,
                 )
+                .await?;
+            feishu
+                .reply_camera_media(
+                    "oc_report",
+                    &crate::bridge::image_message(&image, Some("坐姿汇总\n20:44 · 未触发提醒")),
+                    "report-idempotency",
+                    false,
+                )
                 .await
         }
         .await;
         tokio::fs::remove_file(&path).await?;
         result?;
         server.await?;
+        Ok(())
+    }
+    #[test]
+    fn form_callbacks_bind_owner_and_message_and_keep_typed_input() -> Result<()> {
+        let cfg = Config::fixture();
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        store.save_form_card("token", &key, "ses_owned", &json!({"revision":0}))?;
+        store.attach_form_card("token", "om_form")?;
+        let mut v = json!({"header":{"event_type":"card.action.trigger","event_id":"form-event"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_form"},"action":{"tag":"button","value":{"action":"opencode_form","token":"token","revision":0,"operation":"next"},"form_value":{"answer":["one","two"]}}}});
+        let job = parse_model_action(&v, &cfg, &store)?.unwrap();
+        assert_eq!(job.key, key);
+        assert!(store.insert(&job)?);
+        assert!(!store.insert(&job)?);
+        let p: Value = serde_json::from_str(job.text.strip_prefix("/_form ").unwrap())?;
+        assert_eq!(p["input"]["answer"], json!(["one", "two"]));
+        v["event"]["context"]["open_message_id"] = json!("om_forwarded");
+        assert!(parse_model_action(&v, &cfg, &store)?.is_none());
+        v["event"]["context"]["open_message_id"] = json!("om_form");
+        v["event"]["operator"]["open_id"] = json!("ou_intruder");
+        assert!(parse_model_action(&v, &cfg, &store)?.is_none());
         Ok(())
     }
     #[test]

@@ -7,7 +7,7 @@ description = "李老师：飞书与 OpenCode 的轻量桥接"
 default-run = "mr-li"
 
 [features]
-pose = ["dep:ort", "dep:ort-sys", "dep:image"]
+pose = ["dep:ort", "dep:ort-sys", "dep:image", "dep:fontdue"]
 
 [[bin]]
 name = "mr-li-pose"
@@ -15,6 +15,8 @@ path = "src/bin/pose.rs"
 required-features = ["pose"]
 
 [dependencies]
+axum = { version = "0.8", features = ["ws", "multipart"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 anyhow = "1"
 base64 = "0.22"
@@ -27,7 +29,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt", "signal", "time", "sync", "net", "fs", "process", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt", "signal", "time", "sync", "net", "fs", "process", "io-util", "io-std"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -35,6 +37,8 @@ uuid = { version = "1", features = ["v4", "v5"] }
 ort = { version = "=2.0.0-rc.4", default-features = false, features = ["load-dynamic"], optional = true }
 ort-sys = { version = "=2.0.0-rc.4", default-features = false, features = ["load-dynamic"], optional = true }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true }
+
+fontdue = { version = "0.9.4", optional = true }
 
 [profile.release]
 opt-level = "s"

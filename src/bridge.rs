@@ -2,7 +2,7 @@ use crate::{
     camera,
     config::Config,
     feishu::Feishu,
-    models,
+    forms, models,
     opencode::OpenCode,
     store::{Job, Store},
 };
@@ -16,8 +16,38 @@ pub struct Bridge {
     pub store: Arc<Store>,
     pub feishu: Arc<Feishu>,
     pub oc: Arc<OpenCode>,
+    pub tablet: Option<Arc<crate::tablet::Gateway>>,
 }
 const HELP: &str = "我是李老师。直接发文字即可执行任务，操作权限默认自动允许。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/posture 本地姿态模型试验（关键点图片与说明）\n/posture start [秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止采样\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+pub(crate) fn image_message(image_key: &str, note: Option<&str>) -> Value {
+    if let Some(note) = note.filter(|note| !note.is_empty()) {
+        let mut rows: Vec<Value> = note
+            .lines()
+            .map(|line| json!([{"tag":"text","text":line}]))
+            .collect();
+        rows.push(json!([{"tag":"img","image_key":image_key}]));
+        json!({"msg_type":"post","content":{"zh_cn":{"content":rows}}})
+    } else {
+        json!({"msg_type":"image","content":{"image_key":image_key}})
+    }
+}
+
+fn report_message(note: &str, images: &[(String, String)]) -> Value {
+    let mut rows: Vec<Value> = note
+        .lines()
+        .map(|line| json!([{"tag":"text","text":line}]))
+        .collect();
+    for (label, key) in images {
+        rows.push(json!([{"tag":"text","text":label}]));
+        rows.push(json!([{"tag":"img","image_key":key}]));
+    }
+    json!({"msg_type":"post","content":{"zh_cn":{"content":rows}}})
+}
+fn capture_time(at: u64) -> String {
+    let seconds = (at + 8 * 3600) % 86400;
+    format!("北京时间 {:02}:{:02}", seconds / 3600, seconds % 3600 / 60)
+}
+
 fn destination(j: &Job) -> Result<String> {
     let values: Vec<String> = serde_json::from_str(&j.key).context("会话标识无效")?;
     ensure!(values.len() == 4, "会话标识无效");
@@ -125,12 +155,6 @@ impl Bridge {
         if media.cover.is_none() {
             crate::posture::archive_photo(&self.cfg, &j.id, &media.path).context("照片归档失败")?;
         }
-        if background
-            && self.store.posture_enabled(&j.key)?
-            && let Err(e) = crate::posture::cache_frame(&self.cfg, &j.key, &media.path)
-        {
-            tracing::warn!(error=%e,"无法保留坐姿汇总图片");
-        }
         let mut assessment = crate::posture::Assessment::Unknown;
         let note = if j.text.trim() == "/posture" {
             let observation = crate::posture::analyze(&self.cfg, &media.path).await?;
@@ -140,6 +164,12 @@ impl Bridge {
         } else {
             None
         };
+        if background
+            && self.store.posture_enabled(&j.key)?
+            && let Err(e) = crate::posture::cache_frame(&self.cfg, &j.key, &media.path)
+        {
+            tracing::warn!(error=%e,"无法保留坐姿汇总图片");
+        }
         if background {
             self.record_posture(j, note.as_deref().context("定时姿态结果缺失")?, assessment)
                 .await?;
@@ -154,7 +184,7 @@ impl Bridge {
             let image_key = self.feishu.upload_camera_media(cover, false, 0).await?;
             json!({"msg_type":"media", "content":{"file_key":key,"image_key":image_key}})
         } else {
-            json!({"msg_type":"image", "content":{"image_key":key},"note":note})
+            image_message(&key, note.as_deref())
         };
         // Persist uploaded keys before attempting delivery; retries never recapture video.
         self.store.finish_output(&j.id, "camera_media", &payload)?;
@@ -332,7 +362,9 @@ impl Bridge {
     async fn handle_command(&self, j: &Job, active: Option<&Job>) -> Result<()> {
         let mut words = j.text.split_whitespace();
         let cmd = words.next().unwrap_or("");
-        if matches!(cmd, "/models" | "/model") {
+        if cmd == "/_form" {
+            self.handle_form(j).await?;
+        } else if matches!(cmd, "/models" | "/model") {
             let available = models::free_models(&self.oc.catalog().await?);
             ensure!(
                 !available.is_empty(),
@@ -374,6 +406,164 @@ impl Bridge {
         }
         Ok(())
     }
+    async fn handle_form(&self, j: &Job) -> Result<()> {
+        ensure!(j.id.starts_with("card:"), "请使用提问卡片操作");
+        let payload: Value =
+            serde_json::from_str(j.text.strip_prefix("/_form ").context("卡片操作缺失")?)?;
+        let token = payload["token"].as_str().context("卡片标识缺失")?;
+        let saved = self.store.form_card(token)?.context("卡片已失效")?;
+        ensure!(
+            saved.origin_key == j.key && saved.message_id == j.message_id,
+            "卡片不属于当前会话"
+        );
+        let mut state = saved.state;
+        if payload["revision"] != state["revision"] || state["done"] == true {
+            self.store.status(&j.id, "done")?;
+            return Ok(());
+        }
+        let sid = &saved.session;
+        ensure!(
+            self.store.session(&j.key)?.as_deref() == Some(sid),
+            "会话已切换，旧提问已失效"
+        );
+        let id = state["form"]["id"]
+            .as_str()
+            .context("提问 ID 缺失")?
+            .to_owned();
+        let pending = self.oc.get(&format!("/api/session/{sid}/form")).await?;
+        let owned = pending
+            .as_array()
+            .context("提问列表无效")?
+            .iter()
+            .any(|f| f["id"] == id && f["sessionID"] == *sid);
+        let mut message = None;
+        let mut error = None;
+        if !owned {
+            message = Some("此提问已处理或失效。".to_owned());
+        } else {
+            let index = state["index"].as_u64().context("进度缺失")? as usize;
+            match payload["operation"].as_str() {
+                Some("cancel") => {
+                    self.oc
+                        .delete(&format!("/api/session/{sid}/form/{id}"))
+                        .await?;
+                    message = Some("已取消提问。".into());
+                }
+                Some("restart") => {
+                    state["answers"] = json!({});
+                    state["index"] = json!(
+                        forms::next(&state["form"], &state["answers"], 0)
+                            .unwrap_or(state["form"]["fields"].as_array().map_or(0, Vec::len))
+                    );
+                }
+                Some("external_next") => {
+                    ensure!(
+                        state["form"]["fields"][index]["type"] == "external",
+                        "此项不是外部操作"
+                    );
+                    state["index"] = json!(
+                        forms::next(&state["form"], &state["answers"], index + 1)
+                            .unwrap_or(state["form"]["fields"].as_array().map_or(0, Vec::len))
+                    );
+                }
+                Some("next" | "skip") => {
+                    let field = state["form"]["fields"]
+                        .get(index)
+                        .context("字段已失效")?
+                        .clone();
+                    let answer = if payload["operation"] == "skip" {
+                        ensure!(field["required"] != true, "此项必填");
+                        Ok(None)
+                    } else {
+                        forms::answer(&field, &payload["input"]).map(Some)
+                    };
+                    match answer {
+                        Ok(value) => {
+                            if let Some(value) = value {
+                                let key = field["key"].as_str().context("字段标识缺失")?;
+                                state["answers"][key] = value;
+                            }
+                            state["index"] = json!(
+                                forms::next(&state["form"], &state["answers"], index + 1)
+                                    .unwrap_or(
+                                        state["form"]["fields"].as_array().map_or(0, Vec::len)
+                                    )
+                            );
+                        }
+                        Err(e) => error = Some(e.to_string()),
+                    }
+                }
+                Some("submit") => {
+                    ensure!(
+                        index
+                            >= state["form"]["fields"]
+                                .as_array()
+                                .context("字段缺失")?
+                                .len(),
+                        "请先完成填写"
+                    );
+                    // OpenCode is authoritative for pattern/format and other server constraints.
+                    match self
+                        .oc
+                        .post(
+                            &format!("/api/session/{sid}/form/{id}/reply"),
+                            json!({"answer":state["answers"]}),
+                        )
+                        .await
+                    {
+                        Ok(_) => message = Some("答案已提交，正在继续任务。".into()),
+                        Err(e) => error = Some(format!("提交未成功：{e}。可重新填写后再提交。")),
+                    }
+                }
+                _ => anyhow::bail!("未知卡片操作"),
+            }
+        }
+        state["revision"] = json!(state["revision"].as_u64().unwrap_or(0) + 1);
+        let card = if let Some(text) = message {
+            state["done"] = json!(true);
+            forms::status("提问处理结果", &text)
+        } else {
+            forms::card(&state, token, error.as_deref())?
+        };
+        state["card"] = card;
+        self.store.finish_form_card(&j.id, token, &state)?;
+        Ok(())
+    }
+    async fn close_resolved_forms(&self) -> Result<()> {
+        for token in self.store.open_form_tokens()? {
+            let Some(saved) = self.store.form_card(&token)? else {
+                continue;
+            };
+            if saved.message_id.is_empty() {
+                continue;
+            }
+            let same_session =
+                self.store.session(&saved.origin_key)?.as_deref() == Some(saved.session.as_str());
+            let pending = if same_session {
+                self.oc
+                    .get(&format!("/api/session/{}/form", saved.session))
+                    .await?
+            } else {
+                json!([])
+            };
+            if pending
+                .as_array()
+                .context("提问列表无效")?
+                .iter()
+                .any(|f| f["id"] == saved.state["form"]["id"] && f["sessionID"] == saved.session)
+            {
+                continue;
+            }
+            let card = forms::status("提问已结束", "此提问已处理、取消或随任务结束而失效。");
+            self.feishu.update_card(&saved.message_id, &card).await?;
+            let mut state = saved.state;
+            state["done"] = json!(true);
+            state["card"] = card;
+            self.store
+                .save_form_card(&token, &saved.origin_key, &saved.session, &state)?;
+        }
+        Ok(())
+    }
     async fn notify_pending(&self, j: &Job, seen: &mut HashSet<String>) -> Result<()> {
         let Some(sid) = self.store.session(&j.key)? else {
             return Ok(());
@@ -388,25 +578,28 @@ impl Bridge {
             if seen.contains(id) {
                 continue;
             }
-            let detail = format!(
-                "需要补充信息：{}\n/answer {id} [[\"答案\"]]\n/deny {id}",
-                p["fields"]
+            ensure!(
+                !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "表单 ID 无效"
             );
-            let detail = detail.chars().take(5000).collect::<String>();
-            for (i, part) in chunks(&detail).iter().enumerate() {
-                self.feishu
-                    .reply(
-                        &destination(j)?,
-                        part,
-                        &uuid::Uuid::new_v5(
-                            &uuid::Uuid::NAMESPACE_OID,
-                            format!("notice:{}:{id}:{i}", j.id).as_bytes(),
-                        )
-                        .to_string(),
-                        false,
-                    )
-                    .await?;
+            let token = uuid::Uuid::new_v5(
+                &uuid::Uuid::NAMESPACE_OID,
+                format!("form:{}:{sid}:{id}", j.key).as_bytes(),
+            )
+            .to_string();
+            let saved = self.store.form_card(&token)?;
+            if saved.as_ref().is_some_and(|c| !c.message_id.is_empty()) {
+                seen.insert(id.into());
+                continue;
             }
+            let state=saved.map(|c|c.state).unwrap_or_else(||json!({"form":p,"answers":{},"index":forms::next(p,&json!({}),0).unwrap_or(p["fields"].as_array().map_or(0,Vec::len)),"revision":0}));
+            self.store.save_form_card(&token, &j.key, &sid, &state)?;
+            let card = forms::card(&state, &token, None)?;
+            let message = self
+                .feishu
+                .reply_card(&destination(j)?, &card, &token, false)
+                .await?;
+            self.store.attach_form_card(&token, &message)?;
             seen.insert(id.into());
             return Ok(());
         }
@@ -417,49 +610,131 @@ impl Bridge {
             .ok()
             .filter(|p| p["note"].is_string())
             .unwrap_or_else(|| json!({"note":j.result}));
-        if payload["snapshot"].is_null() {
-            let Some((path, at)) = crate::posture::freeze_report_frame(&self.cfg, &j.key, &j.id)?
-            else {
-                self.store.finish(
-                    &j.id,
-                    &format!(
-                        "{}\n本批未取得近 10 分钟内的图片，先发送文字记录。",
-                        payload["note"].as_str().context("汇总文字缺失")?
-                    ),
-                )?;
-                return Ok(());
+        if !payload["assets"].is_array() {
+            let frozen = if let Some(path) = payload["snapshot"].as_str() {
+                Some((
+                    std::path::PathBuf::from(path),
+                    payload["captured_at"].as_u64().unwrap_or(0),
+                ))
+            } else {
+                crate::posture::freeze_report_frame(&self.cfg, &j.key, &j.id)?
             };
-            payload["snapshot"] = json!(path);
-            payload["captured_at"] = json!(at);
-            // Freeze before upload: retries and restarts use the same image and original report.
+            payload["assets"] = json!([]);
+            if let Some((path, at)) = frozen {
+                payload["assets"].as_array_mut().unwrap().push(json!({"kind":"posture","path":path,"label":format!("最近一次坐姿检测图（含关键点和连线，{}）",capture_time(at))}));
+            } else {
+                payload["note"] = json!(format!(
+                    "{}\n本批未取得近 10 分钟内的坐姿检测图。",
+                    payload["note"].as_str().unwrap_or("")
+                ));
+            }
             self.store
                 .finish_output(&j.id, "posture_report", &payload)?;
         }
-        let path =
-            std::path::PathBuf::from(payload["snapshot"].as_str().context("汇总图片路径缺失")?);
-        ensure!(
-            path == crate::posture::report_frame_path(&self.cfg, &j.key, &j.id)?,
-            "汇总图片路径不匹配"
-        );
-        let key = self.feishu.upload_camera_media(&path, false, 0).await?;
-        let at = payload["captured_at"]
-            .as_u64()
-            .context("汇总图片时间缺失")?;
-        let seconds = (at + 8 * 3600) % 86400;
-        let note = format!(
-            "{}\n附图：最近一次监控画面（北京时间 {:02}:{:02}）。",
-            payload["note"].as_str().context("汇总文字缺失")?,
-            seconds / 3600,
-            seconds % 3600 / 60
-        );
-        self.store.finish_output(
-            &j.id,
-            "camera_media",
-            &json!({"msg_type":"image","content":{"image_key":key},"note":note}),
-        )?;
-        let _ = std::fs::remove_file(path);
+        if payload["tablet_done"] != true {
+            let capture = match &self.tablet {
+                Some(tablet) => tablet.report_capture(&j.id).unwrap_or_else(
+                    |e| json!({"status":"failed","error":format!("平板采集失败：{e}")}),
+                ),
+                None => json!({"status":"failed","error":"平板网关未启用"}),
+            };
+            if capture["status"] == "pending" {
+                return Ok(());
+            }
+            let mut note = payload["note"].as_str().unwrap_or("").to_owned();
+            if capture["status"] == "ready" {
+                let at = capture_time(capture["captured_at"].as_u64().unwrap_or(0));
+                let images = capture["images"].as_array().context("平板汇总图片缺失")?;
+                for image in images {
+                    let label = match image["name"].as_str() {
+                        Some("image") => "平板照片",
+                        Some("screenshot") => "平板当前屏幕截图",
+                        _ => continue,
+                    };
+                    payload["assets"].as_array_mut().unwrap().push(json!({"kind":"tablet","device":capture["device"],"path":image["path"],"label":format!("{label}（{at}）")}));
+                }
+                if !images.iter().any(|image| image["name"] == "screenshot") {
+                    note.push_str(&format!(
+                        "\n平板屏幕截图未取得：{}",
+                        capture["screenshot_error"]
+                            .as_str()
+                            .filter(|e| !e.is_empty())
+                            .unwrap_or("平板未返回截图")
+                    ));
+                }
+            } else {
+                note.push_str(&format!(
+                    "\n{}",
+                    capture["error"]
+                        .as_str()
+                        .unwrap_or("平板照片和屏幕截图未取得")
+                ));
+            }
+            payload["note"] = json!(note);
+            payload["tablet_done"] = json!(true);
+            self.store
+                .finish_output(&j.id, "posture_report", &payload)?;
+        }
+        for i in 0..payload["assets"].as_array().unwrap().len() {
+            if payload["assets"][i]["image_key"].is_string() {
+                continue;
+            }
+            let asset = &payload["assets"][i];
+            let path =
+                std::path::PathBuf::from(asset["path"].as_str().context("汇总图片路径缺失")?);
+            if asset["kind"] == "posture" {
+                let expected = crate::posture::report_frame_path(&self.cfg, &j.key, &j.id)?;
+                ensure!(
+                    path == expected || path == expected.with_extension("jpg"),
+                    "坐姿汇总图片路径不匹配"
+                );
+            } else {
+                self.tablet
+                    .as_ref()
+                    .context("平板网关未启用")?
+                    .validate_report_image(
+                        asset["device"].as_str().context("平板设备缺失")?,
+                        &path,
+                    )?;
+            }
+            let key = self.feishu.upload_camera_media(&path, false, 0).await?;
+            payload["assets"][i]["image_key"] = json!(key);
+            self.store
+                .finish_output(&j.id, "posture_report", &payload)?;
+            // Keep the bridge heartbeat/control loop responsive between media uploads.
+            return Ok(());
+        }
+        let images: Vec<(String, String)> = payload["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|asset| {
+                Ok((
+                    asset["label"].as_str().context("图片说明缺失")?.into(),
+                    asset["image_key"]
+                        .as_str()
+                        .context("图片上传标识缺失")?
+                        .into(),
+                ))
+            })
+            .collect::<Result<_>>()?;
+        let note = payload["note"].as_str().context("汇总文字缺失")?;
+        if images.is_empty() {
+            self.store.finish(&j.id, note)?;
+        } else {
+            self.store
+                .finish_output(&j.id, "camera_media", &report_message(note, &images))?;
+        }
+        for asset in payload["assets"].as_array().unwrap() {
+            if asset["kind"] == "posture"
+                && let Some(path) = asset["path"].as_str()
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
         Ok(())
     }
+
     async fn deliver(&self) -> Result<()> {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
@@ -511,6 +786,21 @@ impl Bridge {
                 self.store.status(&j.id, "done")?;
                 return Ok(());
             }
+            if kind == "form_card_update" {
+                let payload: Value = serde_json::from_str(&j.result)?;
+                let card = self
+                    .store
+                    .form_card(payload["token"].as_str().context("卡片标识缺失")?)?
+                    .context("卡片已失效")?
+                    .state["card"]
+                    .clone();
+                if let Err(e) = self.feishu.update_card(&j.message_id, &card).await {
+                    self.store.retry_delivery(&j.id)?;
+                    return Err(e);
+                }
+                self.store.status(&j.id, "done")?;
+                return Ok(());
+            }
             if kind == "model_card" || kind == "model_card_update" {
                 let mut payload: Value = serde_json::from_str(&j.result)?;
                 let current = self.selected_model(&j.key)?;
@@ -554,7 +844,12 @@ impl Bridge {
                 );
                 if let Err(e) = self
                     .feishu
-                    .reply(&destination(j)?, part, &uuid.to_string(), false)
+                    .reply_card(
+                        &destination(j)?,
+                        &forms::status("李老师", part),
+                        &uuid.to_string(),
+                        false,
+                    )
                     .await
                 {
                     self.store.retry_delivery(&j.id)?;
@@ -708,6 +1003,11 @@ impl Bridge {
             {
                 tracing::warn!(error=%e,"待处理请求同步失败");
             }
+            if count.is_multiple_of(5)
+                && let Err(e) = self.close_resolved_forms().await
+            {
+                tracing::warn!(error=%e,"提问卡片状态同步失败，将重试");
+            }
             if let Err(e) = self.deliver().await {
                 tracing::warn!(error=%e,"飞书结果暂未送达，将重试");
             }
@@ -723,6 +1023,265 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn report_post_contains_summary_and_three_distinct_labeled_images() {
+        let message = report_message(
+            "十分钟坐姿汇总\n20:10 · 未触发提醒",
+            &[
+                ("坐姿检测图".into(), "img_pose".into()),
+                ("平板照片".into(), "img_photo".into()),
+                ("平板当前屏幕截图".into(), "img_screen".into()),
+            ],
+        );
+        assert_eq!(message["msg_type"], "post");
+        let rows = message["content"]["zh_cn"]["content"].as_array().unwrap();
+        assert_eq!(rows.len(), 8);
+        assert_eq!(rows[3][0]["image_key"], "img_pose");
+        assert_eq!(rows[4][0]["text"], "平板照片");
+        assert_eq!(rows[5][0]["image_key"], "img_photo");
+        assert_eq!(rows[6][0]["text"], "平板当前屏幕截图");
+        assert_eq!(rows[7][0]["image_key"], "img_screen");
+        assert!(message["note"].is_null());
+    }
+    #[tokio::test]
+    async fn report_upload_retry_preserves_images_and_sends_one_post() -> Result<()> {
+        use axum::{
+            Json, Router,
+            body::Bytes,
+            extract::{Query, State},
+            http::StatusCode,
+            routing::post,
+        };
+        use std::{
+            collections::HashMap,
+            sync::{
+                Mutex,
+                atomic::{AtomicUsize, Ordering},
+            },
+        };
+        #[derive(Default)]
+        struct Mock {
+            uploads: AtomicUsize,
+            messages: Mutex<Vec<Value>>,
+        }
+        let mock = Arc::new(Mock::default());
+        let app = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post(|| async {
+                    Json(json!({"code":0,"tenant_access_token":"test-token","expire":3600}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/images",
+                post(|State(mock): State<Arc<Mock>>, body: Bytes| async move {
+                    assert!(!body.is_empty());
+                    let n = mock.uploads.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 2 {
+                        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"code":1})))
+                    } else {
+                        (
+                            StatusCode::OK,
+                            Json(json!({"code":0,"data":{"image_key":format!("img_{n}")}})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages",
+                post(
+                    |State(mock): State<Arc<Mock>>,
+                     Query(query): Query<HashMap<String, String>>,
+                     Json(body): Json<Value>| async move {
+                        assert_eq!(query["receive_id_type"], "chat_id");
+                        assert_eq!(body["receive_id"], "oc_report");
+                        assert_eq!(body["msg_type"], "post");
+                        mock.messages.lock().unwrap().push(body);
+                        Json(json!({"code":0,"data":{"message_id":"om_report"}}))
+                    },
+                ),
+            )
+            .with_state(mock.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+        cfg.data_dir = std::env::temp_dir().join(format!("mr-li-report-{}", uuid::Uuid::new_v4()));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let cfg = Arc::new(cfg);
+        let tablet = crate::tablet::Gateway::open(cfg.clone())?;
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            tablet: Some(tablet),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            oc: Arc::new(OpenCode::new(cfg.clone())?),
+        };
+        let j = Job {
+            id: "posture-report:test".into(),
+            key: json!(["workspace", "owner", "oc_report", "thread"]).to_string(),
+            message_id: "om_source".into(),
+            text: "/posture report".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        let pose = crate::posture::report_frame_path(&cfg, &j.key, &j.id)?;
+        std::fs::create_dir_all(pose.parent().unwrap())?;
+        std::fs::write(&pose, b"pose image")?;
+        let media = cfg.data_dir.join("tablet/media/test-tablet");
+        std::fs::create_dir_all(&media)?;
+        let photo = media.join(format!("{}.jpg", uuid::Uuid::new_v4()));
+        let screenshot = media.join(format!("{}.jpg", uuid::Uuid::new_v4()));
+        std::fs::write(&photo, b"tablet photo")?;
+        std::fs::write(&screenshot, b"tablet screen")?;
+        store.insert(&j)?;
+        store.finish_output(&j.id,"posture_report",&json!({"note":"十分钟汇总","tablet_done":true,"assets":[
+            {"kind":"posture","path":pose,"label":"坐姿检测图"},
+            {"kind":"tablet","path":photo,"device":"test-tablet","label":"平板照片"},
+            {"kind":"tablet","path":screenshot,"device":"test-tablet","label":"平板当前屏幕截图"}
+        ]}))?;
+        b.prepare_posture_report(&store.jobs("replying")?[0])
+            .await?;
+        assert!(
+            b.prepare_posture_report(&store.jobs("replying")?[0])
+                .await
+                .is_err()
+        );
+        let staged: Value = serde_json::from_str(&store.jobs("replying")?[0].result)?;
+        assert_eq!(staged["assets"][0]["image_key"], "img_1");
+        for _ in 0..3 {
+            b.prepare_posture_report(&store.jobs("replying")?[0])
+                .await?;
+        }
+        assert_eq!(store.output_kind(&j.id)?, "camera_media");
+        assert_eq!(mock.uploads.load(Ordering::SeqCst), 4);
+        assert!(!pose.exists());
+        assert!(photo.exists() && screenshot.exists());
+        b.deliver().await?;
+        b.deliver().await?;
+        assert_eq!(mock.messages.lock().unwrap().len(), 1);
+        let content: Value = serde_json::from_str(
+            mock.messages.lock().unwrap()[0]["content"]
+                .as_str()
+                .unwrap(),
+        )?;
+        let rows = content["zh_cn"]["content"].as_array().unwrap();
+        let keys: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row[0]["image_key"].as_str())
+            .collect();
+        assert_eq!(keys, vec!["img_1", "img_3", "img_4"]);
+        server.abort();
+        std::fs::remove_dir_all(&cfg.data_dir)?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn form_card_round_trip_rejects_invalid_and_stale_clicks() -> Result<()> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let form = json!({"id":"frm_test","sessionID":"ses_owner","title":"搜索设置","fields":[{"key":"choice","type":"string","required":true,"custom":false,"options":[{"label":"允许","value":"allow"},{"label":"禁用","value":"disable"}]}]});
+        let server_form = form.clone();
+        let server = tokio::spawn(async move {
+            for i in 0..4 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = vec![];
+                let mut buf = [0u8; 4096];
+                let end = loop {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buf[..n]);
+                    if let Some(i) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
+                        break i + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let route = headers.lines().next().unwrap().to_owned();
+                let len = headers
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|s| s.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                while bytes.len() < end + len {
+                    let n = socket.read(&mut buf).await.unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&buf[..n]);
+                }
+                let body = if i == 3 {
+                    assert!(route.starts_with("POST /api/session/ses_owner/form/frm_test/reply "));
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&bytes[end..end + len]).unwrap(),
+                        json!({"answer":{"choice":"allow"}})
+                    );
+                    String::new()
+                } else {
+                    assert!(route.starts_with("GET /api/session/ses_owner/form "));
+                    json!({"data":[server_form]}).to_string()
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        let mut cfg = Config::fixture();
+        cfg.opencode_url = format!("http://{address}");
+        let cfg = Arc::new(cfg);
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        store.set_session("owner-key", "ses_owner")?;
+        store.save_form_card(
+            "token",
+            "owner-key",
+            "ses_owner",
+            &json!({"form":form,"index":0,"answers":{},"revision":0}),
+        )?;
+        store.attach_form_card("token", "om_card")?;
+        let b = Bridge {
+            tablet: None,
+            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            cfg,
+            store,
+        };
+        for (i, revision, operation, input) in [
+            (0, 0, "next", json!({"answer":"wrong"})),
+            (1, 1, "next", json!({"answer":"allow"})),
+            (2, 1, "next", json!({"answer":"disable"})),
+            (3, 2, "submit", json!({})),
+        ] {
+            let job = Job {
+                id: format!("card:{i}"),
+                key: "owner-key".into(),
+                message_id: "om_card".into(),
+                text: format!(
+                    "/_form {}",
+                    json!({"token":"token","revision":revision,"operation":operation,"input":input})
+                ),
+                result: String::new(),
+                sent: 0,
+            };
+            b.store.insert(&job)?;
+            b.handle_form(&job).await?;
+        }
+        let state = b.store.form_card("token")?.unwrap().state;
+        assert_eq!(state["done"], true);
+        assert_eq!(state["answers"], json!({"choice":"allow"}));
+        assert!(b.store.open_form_tokens()?.is_empty());
+        server.await?;
+        Ok(())
+    }
     #[tokio::test]
     async fn approval_cannot_cross_session_boundary() -> Result<()> {
         use std::io::{Read, Write};
@@ -750,6 +1309,7 @@ mod tests {
         let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
         store.set_session("owner-key", "ses_owner")?;
         let b = Bridge {
+            tablet: None,
             oc: Arc::new(OpenCode::new(cfg.clone())?),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
             cfg,

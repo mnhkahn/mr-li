@@ -2,22 +2,28 @@ mod bridge;
 mod camera;
 mod config;
 mod feishu;
+mod forms;
 mod models;
 mod opencode;
 mod posture;
 mod service;
 mod store;
+mod tablet;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "mr_li=info".into()),
         )
         .init();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "bridge".into());
+    if mode == "tablet-mcp" {
+        return tablet::stdio().await;
+    }
     let cfg = Arc::new(config::Config::load(mode == "enroll")?);
     if mode == "enroll" {
         let chat = std::env::args()
@@ -38,6 +44,9 @@ async fn main() -> Result<()> {
             _=tokio::time::sleep(std::time::Duration::from_secs(600))=>{},
         }
         return Ok(());
+    }
+    if mode.starts_with("tablet-") {
+        return tablet::command(&cfg, &mode).await;
     }
     let oc = Arc::new(opencode::OpenCode::new(cfg.clone())?);
     if mode == "opencode" {
@@ -80,7 +89,9 @@ async fn main() -> Result<()> {
         .context("请先启动受支持的 OpenCode 服务")?;
     store.use_v2_sessions()?;
     feishu.identify().await?;
+    let tablet = tablet::Gateway::open(cfg.clone())?;
     let bridge = Arc::new(bridge::Bridge {
+        tablet: Some(tablet.clone()),
         cfg,
         store: store.clone(),
         feishu: feishu.clone(),
@@ -90,6 +101,7 @@ async fn main() -> Result<()> {
     tokio::select! {
         r=feishu.run(store.clone())=>r?,
         r=bridge.run()=>r?,
+        r=tablet.serve()=>r?,
         _=tokio::signal::ctrl_c()=>{},
         _=terminate.recv()=>{},
     }

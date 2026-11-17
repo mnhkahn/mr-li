@@ -86,7 +86,7 @@ pub fn archive_photo(cfg: &Config, job_id: &str, image: &Path) -> Result<PathBuf
     Ok(path)
 }
 
-// Keep only the latest raw frame per conversation. Upload only when a report is due.
+// Keep only the latest annotated PNG per conversation. Upload only when a report is due.
 fn frame_dir(cfg: &Config, key: &str) -> Result<PathBuf> {
     let scope = crate::models::scope(key)?;
     Ok(cfg
@@ -104,12 +104,12 @@ pub fn cache_frame(cfg: &Config, key: &str, image: &Path) -> Result<()> {
     let tmp = dir.join("latest.next");
     std::fs::copy(image, &tmp)?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    std::fs::rename(tmp, dir.join("latest.jpg"))?;
+    std::fs::rename(tmp, dir.join("latest.png"))?;
     Ok(())
 }
 pub fn report_frame_path(cfg: &Config, key: &str, job_id: &str) -> Result<PathBuf> {
     Ok(frame_dir(cfg, key)?.join(format!(
-        "report-{}.jpg",
+        "report-{}.png",
         uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, job_id.as_bytes())
     )))
 }
@@ -118,7 +118,7 @@ pub fn freeze_report_frame(
     key: &str,
     job_id: &str,
 ) -> Result<Option<(PathBuf, u64)>> {
-    let latest = frame_dir(cfg, key)?.join("latest.jpg");
+    let latest = frame_dir(cfg, key)?.join("latest.png");
     let meta = match std::fs::metadata(&latest) {
         Ok(meta) => meta,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -369,7 +369,7 @@ mod tests {
         let (next, _) = freeze_report_frame(&cfg, &key, "report2")?.unwrap();
         assert_eq!(std::fs::read(next)?, b"next-minute-frame");
         assert!(freeze_report_frame(&cfg, &other, "report1")?.is_none());
-        let latest = frame_dir(&cfg, &key)?.join("latest.jpg");
+        let latest = frame_dir(&cfg, &key)?.join("latest.png");
         std::fs::File::options()
             .write(true)
             .open(latest)?

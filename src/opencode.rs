@@ -41,7 +41,12 @@ impl OpenCode {
             .timeout(timeout);
         if matches!(
             path,
-            "/api/model" | "/api/permission/request" | "/api/form" | "/api/config"
+            "/api/model"
+                | "/api/permission/request"
+                | "/api/form"
+                | "/api/config"
+                | "/api/mcp"
+                | "/api/experimental/mcp/homework"
         ) {
             r = r.query(&[(
                 "location[directory]",

@@ -28,6 +28,8 @@ pub struct Config {
     pub pose_detector: Option<PathBuf>,
     pub pose_roi: String,
     pub photo_archive_dir: PathBuf,
+    pub speak_voice: String,
+    pub speak_audio_device: String,
     pub posture_speech: bool,
     pub posture_voice: String,
     pub posture_audio_device: String,
@@ -141,6 +143,14 @@ impl Config {
             .map(PathBuf::from),
             pose_roi: get("MR_LI_POSE_ROI", ""),
             photo_archive_dir: PathBuf::from(get("MR_LI_PHOTO_ARCHIVE_DIR", "photos")),
+            speak_voice: get(
+                "MR_LI_SPEAK_VOICE",
+                &get("MR_LI_POSTURE_VOICE", "Ting-Ting"),
+            ),
+            speak_audio_device: get(
+                "MR_LI_SPEAK_AUDIO_DEVICE",
+                &get("MR_LI_POSTURE_AUDIO_DEVICE", "Built-in Output"),
+            ),
             posture_speech: match get("MR_LI_POSTURE_SPEECH", "true").as_str() {
                 "true" => true,
                 "false" => false,
@@ -192,6 +202,8 @@ impl Config {
             pose_detector: None,
             pose_roi: String::new(),
             photo_archive_dir: std::env::temp_dir().join("mr-li-test-photo-archive"),
+            speak_voice: "Ting-Ting".into(),
+            speak_audio_device: "Built-in Output".into(),
             posture_speech: false,
             posture_voice: "Ting-Ting".into(),
             posture_audio_device: "Built-in Output".into(),

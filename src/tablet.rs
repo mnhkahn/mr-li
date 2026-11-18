@@ -125,6 +125,7 @@ struct Peer {
 type Pending = HashMap<(String, String, u64), oneshot::Sender<Value>>;
 pub struct Gateway {
     cfg: Arc<Config>,
+    pub notices: crate::notices::Notices,
     registry: Registry,
     control: String,
     peers: Mutex<HashMap<String, Peer>>,
@@ -165,8 +166,10 @@ impl Gateway {
             Err(e) => return Err(e.into()),
         };
         ensure!(control.len() >= 32, "平板网关控制凭证损坏");
+        let notices = crate::notices::Notices::open(&dir.join("notices.sqlite3"))?;
         Ok(Arc::new(Self {
             cfg,
+            notices,
             registry,
             control,
             peers: Mutex::new(HashMap::new()),
@@ -339,6 +342,7 @@ impl Gateway {
         public_url(&self.cfg.tablet_public_url)?;
         local_address(&self.cfg.tablet_listen)?;
         let listener = tokio::net::TcpListener::bind(&self.cfg.tablet_listen).await?;
+        self.notices.recover()?;
         let gateway = self.clone();
         tokio::spawn(async move {
             let oc = match crate::opencode::OpenCode::new(gateway.cfg.clone()) {
@@ -362,8 +366,51 @@ impl Gateway {
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         });
+        let gateway = self.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = gateway.deliver_notices().await {
+                    tracing::warn!(error=%e,"通知同步失败");
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
         tracing::info!(listen=%self.cfg.tablet_listen,"平板网关已启动");
         axum::serve(listener, self.routes()).await?;
+        Ok(())
+    }
+    async fn deliver_notices(&self) -> Result<()> {
+        for item in self.notices.pending(now())? {
+            let device = item["device"].as_str().context("通知设备缺失")?;
+            let id = item["id"].as_str().context("通知 ID 缺失")?;
+            let supported = self.peers.lock().unwrap().get(device).map(|peer| {
+                peer.tools
+                    .as_array()
+                    .is_some_and(|tools| tools.iter().any(|t| t["name"] == "self.notify.send"))
+            });
+            if supported != Some(true) {
+                self.notices.defer(
+                    id,
+                    if supported.is_none() {
+                        "平板离线，等待连接"
+                    } else {
+                        "平板未声明通知工具"
+                    },
+                    now(),
+                )?;
+                continue;
+            }
+            if !self.notices.claim(id, now())? {
+                continue;
+            }
+            let result=tokio::time::timeout(Duration::from_secs(10),self.call(device,"tools/call",json!({"name":"self.notify.send","arguments":{"title":"李老师通知","body":item["body"]}}))).await;
+            let (delivered, error) = match result {
+                Ok(Ok(result)) if notice_delivered(&result) => (true, String::new()),
+                Ok(Err(e)) => (false, format!("未确认送达：{e}")),
+                _ => (false, "平板未确认通知，未自动重发；请先查看 APP".into()),
+            };
+            self.notices.finish(id, delivered, &error)?;
+        }
         Ok(())
     }
     async fn register_mcp(&self, oc: &crate::opencode::OpenCode, force: bool) -> Result<()> {
@@ -474,6 +521,7 @@ impl Gateway {
                     gateway.call(&device,"initialize",json!({"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mr-li","version":"0.1.0"}})).await?;
                     let tools = gateway.call(&device,"tools/list",json!({})).await?;
                     if let Some(p) = gateway.peers.lock().unwrap().get_mut(&device) && p.generation == generation { p.tools = tools["tools"].clone(); }
+                    gateway.notices.retry(&device)?;
                     Ok::<_,anyhow::Error>(())
                 }.await;
                 if let Err(e) = result {
@@ -547,6 +595,14 @@ impl Gateway {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         Ok(std::fs::canonicalize(path)?)
     }
+    pub fn devices_status(&self) -> Result<Vec<Value>> {
+        let mut devices = self.registry.devices()?;
+        let peers = self.peers.lock().unwrap();
+        for device in &mut devices {
+            device["online"] = json!(peers.contains_key(device["id"].as_str().unwrap_or("")));
+        }
+        Ok(devices)
+    }
     async fn rpc(&self, request: &Value) -> Result<Value> {
         match request["method"].as_str().unwrap_or("") {
             "initialize" => Ok(
@@ -562,12 +618,9 @@ impl Gateway {
                 let params = &request["params"];
                 let args = &params["arguments"];
                 if params["name"] == "tablet_devices" {
-                    let mut devices = self.registry.devices()?;
-                    let peers = self.peers.lock().unwrap();
-                    for d in &mut devices {
-                        d["online"] = json!(peers.contains_key(d["id"].as_str().unwrap_or("")));
-                    }
-                    return Ok(text_content(&serde_json::to_string(&devices)?));
+                    return Ok(text_content(&serde_json::to_string(
+                        &self.devices_status()?,
+                    )?));
                 }
                 let device = {
                     let peers = self.peers.lock().unwrap();
@@ -632,6 +685,21 @@ impl Gateway {
             _ => bail!("不支持的 MCP 方法"),
         }
     }
+}
+fn notice_delivered(result: &Value) -> bool {
+    if result["isError"] == true {
+        return false;
+    }
+    result["delivered"] == true
+        || result["content"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["type"] == "text"
+                    && item["text"]
+                        .as_str()
+                        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                        .is_some_and(|value| value["delivered"] == true)
+            })
+        })
 }
 fn text_content(text: &str) -> Value {
     json!({"content":[{"type":"text","text":text}]})
@@ -1230,6 +1298,57 @@ mod tests {
         client.abort();
         server.abort();
         Ok(())
+    }
+    #[tokio::test]
+    async fn notification_uses_existing_homework_tool_and_requires_delivery_confirmation()
+    -> Result<()> {
+        let sandbox = Sandbox::new();
+        let g = Gateway::open(Arc::new(sandbox.config()))?;
+        let id = g
+            .notices
+            .publish("owner", "notify-request", "tablet", "明天带练习册", now())?;
+        g.deliver_notices().await?;
+        assert!(g.notices.list("owner", now())?.contains("平板离线"));
+        let (tx, mut rx) = mpsc::channel(8);
+        g.peers.lock().unwrap().insert(
+            "tablet".into(),
+            Peer {
+                generation: "notice-generation".into(),
+                tx,
+                tools: json!([{"name":"self.notify.send"}]),
+            },
+        );
+        g.notices.retry("tablet")?;
+        let gateway = g.clone();
+        let delivery = tokio::spawn(async move { gateway.deliver_notices().await });
+        let request = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+            .await?
+            .unwrap();
+        assert_eq!(request["payload"]["params"]["name"], "self.notify.send");
+        assert_eq!(
+            request["payload"]["params"]["arguments"]["body"],
+            "明天带练习册"
+        );
+        assert!(g.notices.cancel("owner", &id).is_err());
+        let rpc_id = request["payload"]["id"].as_u64().unwrap();
+        g.pending
+            .lock()
+            .unwrap()
+            .remove(&("tablet".into(), "notice-generation".into(), rpc_id))
+            .unwrap()
+            .send(json!({"result":text_content("{\"delivered\":true}")}))
+            .unwrap();
+        delivery.await??;
+        assert!(g.notices.list("owner", now())?.contains("已送达"));
+        g.deliver_notices().await?;
+        assert!(rx.try_recv().is_err());
+        Ok(())
+    }
+    #[test]
+    fn notification_ack_matches_current_app_wrapped_result() {
+        assert!(notice_delivered(&text_content("{\"delivered\":true}")));
+        assert!(!notice_delivered(&text_content("通知已收到")));
+        assert!(!notice_delivered(&json!({"isError":true,"delivered":true})));
     }
     #[tokio::test]
     async fn report_capture_collects_two_images_once_and_survives_restart() -> Result<()> {

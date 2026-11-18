@@ -130,6 +130,14 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+    pub fn command_tasks(&self, key: &str, exclude: &str) -> Result<Vec<serde_json::Value>> {
+        let c = self.0.lock().unwrap();
+        let mut q=c.prepare("SELECT id,status,text,created FROM jobs WHERE key=?1 AND id<>?2 AND id NOT LIKE 'posture-sample:%' AND substr(text,1,2)<>'/_' AND text NOT LIKE '/task%' ORDER BY created DESC,rowid DESC LIMIT 10")?;
+        Ok(q.query_map(params![key,exclude],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?})))?.collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn command_task(&self, key: &str, id: &str) -> Result<Option<serde_json::Value>> {
+        Ok(self.0.lock().unwrap().query_row("SELECT id,status,text,created,output_kind,result FROM jobs WHERE key=?1 AND id=?2",params![key,id],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"kind":r.get::<_,String>(4)?,"result":r.get::<_,String>(5)?}))).optional()?)
+    }
     pub fn status(&self, id: &str, status: &str) -> Result<()> {
         self.0
             .lock()
@@ -596,6 +604,55 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn task_commands_filter_before_limiting_and_cannot_cross_conversations() -> Result<()> {
+        let store = Store::open(Path::new(":memory:"))?;
+        for i in 0..15 {
+            let job = Job {
+                id: format!("task-{i}"),
+                key: "owner-chat-topic".into(),
+                message_id: "om_test".into(),
+                text: format!("工作 {i}"),
+                result: String::new(),
+                sent: 0,
+            };
+            store.insert(&job)?;
+        }
+        for (id, key, text) in [
+            ("foreign-task", "other-user", "private"),
+            ("callback", "owner-chat-topic", "/_model-select private"),
+            ("posture-sample:tick", "owner-chat-topic", "/posture"),
+            ("self", "owner-chat-topic", "/tasks"),
+        ] {
+            store.insert(&Job {
+                id: id.into(),
+                key: key.into(),
+                message_id: "om_test".into(),
+                text: text.into(),
+                result: String::new(),
+                sent: 0,
+            })?;
+        }
+        let tasks = store.command_tasks("owner-chat-topic", "self")?;
+        assert_eq!(tasks.len(), 10);
+        assert_eq!(tasks[0]["id"], "task-14");
+        assert_eq!(tasks[9]["id"], "task-5");
+        assert!(
+            store
+                .command_task("owner-chat-topic", "foreign-task")?
+                .is_none()
+        );
+        assert!(
+            store
+                .command_task("owner-chat-topic", "' OR 1=1 --")?
+                .is_none()
+        );
+        assert_eq!(
+            store.command_task("owner-chat-topic", "task-0")?.unwrap()["text"],
+            "工作 0"
+        );
+        Ok(())
+    }
     fn active_time() -> u64 {
         static TIME: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
         *TIME.get_or_init(|| {

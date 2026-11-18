@@ -1,9 +1,10 @@
 use crate::{
-    camera,
+    camera, commands,
     config::Config,
     feishu::Feishu,
     forms, models,
     opencode::OpenCode,
+    speech,
     store::{Job, Store},
 };
 use anyhow::{Context, Result, ensure};
@@ -18,7 +19,7 @@ pub struct Bridge {
     pub oc: Arc<OpenCode>,
     pub tablet: Option<Arc<crate::tablet::Gateway>>,
 }
-const HELP: &str = "我是李老师。直接发文字即可执行任务，操作权限默认自动允许。\n/help 帮助\n/models 选择免费模型（点击卡片切换）\n也可以直接说“切换模型”\n/posture 本地姿态模型试验（关键点图片与说明）\n/posture start [秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止采样\n/photo 获取摄像头当前照片\n/video [秒数] 从现在录像（默认 10 秒，最长 30 秒）\n/status 当前会话和模型\n/new 新会话（保留旧会话）\n/stop 停止当前任务并取消本会话排队任务\n/approve <请求ID> 仅批准这一次\n/deny <请求ID> 拒绝权限或提问\n/answer <请求ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+const HELP: &str = commands::HELP;
 pub(crate) fn image_message(image_key: &str, note: Option<&str>) -> Value {
     if let Some(note) = note.filter(|note| !note.is_empty()) {
         let mut rows: Vec<Value> = note
@@ -130,6 +131,7 @@ impl Bridge {
                 continue;
             }
             if !camera::is_capture(&j.text)
+                && !speech::is_command(&j.text)
                 && let Some(sid) = self.store.session(&j.key)?
             {
                 self.oc.abort(&sid).await?;
@@ -236,6 +238,13 @@ impl Bridge {
         self.store.finish(&j.id, &text)?;
         Ok(())
     }
+    async fn speak_job(&self, j: &Job) -> Result<()> {
+        let text = speech::text(&j.text).context("请提供播报文字")?;
+        speech::speak(&self.cfg, text).await?;
+        self.store
+            .finish(&j.id, "已通过 Mac mini 连接的喇叭播报。")?;
+        Ok(())
+    }
     async fn command(&self, j: &Job, active: Option<&Job>) -> Result<String> {
         let (cmd, args) = j
             .text
@@ -245,6 +254,115 @@ impl Bridge {
         let sid = self.store.session(&j.key)?;
         match cmd {
             "/help" => Ok(HELP.into()),
+            "/skills" => commands::skills(&self.oc.get("/api/skill").await?),
+            "/mcp" => commands::mcp(&self.oc.get("/api/mcp").await?),
+            "/tasks" => Ok(commands::task_list(
+                &self.store.command_tasks(&j.key, &j.id)?,
+            )),
+            "/task" => {
+                let id = args.strip_prefix("status ").unwrap_or(args).trim();
+                ensure!(
+                    !id.is_empty(),
+                    "用法：/task <任务ID> 或 /task status <任务ID>"
+                );
+                let task = self
+                    .store
+                    .command_task(&j.key, id)?
+                    .context("任务不存在，或不属于当前会话")?;
+                Ok(commands::task(&task))
+            }
+            "/channel" => {
+                let mut text = format!(
+                    "消息入口：{}（已配置）",
+                    if self.cfg.feishu_base_url.contains("larksuite.com") {
+                        "Lark 国际版"
+                    } else {
+                        "飞书"
+                    }
+                );
+                if let Some(tablet) = &self.tablet {
+                    let devices = tablet.devices_status()?;
+                    if devices.is_empty() {
+                        text.push_str("\n平板：尚未配对");
+                    }
+                    for device in devices {
+                        text.push_str(&format!(
+                            "\n平板：{} · {}",
+                            device["name"].as_str().unwrap_or("学习平板"),
+                            if device["online"] == true {
+                                "在线"
+                            } else {
+                                "离线"
+                            }
+                        ));
+                    }
+                } else {
+                    text.push_str("\n平板网关：未启用");
+                }
+                Ok(text)
+            }
+            "/cron" => {
+                ensure!(
+                    args.is_empty() || args == "list",
+                    "当前支持 /cron list；手动检测用 /posture，启停监测用 /posture start 或 /posture stop"
+                );
+                Ok(format!(
+                    "当前聊天的定时任务：坐姿监测（每 10 分钟图文汇总）\n{}",
+                    self.store.posture_watch_status(&models::scope(&j.key)?)?
+                ))
+            }
+            "/notify" => {
+                let tablet = self.tablet.as_ref().context("平板网关未启用")?;
+                let now = crate::posture::now_epoch() as i64;
+                let owner = models::scope(&j.key)?;
+                if args == "list" {
+                    return tablet.notices.list(&owner, now);
+                }
+                if let Some(id) = args.strip_prefix("cancel ") {
+                    tablet.notices.cancel(&owner, id.trim())?;
+                    return Ok("已取消尚未送达的通知。".into());
+                }
+                if args.is_empty() || args == "send" || args == "cancel" || args == "help" {
+                    return Ok("/notify <内容> 在作业首页显示通知\n/notify list 查看本聊天你的通知和送达状态\n/notify cancel <ID> 取消尚未发送的通知\n/notify send --device <设备ID> <内容> 指定平板\n首页仅显示最新通知，当天结束后消失；已送达通知不能远程撤回，可发送新通知替换。".into());
+                }
+                let publish = crate::notices::parse_send(args)?;
+                let devices = tablet.devices_status()?;
+                let device = if let Some(id) = publish.device {
+                    ensure!(
+                        devices.iter().any(|device| device["id"] == id),
+                        "设备尚未配对"
+                    );
+                    id
+                } else {
+                    ensure!(
+                        devices.len() == 1,
+                        "请先配对平板；多台设备时用 /notify send --device <设备ID> <内容>"
+                    );
+                    devices[0]["id"]
+                        .as_str()
+                        .context("设备 ID 缺失")?
+                        .to_owned()
+                };
+                let id = tablet
+                    .notices
+                    .publish(&owner, &j.id, &device, &publish.body, now)?;
+                Ok(format!(
+                    "通知已保存，等待平板确认送达。离线时会在当天重连后补发。\n{id}\n/notify list 查看状态"
+                ))
+            }
+            "/speak" => {
+                if args == "stop" {
+                    for q in self.store.jobs("queued")? {
+                        if q.key == j.key && speech::is_command(&q.text) {
+                            self.store.finish(&q.id, "语音任务已取消。")?;
+                        }
+                    }
+                    Ok("已停止本会话语音，并取消待播报文字。".into())
+                } else {
+                    Ok("/speak <文字> 将文字通过 Mac mini 连接的喇叭播放，最多 500 字\n/speak stop 停止本会话语音".into())
+                }
+            }
+
             "/posture" => {
                 let words: Vec<_> = args.split_whitespace().collect();
                 match words.as_slice() {
@@ -266,12 +384,25 @@ impl Bridge {
                     .iter()
                     .filter(|q| q.key == j.key && !is_command(q))
                     .count();
+                let speaking = self
+                    .store
+                    .jobs("running")?
+                    .iter()
+                    .any(|q| q.key == j.key && speech::is_command(&q.text));
+                let speech_queue = self
+                    .store
+                    .jobs("queued")?
+                    .iter()
+                    .filter(|q| q.key == j.key && speech::text(&q.text).is_some())
+                    .count();
                 Ok(format!(
-                    "会话：{}\n模型：{}\n执行中：{}\n排队：{}",
+                    "会话：{}\n模型：{}\n执行中：{}\n排队：{}\n语音播报中：{}\n待播报：{}",
                     sid.as_deref().unwrap_or("尚未创建"),
                     self.selected_model(&j.key)?,
                     active.is_some_and(|a| a.key == j.key),
-                    pending
+                    pending,
+                    speaking,
+                    speech_queue
                 ))
             }
             "/new" => {
@@ -299,11 +430,15 @@ impl Bridge {
                     self.oc.abort(&sid).await?;
                 }
                 for q in self.store.jobs("queued")? {
-                    if q.key == j.key && (!is_command(&q) || camera::is_capture(&q.text)) {
+                    if q.key == j.key
+                        && (!is_command(&q)
+                            || camera::is_capture(&q.text)
+                            || speech::is_command(&q.text))
+                    {
                         self.store.finish(&q.id, "任务已由 /stop 取消。")?;
                     }
                 }
-                Ok("已请求停止当前会话任务，并取消排队任务。".into())
+                Ok("已请求停止当前会话任务和语音，并取消排队任务。".into())
             }
             "/approve" | "/deny" | "/answer" => {
                 let sid = sid.context("尚无会话")?;
@@ -866,6 +1001,7 @@ impl Bridge {
         self.recover().await?;
         let mut active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut camera_active: Option<(Job, JoinHandle<Result<()>>)> = None;
+        let mut speech_active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut seen = HashSet::new();
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         let mut count = 0u64;
@@ -923,6 +1059,12 @@ impl Bridge {
                     }
                 }
             }
+            if speech_active.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+                let (j, h) = speech_active.take().unwrap();
+                if let Err(e) = h.await.context("语音执行器异常退出").and_then(|r| r) {
+                    self.store.finish(&j.id, &format!("播报失败：{e}"))?;
+                }
+            }
             self.store.queue_due_posture_reports()?;
             self.store.queue_due_posture()?;
             let queued = self.store.jobs("queued")?;
@@ -951,12 +1093,33 @@ impl Bridge {
                     }),
                 ));
             }
+            if speech_active.is_none()
+                && let Some(j) = queued.iter().find(|j| speech::text(&j.text).is_some())
+            {
+                self.store.status(&j.id, "running")?;
+                let b = self.clone();
+                let job = j.clone();
+                speech_active = Some((
+                    j.clone(),
+                    tokio::spawn(async move { b.speak_job(&job).await }),
+                ));
+            }
             // Commands stay responsive while the sole model task waits for an approval.
             for j in queued
                 .iter()
-                .filter(|j| is_command(j) && !camera::is_capture(&j.text))
+                .filter(|j| {
+                    is_command(j) && !camera::is_capture(&j.text) && speech::text(&j.text).is_none()
+                })
                 .take(1)
             {
+                if (speech::is_stop(&j.text) || j.text.trim() == "/stop")
+                    && speech_active.as_ref().is_some_and(|(s, _)| s.key == j.key)
+                {
+                    let (s, h) = speech_active.take().unwrap();
+                    h.abort();
+                    let _ = h.await;
+                    self.store.finish(&s.id, "语音播报已停止。")?;
+                }
                 if (j.text.trim() == "/posture stop" || j.text.trim() == "/stop")
                     && camera_active.as_ref().is_some_and(|(c, _)| {
                         c.id.starts_with("posture-sample:")
@@ -1023,6 +1186,137 @@ impl Bridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn slash_commands_use_workspace_metadata_and_cancel_only_owned_speech() -> Result<()> {
+        use axum::{Json, Router, extract::Query, routing::get};
+        use std::collections::HashMap;
+        let app=Router::new()
+            .route("/api/skill",get(|Query(query):Query<HashMap<String,String>>|async move{
+                assert!(query.contains_key("location[directory]"));
+                Json(json!({"data":[{"name":"weather","description":"查询天气","content":"private-content"}]}))
+            }))
+            .route("/api/mcp",get(|Query(query):Query<HashMap<String,String>>|async move{
+                assert!(query.contains_key("location[directory]"));
+                Json(json!({"data":[{"name":"homework","status":{"status":"connected"}}]}))
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut cfg = Config::fixture();
+        cfg.opencode_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let cfg = Arc::new(cfg);
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            oc: Arc::new(OpenCode::new(cfg)?),
+            tablet: None,
+        };
+        let key = json!(["workspace", "owner", "chat", "topic"]).to_string();
+        let mut job = Job {
+            id: "command".into(),
+            key: key.clone(),
+            message_id: "om_command".into(),
+            text: "/skills".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        let skills = b.command(&job, None).await?;
+        assert!(skills.contains("weather"));
+        assert!(!skills.contains("private-content"));
+        job.text = "/mcp".into();
+        assert!(b.command(&job, None).await?.contains("connected"));
+        job.text = "/cron list".into();
+        assert!(b.command(&job, None).await?.contains("坐姿监测"));
+        job.text = "/channel".into();
+        assert!(b.command(&job, None).await?.contains("平板网关：未启用"));
+        for (id, k) in [
+            ("own-speech", key.as_str()),
+            ("foreign-speech", "other-conversation"),
+        ] {
+            store.insert(&Job {
+                id: id.into(),
+                key: k.into(),
+                message_id: "om_test".into(),
+                text: "/speak 你好".into(),
+                result: String::new(),
+                sent: 0,
+            })?;
+        }
+        job.text = "/tasks".into();
+        let tasks = b.command(&job, None).await?;
+        assert!(tasks.contains("own-speech"));
+        assert!(!tasks.contains("foreign-speech"));
+        job.text = "/task status foreign-speech".into();
+        assert!(b.command(&job, None).await.is_err());
+        job.text = "/speak   stop".into();
+        b.command(&job, None).await?;
+        assert_eq!(
+            store.command_task(&key, "own-speech")?.unwrap()["status"],
+            "replying"
+        );
+        assert_eq!(
+            store
+                .command_task("other-conversation", "foreign-speech")?
+                .unwrap()["status"],
+            "queued"
+        );
+        server.abort();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn notices_can_be_managed_across_topics_but_not_users_or_chats() -> Result<()> {
+        let mut cfg = Config::fixture();
+        cfg.data_dir =
+            std::env::temp_dir().join(format!("mr-li-notify-command-{}", uuid::Uuid::new_v4()));
+        let cfg = Arc::new(cfg);
+        let tablet = crate::tablet::Gateway::open(cfg.clone())?;
+        let first_key = json!(["workspace", "parent", "chat", "topic-one"]).to_string();
+        let owner = models::scope(&first_key)?;
+        let id = tablet.notices.publish(
+            &owner,
+            "source",
+            "tablet",
+            "明天带练习册",
+            crate::posture::now_epoch() as i64,
+        )?;
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: Arc::new(Store::open(std::path::Path::new(":memory:"))?),
+            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            tablet: Some(tablet.clone()),
+        };
+        let mut j = Job {
+            id: "query".into(),
+            key: json!(["workspace", "parent", "chat", "topic-two"]).to_string(),
+            message_id: "om_query".into(),
+            text: "/notify list".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        assert!(b.command(&j, None).await?.contains("明天带练习册"));
+        j.key = json!(["workspace", "other-parent", "chat", "topic-two"]).to_string();
+        assert!(!b.command(&j, None).await?.contains("明天带练习册"));
+        j.text = format!("/notify cancel {id}");
+        assert!(b.command(&j, None).await.is_err());
+        j.key = json!(["workspace", "parent", "other-chat", "topic-two"]).to_string();
+        assert!(b.command(&j, None).await.is_err());
+        j.key = first_key;
+        b.command(&j, None).await?;
+        assert!(
+            tablet
+                .notices
+                .pending(crate::posture::now_epoch() as i64)?
+                .is_empty()
+        );
+        drop(b);
+        drop(tablet);
+        std::fs::remove_dir_all(&cfg.data_dir)?;
+        Ok(())
+    }
     #[test]
     fn report_post_contains_summary_and_three_distinct_labeled_images() {
         let message = report_message(

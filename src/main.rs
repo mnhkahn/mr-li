@@ -1,12 +1,15 @@
 mod bridge;
 mod camera;
+mod commands;
 mod config;
 mod feishu;
 mod forms;
 mod models;
+mod notices;
 mod opencode;
 mod posture;
 mod service;
+mod speech;
 mod store;
 mod tablet;
 use anyhow::{Context, Result};
@@ -47,6 +50,13 @@ async fn main() -> Result<()> {
     }
     if mode.starts_with("tablet-") {
         return tablet::command(&cfg, &mode).await;
+    }
+    if mode == "speak" {
+        return speech::speak(
+            &cfg,
+            &std::env::args().skip(2).collect::<Vec<_>>().join(" "),
+        )
+        .await;
     }
     let oc = Arc::new(opencode::OpenCode::new(cfg.clone())?);
     if mode == "opencode" {
@@ -107,7 +117,7 @@ async fn main() -> Result<()> {
     }
     tracing::info!("正在停止李老师");
     for j in store.jobs("running")? {
-        if camera::is_capture(&j.text) {
+        if camera::is_capture(&j.text) || speech::is_command(&j.text) {
             continue;
         }
         if let Some(sid) = store.session(&j.key)?

@@ -46,6 +46,7 @@ impl OpenCode {
                 | "/api/form"
                 | "/api/config"
                 | "/api/mcp"
+                | "/api/skill"
                 | "/api/experimental/mcp/homework"
         ) {
             r = r.query(&[(

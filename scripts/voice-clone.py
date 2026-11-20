@@ -51,7 +51,8 @@ def main():
             os.environ.pop(key, None)
         os.environ['NO_PROXY'] = os.environ['no_proxy'] = '*'
         from gradio_client import Client, handle_file
-        client = Client(cfg['endpoint'], verbose=False)
+        from huggingface_hub import get_token
+        client = Client(cfg['endpoint'], verbose=False, token=get_token())
         job = client.submit(handle_file(str(reference)), '', text, 'Chinese', True,
                             cfg['model_size'], api_name='/generate_voice_clone')
         try:

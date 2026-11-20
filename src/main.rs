@@ -17,6 +17,7 @@ mod service;
 mod speech;
 mod store;
 mod tablet;
+mod voice;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 #[tokio::main(flavor = "current_thread")]
@@ -90,6 +91,9 @@ async fn main() -> Result<()> {
             &std::env::args().skip(2).collect::<Vec<_>>().join(" "),
         )
         .await;
+    }
+    if mode == "voice" || mode == "voice-check" {
+        return voice::run(cfg, mode == "voice-check").await;
     }
     let oc = Arc::new(opencode::OpenCode::new(cfg.clone())?);
     if mode == "opencode" {

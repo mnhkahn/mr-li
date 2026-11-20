@@ -40,6 +40,7 @@ pub struct Config {
     pub posture_speech: bool,
     pub posture_voice: String,
     pub posture_audio_device: String,
+    pub voice: crate::voice::Settings,
 }
 impl Config {
     pub fn load(enrollment: bool) -> Result<Self> {
@@ -107,6 +108,7 @@ impl Config {
             );
         }
         Ok(Self {
+            voice: crate::voice::Settings::from_settings(get),
             home_assistant: crate::home_assistant::Settings::from_settings(get, &env_path)?,
             tablet_listen: get("MR_LI_TABLET_LISTEN", "127.0.0.1:8787"),
             tablet_public_url: get("MR_LI_TABLET_PUBLIC_URL", ""),
@@ -190,6 +192,7 @@ impl Config {
 impl Config {
     pub fn fixture() -> Self {
         Self {
+            voice: crate::voice::Settings::from_settings(|_, d| d.into()),
             home_assistant: None,
             tablet_listen: "127.0.0.1:8787".into(),
             tablet_public_url: String::new(),

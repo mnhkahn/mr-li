@@ -262,7 +262,7 @@ impl Store {
     }
     pub fn jobs(&self, status: &str) -> Result<Vec<Job>> {
         let c = self.0.lock().unwrap();
-        let mut s = c.prepare("SELECT id,key,message_id,text,result,sent FROM jobs WHERE status=?1 AND (?1 != 'replying' OR NOT EXISTS (SELECT 1 FROM delivery_retry WHERE delivery_retry.id=jobs.id AND due>unixepoch())) ORDER BY rowid LIMIT 500")?;
+        let mut s = c.prepare("SELECT id,key,message_id,text,result,sent FROM jobs WHERE status=?1 AND (?1 != 'replying' OR (id NOT LIKE 'voice:%' AND NOT EXISTS (SELECT 1 FROM delivery_retry WHERE delivery_retry.id=jobs.id AND due>unixepoch()))) ORDER BY rowid LIMIT 500")?;
         let rows = s.query_map([status], |r| {
             Ok(Job {
                 id: r.get(0)?,
@@ -282,6 +282,22 @@ impl Store {
     }
     pub fn command_task(&self, key: &str, id: &str) -> Result<Option<serde_json::Value>> {
         Ok(self.0.lock().unwrap().query_row("SELECT id,status,text,created,output_kind,result FROM jobs WHERE key=?1 AND id=?2",params![key,id],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"kind":r.get::<_,String>(4)?,"result":r.get::<_,String>(5)?}))).optional()?)
+    }
+    /// Real incoming messages only; synthetic jobs cannot redirect the microphone binding.
+    pub fn voice_origins(&self) -> Result<Vec<Job>> {
+        let c = self.0.lock().unwrap();
+        let mut q = c.prepare("SELECT j.id,j.key,j.message_id FROM jobs j INNER JOIN incoming_messages m ON m.id=j.id ORDER BY j.rowid DESC")?;
+        Ok(q.query_map([], |r| {
+            Ok(Job {
+                id: r.get(0)?,
+                key: r.get(1)?,
+                message_id: r.get(2)?,
+                text: String::new(),
+                result: String::new(),
+                sent: 0,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
     }
     pub fn status(&self, id: &str, status: &str) -> Result<()> {
         self.0
@@ -572,14 +588,14 @@ impl Store {
     }
     pub fn finish(&self, id: &str, text: &str) -> Result<()> {
         self.0.lock().unwrap().execute(
-            "UPDATE jobs SET status=CASE WHEN substr(id,1,8)='builtin:' THEN 'done' ELSE 'replying' END,result=?2,output_kind='text' WHERE id=?1",
+            "UPDATE jobs SET status=CASE WHEN substr(id,1,8)='builtin:' OR substr(id,1,6)='voice:' THEN 'done' ELSE 'replying' END,result=?2,output_kind='text' WHERE id=?1",
             params![id, text],
         )?;
         Ok(())
     }
     pub fn finish_output(&self, id: &str, kind: &str, value: &serde_json::Value) -> Result<()> {
         self.0.lock().unwrap().execute(
-            "UPDATE jobs SET status='replying',result=?2,output_kind=?3 WHERE id=?1",
+            "UPDATE jobs SET status=CASE WHEN substr(id,1,6)='voice:' THEN 'done' ELSE 'replying' END,result=?2,output_kind=?3 WHERE id=?1",
             params![id, value.to_string(), kind],
         )?;
         Ok(())

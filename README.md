@@ -83,7 +83,7 @@ OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交
 
 Rust 降低的是桥接进程的内存和启动开销。OpenCode、模型、MCP 与工具仍有各自开销；低配置机器建议使用远程模型，少开 MCP 服务。当前没有实测整机内存占用或模型任务延迟。
 
-处理反馈沿用 `xiaoli/server` 的飞书逻辑：普通模型任务及 `/photo`、`/video` 开始执行时，随机在原消息添加 `Typing`、`OnIt`、`THINKING`、`OneSecond` 之一，回复全部送达后撤除。错误与停止结果回发后同样清理；表情记录持久保存，重启后继续清理，撤除失败每 30 秒重试。表情接口故障不阻止任务执行；需要 `im:message` 或 `im:message.reactions:write_only` 权限。快捷控制命令保持原有响应方式。
+处理反馈沿用 `xiaoli/server` 的飞书逻辑：普通模型任务及用户发送的所有 Slash 命令（包括 `/speak`、`/photo`、`/video`）开始执行时，随机在原消息添加 `Typing`、`OnIt`、`THINKING`、`OneSecond` 之一，回复全部送达后撤除。错误与停止结果回发后同样清理；表情记录持久保存，重启后继续清理，撤除失败每 30 秒重试。表情接口故障不阻止任务执行；需要 `im:message` 或 `im:message.reactions:write_only` 权限。卡片回调、后台采样和内部语音任务不向原消息重复添加表情。快速命令的处理表情可能只短暂显示。
 
 ## 开发与验证
 
@@ -259,7 +259,7 @@ sudo ./scripts/service.sh uninstall system
 
 群聊中，文字指令需要 @李老师。模型选择在你当前聊天的所有话题中生效；`/stop`、权限回复等会话操作请在发起任务的同一话题发送。卡片点选无需再 @机器人，卡片 30 分钟有效，转发后不可操作。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片、附件收发或过程工具日志展示。
 
-`/speak` 不受坐姿监测时段限制。默认使用系统本地 TTS；配置全局克隆音色后，未缓存文字通过 Qwen 克隆服务合成。文字经标准输入交给 macOS `/usr/bin/say`，不会作为 shell 命令或命令行选项执行；使用 `MR_LI_SPEAK_VOICE` 和 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的声音与输出设备。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
+`/speak` 不受坐姿监测时段限制。未配置克隆程序时使用系统本地 TTS；当前 Mac mini 部署使用本地 ZipVoice 克隆，未缓存文字也能离线合成。文字经标准输入交给配置的语音程序，不会作为 shell 命令或命令行选项执行；使用 `MR_LI_SPEAK_VOICE` 和 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的声音与输出设备。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
 
 `/skills`、`/mcp` 直接读取 OpenCode 当前工作目录的真实接口；`/tasks`、`/task` 只读本会话的 SQLite 记录。`/cron` 目前只展示已有坐姿监测，不引入新的通用定时器。旧小李的记忆、提醒、历史会话切换及模型余额查询尚未迁移。
 
@@ -296,7 +296,7 @@ sudo ./scripts/service.sh uninstall system
 
 `.env` 中 `MR_LI_POSE_MODEL` 指向 `rtmpose-m-halpe26.onnx`，`MR_LI_POSE_DETECTOR` 指向 `yolox-tiny-person.onnx`。`MR_LI_POSE_ROI` 可为空，在整图查找；也可填归一化 `x,y,width,height` 限制候选人的上半身中心区域，不裁掉人体。Mac mini 当前学习区为 `0.10,0.30,0.65,0.70`，排除右侧床边其他人，同时覆盖之前两个机位里的书桌位置。机位大幅改变后需要重新核对学习区。
 
-语音配置为 `MR_LI_POSTURE_SPEECH`（默认 true）、`MR_LI_POSTURE_VOICE`（默认 Ting-Ting）、`MR_LI_POSTURE_AUDIO_DEVICE`（默认 Built-in Output），使用 macOS 自带 `/usr/bin/say`，不修改系统音量。
+语音配置为 `MR_LI_POSTURE_SPEECH`（默认 true）、`MR_LI_POSTURE_VOICE`（默认 Ting-Ting）、`MR_LI_POSTURE_AUDIO_DEVICE`（默认 Built-in Output），未配置 `MR_LI_SPEECH_PROGRAM` 时使用 macOS 自带 `/usr/bin/say`；当前部署的提醒与手动播报共用本地克隆程序，不修改系统音量。
 
 离线试验：
 
@@ -386,6 +386,30 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 验证：`cargo test --locked reply` 和 `cargo test --locked rich_outbox`，涵盖各类组件、回调隔离/去重/失效、表单校验、素材权限、发送降级及网络重试。实际客户端的按钮和表单交互需在飞书中点击验收。
 
+## Mac mini 麦克风语音对话
+
+新增独立的 `voice` 输入进程：说“你好，李老师”唤醒，停顿后会用配置的音色回答“我在，请说”；也支持唤醒词后直接接着说要求。本机 sherpa-onnx 负责关键词检测、Silero VAD 断句和离线 SenseVoice 转写，录音不落盘，转写后进入现有 bridge 队列。默认ASR不消耗在线额度；也保留了与xiaoli相同的硅基流动ASR接口作为显式可选后端。语音不选择 Agent：执行时读取绑定聊天当前 `/agent` 和 `/models` 设置，复用同一话题的会话、权限处理和内置工具。普通回复仅在本机显示并播报；Agent 的结构化补充提问仍通过绑定飞书聊天处理。
+
+```bash
+# 从源码运行时先编译；发布包已包含二进制。
+cargo build --locked --release
+# 需要 Python 3.10+；下载本地唤醒词、VAD和SenseVoice模型。
+bash scripts/setup-voice.sh
+# bridge 应已运行；目标飞书聊天至少发送过一次消息。
+scripts/run.sh voice-check
+scripts/run.sh voice
+```
+
+如果有多个允许的用户或聊天，在 `.env` 指定 `MR_LI_VOICE_USER_ID` 和 `MR_LI_VOICE_CHAT_ID`；只有唯一候选时才自动绑定。启动时固定为该聊天最近收到消息的话题，后续 Agent 切换实时生效。`MR_LI_VOICE_INPUT_DEVICE` 可选设备名称或数字 ID，留空使用系统默认输入；`voice-check` 列出设备并加载模型检查，不录音。Mac mini 需要系统中实际存在的麦克风输入设备，没有输入时会报错。首次在部署用户的桌面终端前台启动并允许 macOS 麦克风权限；该进程与现有无桌面登录的后台 bridge 分开启动，暂不自动安装开机录音服务。
+
+回复继续使用 `MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和现有输出设备，不修改音色。处理要求和播报期间关闭麦克风，播报结束后重新收音；15 秒内可继续说话，超时恢复等待唤醒，说“结束对话”“停止对话”或“再见”也会回到待唤醒状态。单段最长 30 秒，停顿约 0.8 秒提交。进程退出不重发已提交的任务，也不重播旧结果；需要停止正在执行的任务时，在绑定飞书聊天使用 `/stop`。语音进程和 bridge 必须使用相同 `.env`、工作目录与数据目录。
+
+可选云语音：`python3 scripts/import-xiaoli-speech.py ../xiaoli/server` 导入xiaoli的ASR/TTS模型配置与凭证，不修改xiaoli。语音API配置保存在私有 `.data/speech/config.json`，密钥在权限为600的独立 `api-key` 文件，不进入Agent提示词、命令行或示例配置。运行 `scripts/speech-api.sh --register-voice /absolute/path/to/reference.wav` 用原参考音频注册CosyVoice克隆，成功后才把 `MR_LI_SPEECH_PROGRAM` 指向部署目录 `scripts/speech-api.sh`；不会换成anna等演示音色。云ASR须显式给 `voice-input.py` 传 `--cloud-asr`；`setup-voice.sh --cloud-asr` 可以省略离线ASR模型。新文字可由硅基流动实时合成，缓存仅用于重复请求，不依赖HF公共Demo；云服务失败时不会悄悄切换音色。
+
+Mac mini（i5-4260U、4GB、macOS12.7.6）本地ASR实测：5.4秒系统中文测试音频，识别约0.48秒，含加载的进程峰值约780MB，首次模型加载约5.07秒。`setup-voice.sh` 为macOS15之前的系统选择兼容的sherpa-onnx 1.10.46，避免新轮子依赖不存在的CoreML符号。设备已安装离线普通话音色Ting-Ting，但当前部署按用户要求保留克隆说话人，使用下文的本地ZipVoice，不切换到系统音色。
+
+关键词模型参考 [sherpa-onnx 官方关键词检测](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html)；在线语音参考硅基流动的[ASR](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post)、[TTS](https://docs.siliconflow.cn/docs/api/audio-speech-post)和[克隆音色注册](https://docs.siliconflow.cn/docs/api/uploads-audio-voice-post)。ASR/TTS若返回HTTP402，表示当前账户余额不足；不自动更换密钥、充值或切换到其他音色。Mac mini尚未接入实体麦克风时可先部署，收音进程保持不启动。
+
 ## Agent 调用李老师内置能力
 
 bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢复会话时传入，TRAE 使用 thread 配置。内置 `builtin-mcp` 通过仅监听本机的接口调用同一套命令队列。可直接说“跟宝宝说该写作业了”“拍张照片给我看看”“录十秒视频”“检查一下坐姿”“开启坐姿提醒”“在平板首页提醒先写数学”“刚才的任务完成了吗”。原 slash 命令继续可用。
@@ -430,11 +454,17 @@ MCP 配置仅传入程序路径、`ha-mcp` 子命令和私有 `.env` 路径，�
 
 ### 全局克隆音色
 
-`MR_LI_SPEECH_PROGRAM` 默认 `/usr/bin/say`。设置为部署目录的 `scripts/voice-clone.sh` 后，手动 `/speak`、每日新闻和坐姿提醒统一使用 Qwen 音色克隆。工作脚本通过标准输入接收文字，不把新闻作为 shell 命令；停止播报会终止当前播放进程。
+`MR_LI_SPEECH_PROGRAM` 默认 `/usr/bin/say`。当前 Mac mini 设置为部署目录的 `scripts/local-voice.sh`，手动 `/speak`、每日新闻、坐姿提醒和麦克风对话共用本地 ZipVoice-Distill INT8 中文/英文克隆模型。ASR/TTS 不访问 HF 或硅基流动，不消耗这些服务的额度；Agent 推理仍由聊天当前设置决定。文字通过标准输入接收，不作为 shell 命令执行。
 
-参考音频、独立 Python 环境和缓存放在 Mac mini `.data/voice-clone/`，不提交仓库。`config.json` 配置 `endpoint` 与 `model_size`，`reference.wav` 为用户提供的参考音频。当前使用 Qwen 官方 Hugging Face Demo 的 `generate_voice_clone`，无需转写、无需 API Key；首次合成需联网，公共 Demo 可能排队或受配额限制，失败会报错，不会悄悄换成其他音色。同文字音频按参考音频、模型和文字哈希缓存，坐姿固定提醒提前缓存。
+沿用原 `.data/voice-clone/reference.wav` 的说话人，原文件不改动。本地模型使用从该录音截取的有效语音及匹配文字：去除开头约2.5秒空白，保留弱起音，再补0.2秒尾静音。参考音频、转写、模型、配置、兼容运行库和缓存保存在私有 `.data/local-tts/`，不提交仓库。更换合成模型会影响韵律和音质，克隆的是同一参考说话人，不能保证与 Qwen 的输出完全一致。
 
-播放使用 Mac mini 系统默认输出设备（配置时为内建输出）。`voice-clone.sh --cache-only` 从标准输入读取文字，只预生成缓存，不播放。Python 依赖 `gradio-client`，安装到 `.data/voice-clone/venv`；环境和音频均保留在 Mac mini，不依赖操作电脑或 Codex。
+兼容构建：`bash scripts/build-local-voice.sh` 为 Intel macOS12 编译 sherpa-onnx 1.13.8 C++ CPU 引擎，使用 ONNX Runtime 1.18.0（`MR_LI_ORT_ARCHIVE` 可指定项目坐姿模型已缓存的官方运行库压缩包，SHA256固定）。公开模型来自 [sherpa-onnx ZipVoice](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models) 的 `sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2` 和 `vocos_24khz.onnx`；解压后目录分别为 `.data/local-tts/models/` 和 `.data/local-tts/vocos_24khz.onnx`。部署包含 `manifest.json` 校验记录。另需权限600的 `reference.wav`、对应 `reference.txt` 和 `config.json`（`model_id` 包含模型版本/哈希，`steps` 当前为8）。Python入口使用离线ASR的 `.data/voice/venv`。
+
+生成使用CPU两线程、每段最多20字并保留静音，控制旧Mac的内存峰值。缓存身份包含参考音频、参考文字、模型、分段配置、生成步数和文案，避免复用旧音色或旧参数。`local-voice.sh --cache-only` 从标准输入读取文字，只生成缓存，不播放；固定应答与坐姿提醒预先生成。新文案实时在本机生成，缓存只是重复播放的优化。合成到播放使用同一PID，取消会终止当前阶段并释放播放锁。播放沿用系统默认输出，未改变当前内建喇叭设置。
+
+实测设备为 i5-4260U、4GB、macOS12.7.6：默认8步，短句约14秒、较长一句约31秒后开始播放，进程峰值约530MB。4步较快，但一条短句首字转写出现偏差，因此默认采用8步。已核对短句、长句及否定指令；这些是合成后再由ASR核对的结果，音色听感仍以试听为准。冷启动需加载模型约3.4秒；这台机器能离线克隆，尚达不到即时语音响应。命中缓存时直接播放。
+
+旧 `scripts/voice-clone.sh`（Qwen HF Demo）和可选 `scripts/speech-api.sh`（硅基流动）保留用于显式切换，不作为失败回退。HF ZeroGPU额度耗尽和云API HTTP402均明确报错；不自动充值、换密钥或改用其他音色。当前本地模式不依赖它们的可用额度。
 
 代理管理也支持终端命令 `mr-li proxy status`、`mr-li proxy list 香港`、`mr-li proxy set HK-1`、`mr-li proxy test`。默认管理本机 `http://127.0.0.1:17990` 的 Mihomo `Proxy` 组，进程环境变量 `MR_LI_PROXY_CONTROLLER`、`MR_LI_PROXY_GROUP`、`MR_LI_PROXY_SECRET` 可覆盖。控制器请求始终直连本机；切换后回读确认，不修改系统代理或其他内核。节点持久化由内核配置的 `profile.store-selected` 决定。
 

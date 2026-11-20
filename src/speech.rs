@@ -2,7 +2,42 @@
 use crate::config::Config;
 use anyhow::{Context, Result, ensure};
 use std::{path::Path, process::Stdio, time::Duration};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+// Keep the tail (where workers print their final error) while draining the pipe so
+// verbose dependencies cannot block the child or consume unbounded memory.
+async fn diagnostics(mut input: tokio::process::ChildStderr) -> Result<Vec<u8>> {
+    let mut tail = Vec::new();
+    let mut buffer = [0u8; 2048];
+    loop {
+        let n = input.read(&mut buffer).await?;
+        if n == 0 {
+            return Ok(tail);
+        }
+        tail.extend_from_slice(&buffer[..n]);
+        if tail.len() > 8192 {
+            tail.drain(..tail.len() - 8192);
+        }
+    }
+}
+fn playback_error(stderr: &[u8]) -> &'static str {
+    let detail = String::from_utf8_lossy(stderr).to_lowercase();
+    if detail.contains("zerogpu") && detail.contains("quota") {
+        "音色合成服务的免费额度已耗尽，暂时无法合成新文字；已有缓存仍可播放。请等待额度恢复，或配置 Hugging Face 登录凭证。"
+    } else if detail.contains("no module named") {
+        "语音程序缺少 Python 依赖，请检查它使用的独立运行环境"
+    } else if detail.contains("tts api http 402") {
+        "语音合成服务账户余额不足（HTTP 402），新文字尚未生成"
+    } else if detail.contains("tts api http 401") {
+        "语音合成服务凭证无效（HTTP 401），请检查API密钥"
+    } else if detail.contains("tts api http 429") {
+        "语音合成服务限流（HTTP 429），请稍后再试"
+    } else if detail.contains("tts api") {
+        "语音合成服务调用失败，请检查模型、音色、API额度与网络；喇叭播放尚未开始"
+    } else {
+        "语音播放失败，请检查 Mac mini 的语音程序和喇叭输出设备"
+    }
+}
 
 pub fn is_command(text: &str) -> bool {
     text.split_whitespace().next() == Some("/speak")
@@ -55,7 +90,7 @@ async fn play(program: &Path, cfg: &Config, text: &str, timeout: Duration) -> Re
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .context("无法启动 Mac mini 本地语音合成")?;
@@ -65,18 +100,27 @@ async fn play(program: &Path, cfg: &Config, text: &str, timeout: Duration) -> Re
         .await
         .context("写入播报文字失败")?;
     drop(input);
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
+    let stderr = child.stderr.take().context("无法读取语音程序诊断")?;
+    let (status, stderr) = match tokio::time::timeout(timeout, async {
+        tokio::try_join!(
+            async { child.wait().await.map_err(anyhow::Error::from) },
+            diagnostics(stderr)
+        )
+    })
+    .await
+    {
         Ok(result) => result?,
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            anyhow::bail!("播报超过 3 分钟，已停止");
+            anyhow::bail!("播报超过 {} 秒，已停止", timeout.as_secs());
         }
     };
-    ensure!(
-        status.success(),
-        "语音播放失败，请检查 Mac mini 的语音和喇叭输出设备"
-    );
+    if !status.success() {
+        let reason = playback_error(&stderr);
+        tracing::warn!(exit_code=?status.code(),reason,"语音程序执行失败");
+        anyhow::bail!("{reason}");
+    }
     Ok(())
 }
 
@@ -84,6 +128,32 @@ async fn play(program: &Path, cfg: &Config, text: &str, timeout: Duration) -> Re
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[tokio::test]
+    async fn quota_failure_is_reported_without_blame_on_audio_device_and_stderr_is_drained()
+    -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("mr-li-speech-quota-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let program = dir.join("worker");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\ncat >/dev/null\n/usr/bin/head -c 131072 /dev/zero >&2\nprintf 'You have exceeded your ZeroGPU quota (90s requested vs. 0s left)' >&2\nexit 1\n",
+        )?;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+        let error = play(
+            &program,
+            &Config::fixture(),
+            "测试",
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("免费额度已耗尽"));
+        assert!(!error.contains("喇叭"));
+        assert!(playback_error(b"No module named 'gradio_client'").contains("Python 依赖"));
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
     #[test]
     fn parses_multiline_text_without_treating_stop_as_an_utterance() {
         assert_eq!(text("/speak 你好\n请坐直"), Some("你好\n请坐直"));

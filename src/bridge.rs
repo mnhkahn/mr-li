@@ -78,7 +78,7 @@ pub fn chunks(text: &str) -> Vec<String> {
 }
 impl Bridge {
     async fn start_processing(&self, j: &Job) {
-        if j.id.starts_with("builtin:") {
+        if j.id.starts_with("builtin:") || crate::voice::is_job(j) {
             return;
         }
         match tokio::time::timeout(
@@ -247,13 +247,23 @@ impl Bridge {
             self.store.set_agent_session(&j.key, kind.id(), &sid)?;
             sid
         };
-        let files = self.feishu.incoming_images(&self.store, j).await?;
+        let files = if crate::voice::is_job(j) {
+            Vec::new()
+        } else {
+            self.feishu.incoming_images(&self.store, j).await?
+        };
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
             "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求；同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
-        let prompt = format!("{prompt}\n\n{}", crate::reply::INSTRUCTIONS);
+        let prompt = if crate::voice::is_job(j) {
+            format!(
+                "{prompt}\n\n[语音输入] 本次文字来自用户麦克风转写。用适合朗读的简短中文纯文字回复，最多500字，不使用卡片或Markdown。最终回复会自动播报，不要再调用teacher_speak复述回复。"
+            )
+        } else {
+            format!("{prompt}\n\n{}", crate::reply::INSTRUCTIONS)
+        };
         let result = if files.is_empty() {
             self.agents.prompt(&sid, &prompt, Some(&model)).await
         } else {
@@ -267,6 +277,7 @@ impl Bridge {
         Ok(())
     }
     async fn speak_job(&self, j: &Job) -> Result<()> {
+        self.start_processing(j).await;
         let text = speech::text(&j.text).context("请提供播报文字")?;
         speech::speak(&self.cfg, text).await?;
         self.store
@@ -540,6 +551,10 @@ impl Bridge {
         }
     }
     async fn handle_command(&self, j: &Job, active: Option<&Job>) -> Result<()> {
+        // Card callbacks reuse a card message, rather than a new user command.
+        if !j.id.starts_with("card:") && !j.id.starts_with("reply-action:") {
+            self.start_processing(j).await;
+        }
         let mut words = j.text.split_whitespace();
         let cmd = words.next().unwrap_or("");
         if cmd == "/_reply_cancel" {
@@ -1400,6 +1415,190 @@ impl Bridge {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn slash_and_speech_reactions_last_until_result_delivery() -> Result<()> {
+        use axum::{
+            Json, Router,
+            extract::{Path as RoutePath, State},
+            routing::{delete, post},
+        };
+        use std::{os::unix::fs::PermissionsExt, sync::Mutex};
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let app = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post(|| async {
+                    Json(json!({"code":0,"tenant_access_token":"fake","expire":3600}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message}/reactions",
+                post(
+                    |RoutePath(message): RoutePath<String>,
+                     State(events): State<Arc<Mutex<Vec<String>>>>,
+                     Json(body): Json<Value>| async move {
+                        assert!(body["reaction_type"]["emoji_type"].is_string());
+                        events.lock().unwrap().push(format!("add:{message}"));
+                        Json(json!({"code":0,"data":{"reaction_id":"reaction"}}))
+                    },
+                ),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message}/reactions/{reaction}",
+                delete(
+                    |RoutePath((message, _)): RoutePath<(String, String)>,
+                     State(events): State<Arc<Mutex<Vec<String>>>>| async move {
+                        events.lock().unwrap().push(format!("remove:{message}"));
+                        Json(json!({"code":0}))
+                    },
+                ),
+            )
+            .with_state(events.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let dir =
+            std::env::temp_dir().join(format!("mr-li-slash-reaction-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+        cfg.speech_program = dir.join("speech").to_string_lossy().into();
+        std::fs::write(&cfg.speech_program, "#!/bin/sh\ncat >/dev/null\n")?;
+        std::fs::set_permissions(&cfg.speech_program, std::fs::Permissions::from_mode(0o700))?;
+        let cfg = Arc::new(cfg);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            tablet: None,
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+        };
+        let mut jobs = Vec::new();
+        for (id, text) in [("slash", "/help"), ("speech", "/speak 测试文案")] {
+            let j = Job {
+                id: id.into(),
+                key: json!([cfg.workspace, "ou_owner", "oc_chat", ""]).to_string(),
+                message_id: format!("om_{id}"),
+                text: text.into(),
+                result: String::new(),
+                sent: 0,
+            };
+            store.insert(&j)?;
+            store.status(&j.id, "running")?;
+            if id == "speech" {
+                b.speak_job(&j).await?;
+            } else {
+                b.handle_command(&j, None).await?;
+            }
+            jobs.push(j);
+        }
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["add:om_slash", "add:om_speech"]
+        );
+        // Completion alone is insufficient: failed delivery must retain the reaction.
+        b.clear_completed_reactions().await?;
+        assert_eq!(events.lock().unwrap().len(), 2);
+        for j in jobs {
+            store.status(&j.id, "done")?;
+            b.clear_completed_reactions().await?;
+        }
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec![
+                "add:om_slash",
+                "add:om_speech",
+                "remove:om_slash",
+                "remove:om_speech"
+            ]
+        );
+        server.abort();
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn voice_uses_current_agent_shared_session_and_skips_feishu_input_and_output()
+    -> anyhow::Result<()> {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mr-li-voice-bridge-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let cli = dir.join("fake-agent");
+        std::fs::write(&cli, include_str!("../scripts/fixtures/fake-agent.py"))?;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))?;
+        let mut cfg = Config::fixture();
+        cfg.workspace = dir.clone();
+        cfg.data_dir = dir.clone();
+        cfg.kilo_bin = cli.to_string_lossy().into();
+        // Any accidental Feishu resource fetch/reaction/delivery fails this test.
+        cfg.feishu_base_url = "http://127.0.0.1:1".into();
+        let cfg = Arc::new(cfg);
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            tablet: None,
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+        };
+        let mut j = Job {
+            id: "voice:first".into(),
+            key: json!([cfg.workspace, "ou_owner", "oc_chat", ""]).to_string(),
+            message_id: "om_latest".into(),
+            text: "你好，查一下任务".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&j)?;
+        store.save_incoming(
+            &j.id,
+            &json!({"message_type":"image","content":"{\"image_key\":\"stale_image\"}"}),
+        )?;
+        // Simulate a setting changed after transcription but before execution.
+        let scope = models::scope(&j.key)?;
+        store.switch_agent_and_finish(&j.id, &scope, "kilo", &json!({}))?;
+        store.status(&j.id, "running")?;
+        b.execute(&j).await?;
+        let session = store.agent_session(&j.key, "kilo")?.unwrap();
+        assert!(session.starts_with("agent_kilo_"));
+        assert_eq!(
+            store.command_task(&j.key, &j.id)?.unwrap()["result"],
+            "hello world"
+        );
+        assert!(store.jobs("replying")?.is_empty());
+        b.deliver().await?;
+        j.id = "voice:followup".into();
+        j.text = "再解释一下".into();
+        store.insert(&j)?;
+        store.status(&j.id, "running")?;
+        b.execute(&j).await?;
+        assert_eq!(store.agent_session(&j.key, "kilo")?.unwrap(), session);
+        let calls: Vec<Value> = std::fs::read_to_string(dir.join("calls.jsonl"))?
+            .lines()
+            .map(serde_json::from_str)
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c["method"] == "session/new")
+                .count(),
+            1
+        );
+        let prompts: Vec<_> = calls
+            .iter()
+            .filter(|c| c["method"] == "session/prompt")
+            .collect();
+        assert_eq!(prompts.len(), 2);
+        assert!(
+            prompts[0]["params"]["prompt"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("[语音输入]")
+        );
+        b.agents.abort(&session).await?;
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
     #[tokio::test]
     async fn rich_outbox_binds_cards_and_falls_back_only_after_explicit_rejection()
     -> anyhow::Result<()> {

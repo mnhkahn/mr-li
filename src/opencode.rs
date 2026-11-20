@@ -152,7 +152,13 @@ impl OpenCode {
     async fn abort_checked(&self, id: &str) -> Result<()> {
         self.abort(id).await.map_err(|_| AbortUnconfirmed.into())
     }
-    pub async fn prompt(&self, id: &str, text: &str, selected: Option<&str>) -> Result<String> {
+    pub async fn prompt_with_files(
+        &self,
+        id: &str,
+        text: &str,
+        selected: Option<&str>,
+        files: &[Value],
+    ) -> Result<String> {
         let selected = selected
             .or(self.cfg.model.as_deref())
             .context("请选择模型")?;
@@ -166,10 +172,13 @@ impl OpenCode {
         .await?;
         let message_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
         let admitted = self
-            .post(
-                &format!("/api/session/{id}/prompt"),
-                json!({"id":message_id,"text":text}),
-            )
+            .post(&format!("/api/session/{id}/prompt"), {
+                let mut body = json!({"id":message_id,"text":text});
+                if !files.is_empty() {
+                    body["files"] = json!(files);
+                }
+                body
+            })
             .await;
         let admitted = match admitted {
             Ok(v) => v,
@@ -415,6 +424,8 @@ mod tests {
                     Value::Null
                 } else if route.starts_with("POST /api/session/ses_test/prompt ") {
                     assert_eq!(body["text"], "hello");
+                    assert_eq!(body["files"][0]["uri"], "data:image/png;base64,dGVzdA==");
+                    assert_eq!(body["files"][0]["mime"], "image/png");
                     assert!(body.get("parts").is_none());
                     message = body["id"].as_str().unwrap().to_string();
                     json!({"data":{"id":message,"time":{"created":1}}})
@@ -438,8 +449,13 @@ mod tests {
         cfg.opencode_url = format!("http://{addr}");
         let oc = OpenCode::new(Arc::new(cfg))?;
         assert_eq!(
-            oc.prompt("ses_test", "hello", Some("opencode/chosen"))
-                .await?,
+            oc.prompt_with_files(
+                "ses_test",
+                "hello",
+                Some("opencode/chosen"),
+                &[json!({"uri":"data:image/png;base64,dGVzdA==","mime":"image/png"})]
+            )
+            .await?,
             "done"
         );
         server.join().unwrap();

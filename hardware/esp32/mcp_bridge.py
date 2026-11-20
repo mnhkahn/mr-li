@@ -31,16 +31,43 @@ for action, description in [("status", "Query external 433 MHz curtain transmitt
         tool["annotations"] = {"readOnlyHint": True}
     TOOLS.append(tool)
 
-pulse_array = {"type": "array", "minItems": 2, "maxItems": 128,
+pulse_array = {"type": "array", "minItems": 2, "maxItems": 512,
                "items": {"type": "integer", "minimum": -32767, "maximum": 32767}}
 TOOLS.append({"name": "self.curtain.configure",
-              "description": "Save GPIO wiring, repeat count and measured UP/DOWN/STOP waveforms for an external 433 MHz OOK transmitter (e.g. MX-FS-03V). Signed microseconds alternate +carrier-on/-carrier-off. Never guess codes from frequency or brand; not for rolling-code protocols. Does not transmit.",
+              "description": "Save disabled GPIO wiring, repeat count and measured UP/DOWN/STOP waveforms for an external 433 MHz OOK transmitter (e.g. MX-FS-03V). Signed microseconds alternate +carrier-on/-carrier-off. Never guess codes from frequency or brand; not for rolling-code protocols. Does not transmit.",
               "inputSchema": {"type": "object", "properties": {
                   "protocol": {"type": "string", "enum": ["raw_ook_fixed"]},
                   "tx_gpio": {"type": "integer", "minimum": 0, "maximum": 48},
                   "repeat": {"type": "integer", "minimum": 1, "maximum": 10},
                   "up": pulse_array, "down": pulse_array, "stop": pulse_array},
                   "required": ["protocol", "tx_gpio", "repeat", "up", "down", "stop"], "additionalProperties": False}})
+
+
+RF_SETTINGS_TOOLS = {
+    "setup": {"description": "Save RF wiring without transmitting. This S3 board uses tx_gpio=21, rx_gpio=47. Remove old LCD wires and use appropriate 5V/3.3V level adapters.", "properties": {"tx_gpio": {"type":"integer","minimum":0,"maximum":48}, "rx_gpio": {"type":"integer","minimum":0,"maximum":48}, "repeat": {"type":"integer","minimum":1,"maximum":10}}, "required":["tx_gpio","rx_gpio"]},
+    "learn": {"description": "Receive only. Press the SAME curtain button three separate times, pausing at least one second. Poll status until learned/error; saving a frame disables transmission.", "properties": {"action":{"type":"string","enum":["up","down","stop"]}, "seconds":{"type":"integer","minimum":5,"maximum":60}, "frame_gap_us":{"type":"integer","minimum":3000,"maximum":20000}}, "required":["action"]},
+    "enable": {"description": "Explicitly enable verified fixed codes after learning three distinct actions. Enabling requires fixed_code_confirmed=true. Does not transmit.", "properties": {"enabled":{"type":"boolean"}, "fixed_code_confirmed":{"type":"boolean"}}, "required":["enabled"]},
+    "export": {"description": "Read one saved waveform as signed microseconds; does not transmit.", "properties":{"action":{"type":"string","enum":["up","down","stop"]}}, "required":["action"]},
+}
+for action, spec in RF_SETTINGS_TOOLS.items():
+    TOOLS.append({"name":"self.curtain."+action,"description":spec["description"],"inputSchema":{"type":"object","properties":spec["properties"],"required":spec["required"],"additionalProperties":False},"annotations":{"readOnlyHint":action=="export"}})
+
+def validate_rf_settings(action, arguments):
+    spec=RF_SETTINGS_TOOLS[action]
+    if not set(spec["required"]).issubset(arguments) or not set(arguments).issubset(spec["properties"]):
+        raise ValueError("Missing or unknown RF setting")
+    for key,value in arguments.items():
+        rule=spec["properties"][key]
+        if rule["type"]=="integer" and (type(value) is not int or not rule["minimum"]<=value<=rule["maximum"]):
+            raise ValueError("Invalid RF numeric setting: "+key)
+        if rule["type"]=="boolean" and type(value) is not bool:
+            raise ValueError("RF flag must be boolean: "+key)
+        if "enum" in rule and value not in rule["enum"]:
+            raise ValueError("Unknown RF action")
+    if action=="enable" and arguments["enabled"] and arguments.get("fixed_code_confirmed") is not True:
+        raise ValueError("Confirm fixed_code_confirmed before enabling RF")
+    if action=="setup" and arguments["tx_gpio"]==arguments["rx_gpio"]:
+        raise ValueError("TX/RX GPIOs must differ")
 
 
 def validate_curtain(arguments):
@@ -54,8 +81,8 @@ def validate_curtain(arguments):
             raise ValueError(key + " is out of range or not an integer")
     for action in ("up", "down", "stop"):
         pulses = arguments[action]
-        if not isinstance(pulses, list) or not 2 <= len(pulses) <= 128 or len(pulses) % 2:
-            raise ValueError(action + " needs 2..128 alternating high/low pulse durations")
+        if not isinstance(pulses, list) or not 2 <= len(pulses) <= 512 or len(pulses) % 2:
+            raise ValueError(action + " needs 2..512 alternating high/low pulse durations")
         for i, value in enumerate(pulses):
             if type(value) is not int or not 1 <= abs(value) <= 32767 or (value > 0) != (i % 2 == 0):
                 raise ValueError("RF pulses must alternate positive/negative signed microseconds")
@@ -164,6 +191,8 @@ def handle(request, hardware):
                     raise ValueError("configure requires a 30 or 32 character token")
             elif name == "self.curtain.configure":
                 validate_curtain(arguments)
+            elif name.removeprefix("self.curtain.") in RF_SETTINGS_TOOLS:
+                validate_rf_settings(name.removeprefix("self.curtain."), arguments)
             elif arguments:
                 raise ValueError("This tool takes no arguments")
             result = hardware.call(name.removeprefix("self."), arguments)

@@ -247,13 +247,20 @@ impl Bridge {
             self.store.set_agent_session(&j.key, kind.id(), &sid)?;
             sid
         };
+        let files = self.feishu.incoming_images(&self.store, j).await?;
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
             "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求；同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
         let prompt = format!("{prompt}\n\n{}", crate::reply::INSTRUCTIONS);
-        let result = self.agents.prompt(&sid, &prompt, Some(&model)).await;
+        let result = if files.is_empty() {
+            self.agents.prompt(&sid, &prompt, Some(&model)).await
+        } else {
+            self.agents
+                .prompt_with_files(&sid, &prompt, Some(&model), &files)
+                .await
+        };
         self.store.revoke_builtin_context(&token)?;
         let text = result?;
         crate::reply::finish(&self.store, j, &text)?;

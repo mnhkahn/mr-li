@@ -1,5 +1,6 @@
 #include "network.h"
 #include "xgimi_wake.h"
+#include "curtain.h"
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
@@ -128,16 +129,44 @@ bool Authorized(httpd_req_t* request) {
 }
 esp_err_t Request(httpd_req_t* request) {
     if (!Authorized(request)) return Error(request, "401 Unauthorized", "Bearer token required");
+    struct Params { cJSON* value = nullptr; ~Params() { cJSON_Delete(value); } } params;
     try {
+        const std::string uri = request->uri;
         if (request->method == HTTP_GET) {
+            if (uri == "/api/curtain/status") return Json(request, "200 OK", HandleCurtainCommand("curtain.status", nullptr));
             auto result = cJSON_CreateObject();
             cJSON_AddStringToObject(result, "device", hostname.c_str());
             cJSON_AddItemToObject(result, "network", Status());
             cJSON_AddItemToObject(result, "xgimi", HandleXgimiCommand("xgimi.status", nullptr));
+            cJSON_AddItemToObject(result, "curtain", HandleCurtainCommand("curtain.status", nullptr));
             return Json(request, "200 OK", result);
         }
-        if (request->content_len) return Error(request, "400 Bad Request", "Send an empty POST body");
-        return Json(request, "202 Accepted", HandleXgimiCommand("xgimi.power_on", nullptr));
+        if (uri == "/api/xgimi/power_on") {
+            if (request->content_len) return Error(request, "400 Bad Request", "Send an empty POST body");
+            return Json(request, "202 Accepted", HandleXgimiCommand("xgimi.power_on", nullptr));
+        }
+        if (request->content_len > 512) return Error(request, "413 Content Too Large", "JSON body exceeds 512 bytes");
+        std::string body(request->content_len, '\0');
+        size_t received = 0;
+        while (received < body.size()) {
+            int n = httpd_req_recv(request, body.data() + received, body.size() - received);
+            if (n <= 0) return Error(request, "400 Bad Request", "Incomplete request body");
+            received += n;
+        }
+        params.value = body.empty() ? cJSON_CreateObject() : cJSON_Parse(body.c_str());
+        if (!cJSON_IsObject(params.value)) return Error(request, "400 Bad Request", "Expected JSON object");
+        if (uri == "/api/curtain/enable")
+            return Json(request, "200 OK", HandleCurtainCommand("curtain.enable", params.value));
+        const std::string learning = "/api/curtain/learn/";
+        if (uri.rfind(learning, 0) == 0) {
+            auto action = uri.substr(learning.size());
+            cJSON_DeleteItemFromObjectCaseSensitive(params.value, "action");
+            cJSON_AddStringToObject(params.value, "action", action.c_str());
+            return Json(request, "202 Accepted", HandleCurtainCommand("curtain.learn", params.value));
+        }
+        if (request->content_len) return Error(request, "400 Bad Request", "Control commands require empty body");
+        auto action = uri.substr(std::string("/api/curtain/").size());
+        return Json(request, "202 Accepted", HandleCurtainCommand("curtain." + action, nullptr));
     } catch (const std::exception& e) {
         return Error(request, "409 Conflict", e.what());
     }
@@ -183,6 +212,7 @@ void Start() {
     httpd_config_t http = HTTPD_DEFAULT_CONFIG();
     http.stack_size = 8192;
     http.max_open_sockets = 3;
+    http.max_uri_handlers = 16;
     http.lru_purge_enable = true;
     http.recv_wait_timeout = 3;
     http.send_wait_timeout = 3;
@@ -194,6 +224,12 @@ void Start() {
     httpd_uri_t wake = {};
     wake.uri = "/api/xgimi/power_on"; wake.method = HTTP_POST; wake.handler = Request;
     Check(httpd_register_uri_handler(server, &wake), "Register wake API");
+    const char* rf_paths[] = {"/api/curtain/status", "/api/curtain/up", "/api/curtain/down", "/api/curtain/stop", "/api/curtain/learn/up", "/api/curtain/learn/down", "/api/curtain/learn/stop", "/api/curtain/enable"};
+    for (int i = 0; i < 8; ++i) {
+        httpd_uri_t route = {};
+        route.uri = rf_paths[i]; route.method = i == 0 ? HTTP_GET : HTTP_POST; route.handler = Request;
+        Check(httpd_register_uri_handler(server, &route), "Register curtain API");
+    }
     esp_timer_create_args_t timer = {};
     timer.callback = [](void*) { if (!connected.load()) last_connect_result = esp_wifi_connect(); };
     timer.name = "wifi_reconnect";

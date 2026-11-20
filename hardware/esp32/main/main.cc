@@ -2,6 +2,8 @@
 #include "curtain.h"
 #include "network.h"
 #include <cstdio>
+#include <cstdarg>
+#include <esp_log.h>
 #include <string>
 #include <stdexcept>
 #include <driver/usb_serial_jtag.h>
@@ -48,6 +50,9 @@ void Reply(const std::string& line) {
 }
 
 extern "C" void app_main() {
+    // Keep SDK logs from interleaving with USB JSON. Panic output still uses
+    // the secondary USB console directly for diagnostics.
+    esp_log_set_vprintf([](const char*, va_list) { return 0; });
     // Preserve NVS on errors: never silently erase learned data or old settings.
     ESP_ERROR_CHECK(nvs_flash_init());
     usb_serial_jtag_driver_config_t config = {};

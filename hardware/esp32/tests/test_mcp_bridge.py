@@ -47,7 +47,7 @@ class Tests(unittest.TestCase):
         replies = [json.loads(x) for x in process.stdout.splitlines()]
         self.assertEqual([x["id"] for x in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "mr-li-esp32-hardware")
-        self.assertEqual(len(replies[1]["result"]["tools"]), 9)
+        self.assertEqual(len(replies[1]["result"]["tools"]), 13)
         self.assertEqual(process.stderr, "")
 
     def test_usb_fragmentation_startup_and_stale_reply(self):
@@ -70,7 +70,7 @@ class Tests(unittest.TestCase):
     def test_discovery_does_not_open_hardware(self):
         hardware = bridge.Hardware("nonexistent")
         reply = bridge.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, hardware)
-        self.assertEqual(len(reply["result"]["tools"]), 9)
+        self.assertEqual(len(reply["result"]["tools"]), 13)
         self.assertIsNone(hardware.connection)
         self.assertIsNone(bridge.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}, hardware))
 
@@ -89,6 +89,17 @@ class Tests(unittest.TestCase):
             self.assertFalse(reply["result"]["isError"])
             self.assertFalse(reply["result"]["structuredContent"]["physical_effect_confirmed"])
             self.assertEqual(json.loads(serial.writes[0])["method"], "curtain." + action)
+
+    def test_rf_learning_and_enable_validation_before_usb(self):
+        for action,args in [('learn',{'action':'other'}),('learn',{'action':'up','seconds':0}),('setup',{'tx_gpio':21,'rx_gpio':21}),('enable',{'enabled':True}),('enable',{'enabled':'true'})]:
+            h=bridge.Hardware('not-connected')
+            r=bridge.handle({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'self.curtain.'+action,'arguments':args}},h)
+            self.assertTrue(r['result']['isError'])
+            self.assertIsNone(h.connection)
+        serial=Serial();h=bridge.Hardware('fake',connection=serial)
+        r=bridge.handle({'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'self.curtain.learn','arguments':{'action':'stop','seconds':5}}},h)
+        self.assertFalse(r['result']['isError'])
+        self.assertEqual(json.loads(serial.writes[0])['method'],'curtain.learn')
 
     def test_invalid_rf_waveforms_never_reach_gpio(self):
         valid = {"protocol": "raw_ook_fixed", "tx_gpio": 4, "repeat": 6, "up": [350, -1050], "down": [1050, -350], "stop": [350, -350]}

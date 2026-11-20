@@ -163,6 +163,81 @@ impl Feishu {
         }
         Ok(token.0.clone())
     }
+    /// Resolve only the current message and its explicit quoted parent, never chat history.
+    pub async fn incoming_images(&self, store: &Store, job: &Job) -> Result<Vec<Value>> {
+        let Some(message) = store.incoming(&job.id)? else {
+            return Ok(vec![]);
+        };
+        let mut messages = vec![message.clone()];
+        if let Some(parent) = message["parent_id"].as_str().filter(|s| !s.is_empty()) {
+            let quoted = if let Some(cached) = store.incoming(parent)? {
+                cached
+            } else {
+                let response: Value = self
+                    .http
+                    .get(format!(
+                        "{}/open-apis/im/v1/messages/{parent}",
+                        self.cfg.feishu_base_url
+                    ))
+                    .bearer_auth(self.token().await?)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?;
+                ensure!(
+                    response["code"] == 0,
+                    "读取引用消息失败：{}",
+                    response["code"]
+                );
+                response["data"]["items"][0].clone()
+            };
+            ensure!(
+                quoted["chat_id"] == message["chat_id"],
+                "引用消息不属于当前聊天"
+            );
+            messages.push(quoted);
+        }
+        let mut files = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for m in messages {
+            let raw = m["content"]
+                .as_str()
+                .or_else(|| m["body"]["content"].as_str())
+                .unwrap_or("{}");
+            let content: Value = serde_json::from_str(raw)?;
+            for key in image_keys(&content) {
+                let id = m["message_id"].as_str().context("图片缺少消息 ID")?;
+                if !seen.insert((id.to_owned(), key.clone())) {
+                    continue;
+                }
+                ensure!(files.len() < 8, "单次最多接收 8 张图片");
+                let mut response = self
+                    .http
+                    .get(format!(
+                        "{}/open-apis/im/v1/messages/{id}/resources/{key}",
+                        self.cfg.feishu_base_url
+                    ))
+                    .query(&[("type", "image")])
+                    .bearer_auth(self.token().await?)
+                    .send()
+                    .await?
+                    .error_for_status()?;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await? {
+                    ensure!(
+                        bytes.len() + chunk.len() <= 10 * 1024 * 1024,
+                        "图片超过 10MB"
+                    );
+                    bytes.extend_from_slice(&chunk);
+                }
+                let mime = image_mime(&bytes)
+                    .context("飞书返回的资源不是支持的图片，可能缺少消息资源读取权限")?;
+                files.push(json!({"uri":format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)),"mime":mime}));
+            }
+        }
+        Ok(files)
+    }
     pub async fn identify(&self) -> Result<()> {
         let v: Value = self
             .http
@@ -526,6 +601,7 @@ impl Feishu {
                                     let job=parse_model_action(&v,&self.cfg,store)?.context("卡片已失效，或你没有操作权限。请重新打开模型选择")?;
                                     store.insert(&job)?;
                                 }else if let Some(job)=parse_job(&v,&self.cfg,&self.bot_id.try_lock().map(|s|s.clone()).unwrap_or_default())? {
+                                    store.save_incoming(&job.id, &v["event"]["message"])?;
                                     store.insert(&job)?;
                                 }
                                 Ok(())
@@ -688,6 +764,76 @@ fn observed_sender<'a>(v: &'a Value, chat: &str, challenge: &str) -> Option<&'a 
         .as_str()
         .filter(|id| id.starts_with("ou_"))
 }
+fn message_text(content: &Value) -> String {
+    if let Some(text) = content["text"].as_str() {
+        return text.into();
+    }
+    let mut parts = Vec::new();
+    fn visit(v: &Value, parts: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                if m.get("tag").and_then(Value::as_str) == Some("text") {
+                    if let Some(t) = m.get("text").and_then(Value::as_str) {
+                        parts.push(t.into());
+                    }
+                } else {
+                    for v in m.values() {
+                        visit(v, parts);
+                    }
+                }
+            }
+            Value::Array(a) => {
+                for v in a {
+                    visit(v, parts);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(content, &mut parts);
+    parts.join("\n")
+}
+fn image_keys(content: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    fn visit(v: &Value, keys: &mut Vec<String>) {
+        match v {
+            Value::Object(m) => {
+                if let Some(k) = m
+                    .get("image_key")
+                    .and_then(Value::as_str)
+                    .filter(|k| !k.is_empty())
+                    && !keys.iter().any(|s| s == k)
+                {
+                    keys.push(k.into());
+                }
+                for v in m.values() {
+                    visit(v, keys);
+                }
+            }
+            Value::Array(a) => {
+                for v in a {
+                    visit(v, keys);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(content, &mut keys);
+    keys
+}
+fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
 // Private chats use the user allowlist; group chats also use the chat allowlist.
 fn chat_allowed(cfg: &Config, chat: &str, private: bool) -> bool {
     private || cfg.allowed_chats.is_empty() || cfg.allowed_chats.iter().any(|id| id == chat)
@@ -709,7 +855,7 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
     if e["sender"]["sender_type"] != "user" || !c.allowed.iter().any(|s| s == sender) {
         return Ok(None);
     }
-    if m["message_type"] != "text" {
+    if !matches!(m["message_type"].as_str(), Some("text" | "image" | "post")) {
         return Ok(None);
     }
     let group = m["chat_type"] == "group";
@@ -718,7 +864,10 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
         return Ok(None);
     }
     let content: Value = serde_json::from_str(m["content"].as_str().unwrap_or("{}"))?;
-    let mut text = content["text"].as_str().unwrap_or("").to_string();
+    let mut text = message_text(&content);
+    if text.trim().is_empty() && !image_keys(&content).is_empty() {
+        text = "请查看这张图片。".into();
+    }
     if let Some(ms) = mentions {
         for m in ms {
             if m["id"]["open_id"] == bot
@@ -1037,6 +1186,86 @@ mod tests {
         tokio::fs::remove_file(&path).await?;
         result?;
         server.await?;
+        Ok(())
+    }
+    fn image_event(kind: &str, content: Value) -> Value {
+        json!({"header":{"event_type":"im.message.receive_v1"},"event":{
+            "sender":{"sender_type":"user","sender_id":{"open_id":"ou_owner"}},
+            "message":{"message_type":kind,"chat_type":"p2p","message_id":"om_current","chat_id":"oc_chat","content":content.to_string()}}})
+    }
+    #[test]
+    fn image_and_post_messages_keep_authorization() -> Result<()> {
+        let cfg = Config::fixture();
+        let mut image = image_event("image", json!({"image_key":"img_test"}));
+        assert_eq!(
+            parse_job(&image, &cfg, "ou_bot")?.unwrap().text,
+            "请查看这张图片。"
+        );
+        image["event"]["sender"]["sender_id"]["open_id"] = json!("ou_other");
+        assert!(parse_job(&image, &cfg, "ou_bot")?.is_none());
+        let post = image_event(
+            "post",
+            json!({"zh_cn":{"content":[[{"tag":"text","text":"今天完成"},{"tag":"img","image_key":"img_test"}]]}}),
+        );
+        assert_eq!(parse_job(&post, &cfg, "ou_bot")?.unwrap().text, "今天完成");
+        assert_eq!(
+            image_keys(&serde_json::from_str::<Value>(
+                post["event"]["message"]["content"].as_str().unwrap()
+            )?),
+            vec!["img_test"]
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    async fn quoted_image_is_downloaded_even_when_original_event_was_not_cached() -> Result<()> {
+        use axum::{Router, extract::Request, response::IntoResponse, routing::any};
+        let app = Router::new().fallback(any(|request: Request| async move {
+            let path = request.uri().path();
+            if path.contains("tenant_access_token") {
+                axum::Json(json!({"code":0,"tenant_access_token":"test","expire":7200})).into_response()
+            } else if path.ends_with("/resources/img_test") {
+                assert_eq!(request.uri().query(), Some("type=image"));
+                ([("content-type", "image/png")], b"\x89PNG\r\n\x1a\nimage".to_vec()).into_response()
+            } else {
+                assert!(path.ends_with("/messages/om_parent"));
+                axum::Json(json!({"code":0,"data":{"items":[{"message_id":"om_parent","chat_id":"oc_chat","body":{"content":json!({"image_key":"img_test"}).to_string()}}]}})).into_response()
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let feishu = Feishu::new(Arc::new(cfg.clone()))?;
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let mut event = image_event("text", json!({"text":"这是作业"}));
+        event["event"]["message"]["parent_id"] = json!("om_parent");
+        let job = parse_job(&event, &cfg, "ou_bot")?.unwrap();
+        store.save_incoming(&job.id, &event["event"]["message"])?;
+        let files = feishu.incoming_images(&store, &job).await?;
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0]["mime"], "image/png");
+        assert!(
+            files[0]["uri"]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        // Cached parents survive restarts and avoid depending on a second metadata lookup.
+        store.save_incoming("om_parent", &json!({"message_id":"om_parent","chat_id":"oc_chat","content":json!({"image_key":"img_test"}).to_string()}))?;
+        assert_eq!(feishu.incoming_images(&store, &job).await?, files);
+        let mut image = image_event("image", json!({"image_key":"img_test"}));
+        image["event"]["message"]["message_id"] = json!("om_image");
+        let direct = parse_job(&image, &cfg, "ou_bot")?.unwrap();
+        store.save_incoming(&direct.id, &image["event"]["message"])?;
+        assert_eq!(feishu.incoming_images(&store, &direct).await?, files);
+        store.save_incoming("om_wrong", &json!({"chat_id":"oc_other"}))?;
+        event["event"]["message"]["parent_id"] = json!("om_wrong");
+        event["event"]["message"]["message_id"] = json!("om_bad");
+        let bad = parse_job(&event, &cfg, "ou_bot")?.unwrap();
+        store.save_incoming(&bad.id, &event["event"]["message"])?;
+        assert!(feishu.incoming_images(&store, &bad).await.is_err());
+        assert_eq!(image_mime(br#"{"code":999}"#), None);
+        server.abort();
         Ok(())
     }
     #[test]

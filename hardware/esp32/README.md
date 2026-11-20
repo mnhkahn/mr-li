@@ -65,10 +65,11 @@ HA 提供 `script.mr_li_xgimi_power_on`、名为“极米蓝牙开机”的按�
 
 | 请求 | 行为 |
 |---|---|
-| `GET /api/status` | 返回 network 与 xgimi 状态，不暴露唤醒 token 或网络密码 |
+| `GET /api/status` | 返回 network、xgimi 与 curtain 状态，不暴露唤醒 token 或网络密码 |
 | `POST /api/xgimi/power_on`（空 body） | 202 + accepted，异步发送；忙碌时 409 |
 
-其他 USB 方法（学习、配网、RF）不通过 HTTP 暴露。mDNS 主机名由芯片 MAC
+极米学习和配网仍仅通过 USB。窗帘已增加认证 HTTP 学习、启用及升/降/停接口，
+见 [RF433.md](RF433.md)；实物接线见 [RF433_WIRING.md](RF433_WIRING.md)。mDNS 主机名由芯片 MAC
 后六位生成，形如 `mr-li-esp32-8ceff4.local`；如果 HA 主机无法解析 `.local`，
 可将两个 URL 改为路由器分配的 IP，并在路由器设置 DHCP 地址保留。
 HTTP 接口用于可信家庭局域网，令牌通过 HTTP 传输，不应映射到公网。
@@ -161,10 +162,15 @@ false；人工验证记录不等于固件具有电机/投影状态传感能力�
 本机接入配置保存在 `.data/esp32-hardware-mcp.json`（相对 mr-li 根目录），
 原 Flash 备份及验证记录位于 `artifacts/esp32-backups/`，均不提交到 Git。
 这些配置已准备好，尚未自动修改其他 MCP 客户端配置。
-433 MHz 窗帘测试按用户要求暂缓。
+433 MHz 已继续实现接收学习与控制；固件已烧录到当前 S3，真实遥控码和电机动作需接线后验证。
 
 2026-11-20 Wi-Fi/HA 接入验证：S3 固件烧录并校验，重启后自动加入家中
 2.4 GHz Wi-Fi，NVS 学习数据保留；上电初始化蓝牙但不发送唤醒广播。
 HA package 已部署到 Mac mini，配置检查通过，极米投影面板已增加“蓝牙开机”
 按钮和控制器状态。HA 按钮调用已观察到 ESP32 蓝牙任务进入发送并完成；
 缺失/错误 Bearer token 返回 401。投影本轮保持开机，没有执行关机后再开机测试。
+
+接收学习固件提供 GPIO21 TX、GPIO47 RX 的当前 S3 接线配置，三次独立按键验证、
+超时退出和每键 NVS 保存。原始波形最多512个脉宽，未学齐/未显式启用时不发射。
+普通 SDK 日志关闭以免混入 USB JSON，保留 USB panic 诊断。HA 的“硬件控制 → 窗帘”
+页面提供三键学习、固定码启用开关和升降停；此处不包含电机位置反馈。

@@ -38,6 +38,7 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
         c.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+          CREATE TABLE IF NOT EXISTS incoming_messages (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, key TEXT NOT NULL, message_id TEXT NOT NULL,
           text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', result TEXT NOT NULL DEFAULT '',
@@ -217,6 +218,26 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+    pub fn save_incoming(&self, id: &str, message: &serde_json::Value) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO incoming_messages VALUES (?,?)",
+            params![id, message.to_string()],
+        )?;
+        Ok(())
+    }
+    pub fn incoming(&self, id: &str) -> Result<Option<serde_json::Value>> {
+        let raw: Option<String> = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM incoming_messages WHERE id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
     }
     pub fn insert(&self, j: &Job) -> Result<bool> {
         let c = self.0.lock().unwrap();

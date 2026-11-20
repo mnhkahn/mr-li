@@ -547,7 +547,7 @@ async fn control_entity(conn: &mut Connection, args: &Value, states: &[Value]) -
         .find(|e| e["entity_id"] == id)
         .context("实体不存在，请先查询 ha_devices")?;
     ensure!(
-        !matches!(before["state"].as_str(), Some("unavailable" | "unknown")),
+        before["state"] != "unavailable",
         "实体不可用，未发送控制命令"
     );
     let services = conn.call("get_services", json!({})).await?;
@@ -852,6 +852,31 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["target"], json!({"entity_id":"light.living"}));
+        h.abort();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn unknown_feedback_allows_a_supported_control() -> Result<()> {
+        let mut fake = fixture();
+        fake.states[0]["state"] = json!("unknown");
+        let (c, s, h) = server(fake).await;
+        let result = c
+            .run(
+                "ha_control",
+                json!({"entity_id":"light.living","command":"light.turn_on"}),
+            )
+            .await?;
+        assert_eq!(result["accepted"], true);
+        assert_eq!(result["before"]["state"], "unknown");
+        assert_eq!(
+            s.lock()
+                .unwrap()
+                .calls
+                .iter()
+                .filter(|m| m["type"] == "call_service")
+                .count(),
+            1
+        );
         h.abort();
         Ok(())
     }

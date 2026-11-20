@@ -398,10 +398,23 @@ impl AgentHub {
         Ok(())
     }
     pub async fn prompt(&self, id: &str, text: &str, selected: Option<&str>) -> Result<String> {
+        self.prompt_with_files(id, text, selected, &[]).await
+    }
+    pub async fn prompt_with_files(
+        &self,
+        id: &str,
+        text: &str,
+        selected: Option<&str>,
+        files: &[Value],
+    ) -> Result<String> {
         if split(id)?.0 == Kind::OpenCode {
-            return self.open.prompt(id, text, selected).await;
+            return self.open.prompt_with_files(id, text, selected, files).await;
         }
         let runtime = self.runtime(id).await?;
+        ensure!(
+            files.is_empty() || runtime.kind != Kind::Trae,
+            "当前 TRAE 后端暂不支持图片，请切换 Agent"
+        );
         if runtime.kind == Kind::Cline {
             self.select_free(
                 runtime.kind,
@@ -417,7 +430,8 @@ impl AgentHub {
             *active = true;
         }
         let result =
-            tokio::time::timeout(self.cfg.task_timeout, run_prompt(&runtime, id, text)).await;
+            tokio::time::timeout(self.cfg.task_timeout, run_prompt(&runtime, id, text, files))
+                .await;
         *runtime.active.lock().unwrap() = false;
         runtime.forms.lock().unwrap().clear();
         match result {
@@ -595,7 +609,7 @@ fn supervise(command: Command) -> Result<Command> {
     Ok(worker)
 }
 
-async fn run_prompt(runtime: &Runtime, id: &str, text: &str) -> Result<String> {
+async fn run_prompt(runtime: &Runtime, id: &str, text: &str, files: &[Value]) -> Result<String> {
     let mut events = runtime.rpc.subscribe();
     let mut output = String::new();
     if runtime.kind == Kind::Trae {
@@ -690,7 +704,15 @@ async fn run_prompt(runtime: &Runtime, id: &str, text: &str) -> Result<String> {
     } else {
         let response = runtime.rpc.request(
             "session/prompt",
-            json!({"sessionId":runtime.raw,"prompt":[{"type":"text","text":text}]}),
+            {
+                let mut blocks = vec![json!({"type":"text","text":text})];
+                for file in files {
+                    let uri = file["uri"].as_str().context("图片缺少 URI")?;
+                    let (_, data) = uri.split_once(",").context("图片 URI 无效")?;
+                    blocks.push(json!({"type":"image","mimeType":file["mime"],"data":data}));
+                }
+                json!({"sessionId":runtime.raw,"prompt":blocks})
+            },
             Duration::from_secs(24 * 3600),
         );
         tokio::pin!(response);

@@ -31,6 +31,41 @@ impl Fixture {
     }
 }
 #[tokio::test]
+async fn acp_receives_image_content_and_trae_reports_unsupported_input() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let hub = fixture.hub()?;
+    let files = vec![json!({"uri":"data:image/png;base64,dGVzdA==","mime":"image/png"})];
+    let id = hub.create_for(Kind::Antigravity, None).await?;
+    assert_eq!(
+        hub.prompt_with_files(&id, "look", None, &files).await?,
+        "hello world"
+    );
+    hub.abort(&id).await?;
+    let calls: Vec<Value> = fixture
+        .log()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let prompt = calls
+        .iter()
+        .find(|c| c["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        prompt["params"]["prompt"][1],
+        json!({"type":"image","mimeType":"image/png","data":"dGVzdA=="})
+    );
+    let id = hub.create_for(Kind::Trae, None).await?;
+    assert!(
+        hub.prompt_with_files(&id, "look", None, &files)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("暂不支持图片")
+    );
+    hub.abort(&id).await?;
+    Ok(())
+}
+#[tokio::test]
 async fn acp_streams_owned_output_reuses_process_and_pins_free_kilo() -> Result<()> {
     let fixture = Fixture::new()?;
     let hub = fixture.hub()?;

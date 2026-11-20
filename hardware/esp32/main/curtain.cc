@@ -1,5 +1,6 @@
 #include "curtain.h"
 #include "curtain_protocol.h"
+#include "rf_learning.h"
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -12,6 +13,7 @@
 #include <sdkconfig.h>
 
 namespace {
+const char* kActions[] = {"up", "down", "stop"};
 void Check(esp_err_t error, const char* operation) {
     if (error != ESP_OK) throw std::runtime_error(std::string(operation) + ": " + esp_err_to_name(error));
 }
@@ -22,71 +24,140 @@ int Integer(const cJSON* object, const char* name, int min, int max) {
         throw std::runtime_error(std::string(name) + " is out of range or not an integer");
     return value->valueint;
 }
+int Action(const cJSON* params) {
+    auto item = cJSON_GetObjectItemCaseSensitive(params, "action");
+    if (cJSON_IsString(item)) for (int i = 0; i < 3; ++i) if (std::string(item->valuestring) == kActions[i]) return i;
+    throw std::runtime_error("action must be up, down or stop");
+}
+void Pin(int pin, bool rx = false) {
+#if CONFIG_IDF_TARGET_ESP32C3
+    bool allowed = (pin >= 4 && pin <= 7) || pin == 10;
+#elif CONFIG_IDF_TARGET_ESP32S3
+    bool allowed = (pin >= 4 && pin <= 18) || pin == 21 || (rx && pin == 47);
+#else
+    bool allowed = false;
+#endif
+    if (!allowed || !GPIO_IS_VALID_GPIO(pin) || (!rx && !GPIO_IS_VALID_OUTPUT_GPIO(pin)))
+        throw std::runtime_error("Unsupported RF GPIO; S3 wiring uses TX21/RX47; verify board pin use");
+}
 struct Config {
-    int pin = -1;
-    int repeat = 0;
+    int pin = -1, rx = -1, repeat = 6;
+    bool enabled = false;
     std::vector<int> frames[3];
 };
-Config Parse(const cJSON* object) {
-    Config config;
-    auto protocol = cJSON_GetObjectItemCaseSensitive(object, "protocol");
-    if (!cJSON_IsString(protocol) || std::string(protocol->valuestring) != "raw_ook_fixed")
-        throw std::runtime_error("Only raw_ook_fixed is supported; rolling-code remotes need a model-specific implementation");
-    config.pin = Integer(object, "tx_gpio", 0, 48);
-#if CONFIG_IDF_TARGET_ESP32C3
-    const bool allowed = (config.pin >= 4 && config.pin <= 7) || config.pin == 10;
-#elif CONFIG_IDF_TARGET_ESP32S3
-    const bool allowed = (config.pin >= 4 && config.pin <= 18) || config.pin == 21;
-#else
-    const bool allowed = false;
-#endif
-    if (!allowed || !GPIO_IS_VALID_OUTPUT_GPIO(config.pin))
-        throw std::runtime_error("Unsupported TX pin: C3 allows 4..7/10, S3 allows 4..18/21; check board wiring first");
-    config.repeat = Integer(object, "repeat", 1, 10);
-    const char* names[] = {"up", "down", "stop"};
-    for (int i = 0; i < 3; ++i) {
-        auto array = cJSON_GetObjectItemCaseSensitive(object, names[i]);
-        if (!cJSON_IsArray(array) || cJSON_GetArraySize(array) > 128)
-            throw std::runtime_error("up/down/stop must each be a pulse array of at most 128 entries");
-        const cJSON* item;
-        cJSON_ArrayForEach(item, array) {
-            if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) || item->valuedouble < -32767 ||
-                item->valuedouble > 32767 || item->valuedouble != item->valueint)
-                throw std::runtime_error("Pulse durations must be signed integer microseconds");
-            config.frames[i].push_back(item->valueint);
-        }
-        curtain::Validate(config.frames[i]);
+std::vector<int> Pulses(const cJSON* array) {
+    if (!cJSON_IsArray(array) || cJSON_GetArraySize(array) > 512) throw std::runtime_error("Expected at most 512 signed pulse durations");
+    std::vector<int> pulses;
+    const cJSON* item;
+    cJSON_ArrayForEach(item, array) {
+        if (!cJSON_IsNumber(item) || !std::isfinite(item->valuedouble) || item->valuedouble < -32767 ||
+            item->valuedouble > 32767 || item->valuedouble != item->valueint) throw std::runtime_error("Pulse duration must be signed integer microseconds");
+        pulses.push_back(item->valueint);
     }
+    curtain::Validate(pulses);
+    return pulses;
+}
+Config Parse(const cJSON* object) {
+    auto protocol = cJSON_GetObjectItemCaseSensitive(object, "protocol");
+    if (!cJSON_IsString(protocol) || std::string(protocol->valuestring) != "raw_ook_fixed") throw std::runtime_error("Only verified raw_ook_fixed waveforms are supported");
+    Config config;
+    config.pin = Integer(object, "tx_gpio", 0, 48); Pin(config.pin);
+    config.repeat = Integer(object, "repeat", 1, 10);
+    for (int i = 0; i < 3; ++i) config.frames[i] = Pulses(cJSON_GetObjectItemCaseSensitive(object, kActions[i]));
     return config;
 }
-
+bool Ready(const Config& config) {
+    return config.pin >= 0 && !config.frames[0].empty() && !config.frames[1].empty() && !config.frames[2].empty();
+}
 class Curtain {
     std::mutex mutex_;
-    bool busy_ = false, pending_stop_ = false;
-    int action_ = 0;
+    bool busy_ = false, pending_stop_ = false, learning_ = false;
+    int action_ = 0, learn_seconds_ = 30, learn_gap_ = 6000;
+    curtain::CaptureProgress progress_;
     std::string state_ = "idle", error_, last_action_;
 
     Config Load() {
-        nvs_handle_t nvs;
-        auto rc = nvs_open("curtain_rf", NVS_READONLY, &nvs);
-        if (rc == ESP_ERR_NVS_NOT_FOUND) return {};
-        Check(rc, "Open curtain settings");
-        size_t size = 0;
-        rc = nvs_get_str(nvs, "config", nullptr, &size);
-        if (rc != ESP_OK) {
-            nvs_close(nvs);
-            if (rc == ESP_ERR_NVS_NOT_FOUND) return {};
-            Check(rc, "Read RF settings size");
+        Config config;
+        nvs_handle_t handle;
+        auto rc = nvs_open("curtain_rf", NVS_READONLY, &handle);
+        if (rc == ESP_ERR_NVS_NOT_FOUND) return config;
+        Check(rc, "Open RF settings");
+        struct Close { nvs_handle_t h; ~Close() { nvs_close(h); } } close{handle};
+        int32_t value;
+        rc = nvs_get_i32(handle, "tx", &value);
+        if (rc == ESP_ERR_NVS_NOT_FOUND) {
+            size_t size = 0;
+            if (nvs_get_str(handle, "config", nullptr, &size) == ESP_OK && size && size <= 4096) {
+                std::string data(size, '\0');
+                Check(nvs_get_str(handle, "config", data.data(), &size), "Read legacy RF settings");
+                auto json = cJSON_Parse(data.c_str());
+                try { config = Parse(json); cJSON_Delete(json); } catch (...) { cJSON_Delete(json); throw; }
+            }
+            return config; // Legacy data is retained, but transmission needs explicit enable.
         }
-        if (size == 0 || size > 4096) { nvs_close(nvs); throw std::runtime_error("Invalid RF settings size"); }
-        std::string data(size, '\0');
-        rc = nvs_get_str(nvs, "config", data.data(), &size);
-        nvs_close(nvs);
-        if (rc == ESP_ERR_NVS_NOT_FOUND) return {};
-        Check(rc, "Read curtain settings");
-        auto json = cJSON_Parse(data.c_str());
-        try { auto config = Parse(json); cJSON_Delete(json); return config; }
-        catch (...) { cJSON_Delete(json); throw; }
+        Check(rc, "Read RF TX pin"); config.pin = value; Pin(config.pin);
+        rc = nvs_get_i32(handle, "rx", &value);
+        if (rc == ESP_OK) { config.rx = value; if (config.rx >= 0) Pin(config.rx, true); }
+        else if (rc != ESP_ERR_NVS_NOT_FOUND) Check(rc, "Read RF RX pin");
+        rc = nvs_get_i32(handle, "repeat", &value);
+        if (rc == ESP_OK) config.repeat = value;
+        else if (rc != ESP_ERR_NVS_NOT_FOUND) Check(rc, "Read RF repeats");
+        if (config.repeat < 1 || config.repeat > 10) throw std::runtime_error("Invalid saved RF repeat count");
+        uint8_t enabled = 0;
+        rc = nvs_get_u8(handle, "enabled", &enabled);
+        if (rc != ESP_OK && rc != ESP_ERR_NVS_NOT_FOUND) Check(rc, "Read RF enable");
+        config.enabled = enabled != 0;
+        for (int i = 0; i < 3; ++i) {
+            size_t size = 0;
+            rc = nvs_get_blob(handle, kActions[i], nullptr, &size);
+            if (rc == ESP_ERR_NVS_NOT_FOUND) continue;
+            Check(rc, "Read RF frame size");
+            if (!size || size > 512 * sizeof(int) || size % sizeof(int)) throw std::runtime_error("Invalid saved RF waveform");
+            config.frames[i].resize(size / sizeof(int));
+            Check(nvs_get_blob(handle, kActions[i], config.frames[i].data(), &size), "Read RF frame");
+            curtain::Validate(config.frames[i]);
+        }
+        return config;
+    }
+    void Save(const Config& config) {
+        nvs_handle_t handle;
+        Check(nvs_open("curtain_rf", NVS_READWRITE, &handle), "Open RF settings");
+        struct Close { nvs_handle_t h; ~Close() { nvs_close(h); } } close{handle};
+        Check(nvs_set_u8(handle, "enabled", 0), "Disable RF while updating settings");
+        Check(nvs_set_i32(handle, "tx", config.pin), "Save RF TX");
+        Check(nvs_set_i32(handle, "rx", config.rx), "Save RF RX");
+        Check(nvs_set_i32(handle, "repeat", config.repeat), "Save RF repeats");
+        for (int i = 0; i < 3; ++i) {
+            if (!config.frames[i].empty()) Check(nvs_set_blob(handle, kActions[i], config.frames[i].data(), config.frames[i].size() * sizeof(int)), "Save RF frame");
+        }
+        Check(nvs_set_u8(handle, "enabled", config.enabled), "Save RF enable");
+        Check(nvs_commit(handle), "Commit RF settings");
+    }
+    void RunLearn() {
+        try {
+            Config config;
+            int action, seconds, gap;
+            { std::lock_guard<std::mutex> lock(mutex_); config = Load(); action = action_; seconds = learn_seconds_; gap = learn_gap_; state_ = "learning"; }
+            gpio_set_level(static_cast<gpio_num_t>(config.pin), 0);
+            gpio_set_direction(static_cast<gpio_num_t>(config.pin), GPIO_MODE_OUTPUT);
+            gpio_set_pull_mode(static_cast<gpio_num_t>(config.rx), GPIO_PULLDOWN_ONLY);
+            auto captured = curtain::LearnRf(config.rx, seconds, gap, [this](curtain::CaptureProgress progress) {
+                std::lock_guard<std::mutex> lock(mutex_); progress_ = progress;
+            });
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!captured.error.empty()) {
+                progress_ = captured.progress; state_ = "error"; error_ = captured.error;
+                busy_ = false; learning_ = false; return;
+            }
+            config.frames[action] = captured.pulses;
+            config.enabled = false;
+            Save(config);
+            progress_ = captured.progress;
+            state_ = "learned"; error_.clear(); busy_ = false; learning_ = false;
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            state_ = "error"; error_ = e.what(); busy_ = false; learning_ = false;
+        }
     }
     void Run() {
         rmt_channel_handle_t channel = nullptr;
@@ -164,67 +235,114 @@ public:
         auto config = Load();
         auto result = cJSON_CreateObject();
         cJSON_AddStringToObject(result, "protocol", "raw_ook_fixed");
-        cJSON_AddBoolToObject(result, "configured", config.pin >= 0);
+        cJSON_AddBoolToObject(result, "configured", Ready(config));
+        cJSON_AddBoolToObject(result, "pins_configured", config.pin >= 0 && config.rx >= 0);
+        cJSON_AddBoolToObject(result, "enabled", config.enabled);
         cJSON_AddNumberToObject(result, "tx_gpio", config.pin);
+        cJSON_AddNumberToObject(result, "rx_gpio", config.rx);
+        cJSON_AddNumberToObject(result, "repeat", config.repeat);
+        auto learned = cJSON_AddObjectToObject(result, "learned");
+        for (int i = 0; i < 3; ++i) cJSON_AddNumberToObject(learned, kActions[i], config.frames[i].size());
         cJSON_AddBoolToObject(result, "busy", busy_);
         cJSON_AddBoolToObject(result, "stop_pending", pending_stop_);
         cJSON_AddStringToObject(result, "state", state_.c_str());
         cJSON_AddStringToObject(result, "last_action", last_action_.c_str());
+        cJSON_AddStringToObject(result, "learning_action", learning_ ? kActions[action_] : "");
+        cJSON_AddNumberToObject(result, "frames_seen", progress_.frames);
+        cJSON_AddNumberToObject(result, "matches", progress_.matches);
+        cJSON_AddNumberToObject(result, "bursts", progress_.bursts);
         cJSON_AddStringToObject(result, "error", error_.c_str());
         cJSON_AddBoolToObject(result, "physical_effect_confirmed", false);
+        cJSON_AddBoolToObject(result, "position_supported", false);
         return result;
     }
-    cJSON* Configure(const cJSON* params) {
-        Parse(params); // Validate everything before writing or driving any pin.
-        const auto allowed = {"protocol", "tx_gpio", "repeat", "up", "down", "stop"};
-        auto persisted = cJSON_CreateObject();
-        for (auto key : allowed) cJSON_AddItemToObject(persisted, key, cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(params, key), true));
-        auto data = cJSON_PrintUnformatted(persisted);
-        cJSON_Delete(persisted);
-        if (!data) throw std::runtime_error("No memory for RF settings");
-        std::string serialized(data);
-        cJSON_free(data);
-        if (serialized.size() >= 4000) throw std::runtime_error("RF settings too large");
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (busy_) throw std::runtime_error("Wait for RF transmission to finish before reconfiguring");
-            nvs_handle_t nvs;
-            Check(nvs_open("curtain_rf", NVS_READWRITE, &nvs), "Open RF settings");
-            auto rc = nvs_set_str(nvs, "config", serialized.c_str());
-            if (rc == ESP_OK) rc = nvs_commit(nvs);
-            nvs_close(nvs);
-            Check(rc, "Save RF settings");
-            state_ = "configured"; error_.clear();
-        }
+    cJSON* Setup(const cJSON* params) {
+        int tx = Integer(params, "tx_gpio", 0, 48), rx = Integer(params, "rx_gpio", 0, 48);
+        Pin(tx); Pin(rx, true);
+        if (tx == rx) throw std::runtime_error("RX and TX must use separate GPIOs");
+        int repeat = cJSON_HasObjectItem(params, "repeat") ? Integer(params, "repeat", 1, 10) : 6;
+        { std::lock_guard<std::mutex> lock(mutex_);
+          if (busy_) throw std::runtime_error("RF busy");
+          auto config = Load(); config.pin = tx; config.rx = rx; config.repeat = repeat; config.enabled = false;
+          Save(config); state_ = "pins_configured"; error_.clear(); }
         return Status();
     }
-    cJSON* Send(int action) {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (Load().pin < 0) throw std::runtime_error("RF transmitter and curtain waveforms are not configured");
-            if (busy_) {
-                if (action != 2) throw std::runtime_error("RF busy; stop is the only accepted interrupt");
-                pending_stop_ = true;
-            } else {
-                busy_ = true; action_ = action; error_.clear(); state_ = "starting";
-                auto task = [](void*) { Instance().Run(); vTaskDelete(nullptr); };
-                if (xTaskCreate(task, "curtain_rf", 8192, nullptr, 2, nullptr) != pdPASS) {
-                    busy_ = false; state_ = "error"; error_ = "No memory for RF worker";
-                    throw std::runtime_error(error_);
-                }
-            }
-        }
-        auto result = Status();
-        cJSON_AddBoolToObject(result, "accepted", true);
+    cJSON* Configure(const cJSON* params) {
+        auto config = Parse(params);
+        { std::lock_guard<std::mutex> lock(mutex_);
+          if (busy_) throw std::runtime_error("RF busy");
+          config.rx = Load().rx; config.enabled = false;
+          Save(config); state_ = "configured"; error_.clear(); }
+        return Status();
+    }
+    cJSON* Enable(const cJSON* params) {
+        auto item = cJSON_GetObjectItemCaseSensitive(params, "enabled");
+        if (!cJSON_IsBool(item)) throw std::runtime_error("enabled must be boolean");
+        { std::lock_guard<std::mutex> lock(mutex_);
+          if (busy_) throw std::runtime_error("RF busy");
+          auto config = Load();
+          if (cJSON_IsTrue(item)) {
+              if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "fixed_code_confirmed")))
+                  throw std::runtime_error("Explicit fixed_code_confirmed is required; rolling codes cannot be replayed");
+              if (!Ready(config)) throw std::runtime_error("Learn all three buttons first");
+              for (int i = 0; i < 3; ++i) for (int j = i + 1; j < 3; ++j)
+                  if (curtain::SameFrame(config.frames[i], config.frames[j])) throw std::runtime_error("Two actions have identical frames; relearn the correct buttons");
+          }
+          config.enabled = cJSON_IsTrue(item); Save(config); state_ = config.enabled ? "ready" : "disabled"; error_.clear(); }
+        return Status();
+    }
+    cJSON* Export(const cJSON* params) {
+        int action = Action(params);
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto config = Load();
+        auto result = cJSON_CreateObject();
+        cJSON_AddStringToObject(result, "action", kActions[action]);
+        auto pulses = cJSON_AddArrayToObject(result, "pulses");
+        for (int value : config.frames[action]) cJSON_AddItemToArray(pulses, cJSON_CreateNumber(value));
         return result;
+    }
+    cJSON* Learn(const cJSON* params) {
+        int action = Action(params);
+        int seconds = cJSON_HasObjectItem(params, "seconds") ? Integer(params, "seconds", 5, 60) : 30;
+        int gap = cJSON_HasObjectItem(params, "frame_gap_us") ? Integer(params, "frame_gap_us", 3000, 20000) : 6000;
+        { std::lock_guard<std::mutex> lock(mutex_);
+          if (busy_) throw std::runtime_error("RF busy; finish current operation first");
+          auto config = Load();
+          if (config.pin < 0 || config.rx < 0) throw std::runtime_error("Configure TX21/RX47 via curtain.setup first");
+          config.enabled = false; Save(config);
+          action_ = action; learn_seconds_ = seconds; learn_gap_ = gap;
+          busy_ = true; learning_ = true; progress_ = {}; state_ = "starting_learning"; error_.clear();
+          if (xTaskCreate([](void*) { Instance().RunLearn(); vTaskDelete(nullptr); }, "rf_learn", 8192, nullptr, 2, nullptr) != pdPASS) {
+              busy_ = false; learning_ = false; state_ = "error"; throw std::runtime_error("No memory for RF learner");
+          } }
+        auto result = Status(); cJSON_AddBoolToObject(result, "accepted", true); return result;
+    }
+    cJSON* Send(int action) {
+        { std::lock_guard<std::mutex> lock(mutex_);
+          auto config = Load();
+          if (!Ready(config) || !config.enabled) throw std::runtime_error("RF disabled; learn all buttons and explicitly enable verified fixed codes first");
+          if (busy_) {
+              if (learning_) throw std::runtime_error("Learning active; no transmission allowed");
+              if (action != 2) throw std::runtime_error("RF busy; stop is the only accepted interrupt");
+              pending_stop_ = true;
+          } else {
+              busy_ = true; action_ = action; error_.clear(); state_ = "starting";
+              if (xTaskCreate([](void*) { Instance().Run(); vTaskDelete(nullptr); }, "curtain_rf", 8192, nullptr, 2, nullptr) != pdPASS) {
+                  busy_ = false; state_ = "error"; throw std::runtime_error("No memory for RF worker");
+              }
+          } }
+        auto result = Status(); cJSON_AddBoolToObject(result, "accepted", true); return result;
     }
 };
 }
-
 cJSON* HandleCurtainCommand(const std::string& method, const cJSON* params) {
     auto& curtain = Curtain::Instance();
     if (method == "curtain.status") return curtain.Status();
+    if (method == "curtain.setup") return curtain.Setup(params);
     if (method == "curtain.configure") return curtain.Configure(params);
+    if (method == "curtain.enable") return curtain.Enable(params);
+    if (method == "curtain.export") return curtain.Export(params);
+    if (method == "curtain.learn") return curtain.Learn(params);
     if (method == "curtain.up") return curtain.Send(0);
     if (method == "curtain.down") return curtain.Send(1);
     if (method == "curtain.stop") return curtain.Send(2);

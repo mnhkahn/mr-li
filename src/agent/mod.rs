@@ -238,6 +238,7 @@ impl AgentHub {
         if let Some(ha) = &self.cfg.home_assistant {
             servers.push(ha.mcp_acp()?)
         }
+        servers.push(crate::builtin::mcp_acp(&self.cfg)?);
         Ok(json!(servers))
     }
     async fn select_free(&self, kind: Kind, rpc: &Rpc, raw: &str, session: &Value) -> Result<()> {

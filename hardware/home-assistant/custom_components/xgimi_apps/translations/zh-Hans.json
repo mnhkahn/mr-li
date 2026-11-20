@@ -1,0 +1,36 @@
+{
+  "title": "XGIMI Apps",
+  "config": {
+    "step": {
+      "user": {
+        "title": "极米投影应用",
+        "description": "投影需开机，并与 Home Assistant 位于同一局域网。",
+        "data": {
+          "host": "投影 IP 或主机名",
+          "name": "设备名称"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "无法读取应用列表，请确认投影已开机且地址正确。"
+    },
+    "abort": {
+      "already_configured": "该投影已配置。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "统一投影控制",
+        "description": "关联已有的 Wi-Fi 遥控器和 ESP32 蓝牙开机脚本。",
+        "data": {
+          "remote_entity": "Wi-Fi 遥控器",
+          "wake_script": "蓝牙开机脚本"
+        }
+      }
+    },
+    "error": {
+      "invalid_entity": "实体不存在或类型不符。"
+    }
+  }
+}

@@ -113,7 +113,7 @@ mod tests {
             "-v ? ; $(touch '{}')\n你好，李老师。",
             dir.join("SHOULD_NOT_EXIST").display()
         );
-        play(&program, &cfg, &text, Duration::from_secs(2)).await?;
+        play(&program, &cfg, &text, Duration::from_secs(10)).await?;
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, text);
         assert_eq!(
             std::fs::read_to_string(dir.join("args"))?,

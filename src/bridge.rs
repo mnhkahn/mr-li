@@ -78,6 +78,9 @@ pub fn chunks(text: &str) -> Vec<String> {
 }
 impl Bridge {
     async fn start_processing(&self, j: &Job) {
+        if j.id.starts_with("builtin:") {
+            return;
+        }
         match tokio::time::timeout(
             Duration::from_secs(8),
             self.feishu.add_processing_reaction(&j.message_id),
@@ -228,6 +231,9 @@ impl Bridge {
         // Freeze the choice when execution starts; later card clicks affect queued work only.
         let kind = self.selected_agent(&j.key)?;
         let model = self.selected_model(&j.key)?;
+        if let Err(e) = crate::reply::acknowledge(self, j).await {
+            tracing::warn!(error=%e,"更新已操作卡片失败，继续处理请求");
+        }
         self.start_processing(j).await;
         let sid = if let Some(sid) = self.session(&j.key)? {
             // A missing session must not silently discard the conversation history.
@@ -241,8 +247,16 @@ impl Bridge {
             self.store.set_agent_session(&j.key, kind.id(), &sid)?;
             sid
         };
-        let text = self.agents.prompt(&sid, &j.text, Some(&model)).await?;
-        self.store.finish(&j.id, &text)?;
+        let token = self.store.builtin_context(&j.id)?;
+        let prompt = format!(
+            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求；同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
+            j.text
+        );
+        let prompt = format!("{prompt}\n\n{}", crate::reply::INSTRUCTIONS);
+        let result = self.agents.prompt(&sid, &prompt, Some(&model)).await;
+        self.store.revoke_builtin_context(&token)?;
+        let text = result?;
+        crate::reply::finish(&self.store, j, &text)?;
         Ok(())
     }
     async fn speak_job(&self, j: &Job) -> Result<()> {
@@ -252,7 +266,7 @@ impl Bridge {
             .finish(&j.id, "已通过 Mac mini 连接的喇叭播报。")?;
         Ok(())
     }
-    async fn command(&self, j: &Job, active: Option<&Job>) -> Result<String> {
+    pub(crate) async fn command(&self, j: &Job, active: Option<&Job>) -> Result<String> {
         let (cmd, args) = j
             .text
             .split_once(char::is_whitespace)
@@ -261,6 +275,7 @@ impl Bridge {
         let sid = self.session(&j.key)?;
         match cmd {
             "/help" => Ok(HELP.into()),
+            "/proxy" => crate::proxy::command(args).await,
             "/ha" => {
                 if args.is_empty() {
                     return Ok("/ha devices [名称/房间/类型]\n/ha commands <实体ID或设备ID>\n/ha control <实体ID> <domain.service> [JSON参数]".into());
@@ -520,7 +535,13 @@ impl Bridge {
     async fn handle_command(&self, j: &Job, active: Option<&Job>) -> Result<()> {
         let mut words = j.text.split_whitespace();
         let cmd = words.next().unwrap_or("");
-        if cmd == "/agent" {
+        if cmd == "/_reply_cancel" {
+            ensure!(j.id.starts_with("reply-action:"), "请使用卡片取消按钮");
+            if let Err(e) = crate::reply::acknowledge(self, j).await {
+                tracing::warn!(error=%e,"更新取消卡片失败");
+            }
+            self.store.status(&j.id, "done")?;
+        } else if cmd == "/agent" {
             let selected = self.selected_agent(&j.key)?;
             let token = uuid::Uuid::new_v4().simple().to_string();
             self.store.register_agent_card(&token, &j.key)?;
@@ -926,10 +947,90 @@ impl Bridge {
         Ok(())
     }
 
+    async fn deliver_rich_reply(&self, j: &Job) -> Result<()> {
+        let mut out: crate::reply::Output = serde_json::from_str(&j.result)?;
+        let Some(packet) = out.packets.get(j.sent) else {
+            self.store.status(&j.id, "done")?;
+            return Ok(());
+        };
+        let uuid = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            format!("rich:{}:{}:{}", j.id, j.sent, packet.kind).as_bytes(),
+        )
+        .to_string();
+        let result: Result<()> = async {
+            match packet.kind.as_str() {
+                "text" => {
+                    self.feishu
+                        .reply(
+                            &destination(j)?,
+                            packet.content["text"].as_str().context("回复文字缺失")?,
+                            &uuid,
+                            false,
+                        )
+                        .await?
+                }
+                "interactive" => {
+                    let message = self
+                        .feishu
+                        .reply_card(&destination(j)?, &packet.content, &uuid, false)
+                        .await?;
+                    if !packet.token.is_empty() {
+                        self.store.attach_reply_card(&packet.token, &message)?;
+                    }
+                }
+                "post" | "image" | "media" => {
+                    self.feishu
+                        .reply_camera_media(
+                            &destination(j)?,
+                            &json!({"msg_type":packet.kind,"content":packet.content}),
+                            &uuid,
+                            false,
+                        )
+                        .await?
+                }
+                _ => anyhow::bail!("未知富消息类型"),
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = result {
+            // Only an explicit API rejection allows fallback. A network timeout may have sent the card.
+            if packet.kind != "text" && e.downcast_ref::<crate::feishu::MessageRejected>().is_some()
+            {
+                if !packet.token.is_empty() {
+                    self.store.delete_reply_card(&packet.token)?;
+                }
+                let text = if j.sent == 0 {
+                    out.fallback.clone()
+                } else {
+                    "附件暂时无法显示。".into()
+                };
+                let packets = chunks(&text).into_iter().map(|text| crate::reply::Packet {
+                    kind: "text".into(),
+                    content: json!({"text":text}),
+                    token: String::new(),
+                });
+                out.packets.splice(j.sent..j.sent + 1, packets);
+                self.store
+                    .finish_output(&j.id, "rich_reply", &serde_json::to_value(&out)?)?;
+                tracing::warn!(error=%e,"飞书拒绝富消息，已降级为文字");
+                return Ok(());
+            }
+            self.store.retry_delivery(&j.id)?;
+            return Err(e);
+        }
+        self.store.sent(&j.id, j.sent + 1)?;
+        Ok(())
+    }
+
     async fn deliver(&self) -> Result<()> {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
             let kind = self.store.output_kind(&j.id)?;
+            if kind == "rich_reply" {
+                return self.deliver_rich_reply(j).await;
+            }
             if kind == "posture_report" {
                 if let Err(e) = self.prepare_posture_report(j).await {
                     self.store.retry_delivery(&j.id)?;
@@ -1071,12 +1172,7 @@ impl Bridge {
                 );
                 if let Err(e) = self
                     .feishu
-                    .reply_card(
-                        &destination(j)?,
-                        &forms::status("李老师", part),
-                        &uuid.to_string(),
-                        false,
-                    )
+                    .reply(&destination(j)?, part, &uuid.to_string(), false)
                     .await
                 {
                     self.store.retry_delivery(&j.id)?;
@@ -1297,6 +1393,112 @@ impl Bridge {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn rich_outbox_binds_cards_and_falls_back_only_after_explicit_rejection()
+    -> anyhow::Result<()> {
+        use super::*;
+        use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+        use std::sync::Mutex;
+        struct Mock {
+            mode: &'static str,
+            messages: Mutex<Vec<Value>>,
+        }
+        for mode in ["success", "rejected", "http_failure"] {
+            let mock = Arc::new(Mock {
+                mode,
+                messages: Mutex::new(Vec::new()),
+            });
+            let app = Router::new()
+                .route(
+                    "/open-apis/auth/v3/tenant_access_token/internal",
+                    post(|| async {
+                        Json(json!({"code":0,"tenant_access_token":"fake","expire":3600}))
+                    }),
+                )
+                .route(
+                    "/open-apis/im/v1/messages",
+                    post(
+                        |State(m): State<Arc<Mock>>, Json(body): Json<Value>| async move {
+                            m.messages.lock().unwrap().push(body.clone());
+                            if body["msg_type"] == "interactive" && m.mode == "http_failure" {
+                                return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"code":1})));
+                            }
+                            if body["msg_type"] == "interactive" && m.mode == "rejected" {
+                                return (StatusCode::OK, Json(json!({"code":230099})));
+                            }
+                            (
+                                StatusCode::OK,
+                                Json(json!({"code":0,"data":{"message_id":"om_sent_card"}})),
+                            )
+                        },
+                    ),
+                )
+                .with_state(mock.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let mut cfg = Config::fixture();
+            cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+            let cfg = Arc::new(cfg);
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+            let b = Bridge {
+                cfg: cfg.clone(),
+                store: store.clone(),
+                feishu: Arc::new(Feishu::new(cfg.clone())?),
+                agents: Arc::new(AgentHub::new(cfg.clone())?),
+                tablet: None,
+            };
+            let j = Job {
+                id: format!("rich-{mode}"),
+                key: json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string(),
+                message_id: "om_original".into(),
+                text: "问问题".into(),
+                result: String::new(),
+                sent: 0,
+            };
+            store.insert(&j)?;
+            crate::reply::finish(&store,&j,&json!({"feishu_reply":1,"layout":"card","text":"要提醒宝宝吗？","actions":[{"id":"yes","label":"提醒","prompt":"请提醒宝宝写作业。"}]}).to_string())?;
+            let pending = store.jobs("replying")?.remove(0);
+            let output: crate::reply::Output = serde_json::from_str(&pending.result)?;
+            let token = &output.packets[0].token;
+            let sent = b.deliver_rich_reply(&pending).await;
+            if mode == "success" {
+                sent?;
+                assert_eq!(
+                    store.reply_card(token, "")?.unwrap().message_id,
+                    "om_sent_card"
+                );
+                b.deliver_rich_reply(&store.jobs("replying")?.remove(0))
+                    .await?;
+                assert_eq!(
+                    store.command_task(&j.key, &j.id)?.unwrap()["status"],
+                    "done"
+                );
+                assert_eq!(mock.messages.lock().unwrap().len(), 1);
+            } else if mode == "rejected" {
+                sent?;
+                assert!(store.reply_card(token, "")?.is_none());
+                let pending = store.jobs("replying")?.remove(0);
+                b.deliver_rich_reply(&pending).await?;
+                let calls = mock.messages.lock().unwrap();
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[1]["msg_type"], "text");
+                assert_ne!(calls[0]["uuid"], calls[1]["uuid"]);
+                let text: Value = serde_json::from_str(calls[1]["content"].as_str().unwrap())?;
+                assert_eq!(text["text"], "要提醒宝宝吗？");
+            } else {
+                assert!(sent.is_err());
+                let pending = store.command_task(&j.key, &j.id)?.unwrap();
+                let out: crate::reply::Output =
+                    serde_json::from_str(pending["result"].as_str().unwrap())?;
+                assert_eq!(out.packets[0].kind, "interactive");
+                assert_eq!(mock.messages.lock().unwrap().len(), 1);
+            }
+            server.abort();
+            let _ = server.await;
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stop_cancels_initial_agent_creation_before_a_session_exists() -> anyhow::Result<()> {
         use super::*;

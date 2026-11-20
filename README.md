@@ -221,6 +221,13 @@ sudo ./scripts/service.sh uninstall system
 |---|---|
 | 普通文字 | 在当前会话执行任务，忙时排队 |
 | `/help` | 帮助 |
+| `/proxy`、`/proxy status` | 查看 Mac mini 当前代理节点 |
+| `/proxy list [筛选]` | 列出节点，如 `/proxy list 香港` |
+| `/proxy set <节点名或唯一关键字>` | 切换节点，如 `/proxy set HK-1`；多个匹配时不会切换 |
+| `/proxy test` | 测试当前节点延迟 |
+| `/proxy countries` | 查看国家和地区及节点数量 |
+| `/proxy test 日本`、`/proxy test all` | 按国家或对全部节点测速排名 |
+| `/proxy auto 香港`、`/proxy auto` | 测速后切到指定国家/地区或全部节点中延迟最低者 |
 | `/baby <内容>` | 给宝宝发消息，显示在平板 Homework 作业首页；离线时保留待发 |
 | `/baby list`、`/baby cancel <ID>` | 查看送达状态、取消尚未发送的消息 |
 | `/baby send --device <ID> <内容>` | 多台平板时指定目标 |
@@ -367,6 +374,37 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 状态与新闻稿保存在 `.data/news-broadcast/YYYY-MM-DD.json`。互斥锁防止并发，启动播放前持久化状态，成功后标记 `done`；`sending` 或 `uncertain` 状态不会自动重播。机器需开机且网络、声音设备可用，错过 08:30 不补播；正常重启后 crontab 保留。
 
+## 飞书自然回复与常见交互
+
+普通问答直接发送简短自然文字。每次模型请求会说明飞书支持的呈现方式，复杂回复由 Agent 输出受限的 `feishu_reply: 1` 语义结构，桥接校验后生成飞书原生消息，不直接执行模型提供的卡片 JSON。完整协议和例子见 `resource/feishu-replies.txt`。
+
+支持图文 post、Card 2.0 结果卡片、字段对、原生分页表格、折叠详情、图片、视频、链接按钮、操作/确认/取消按钮、更多操作菜单和单选下拉框。补充信息表单支持文本、多行文字、整数、数字、单选、多选、是非、日期和时间，统一提交、重置或取消；数字范围、必填和选项均在服务端再次校验。图片/视频只引用当前会话已上传的真实媒体任务，不能使用任意素材 key、URL 或本地路径。拍摄工具默认已经发送媒体，最终回答不应重复发送。
+
+卡片回调按用户、工作目录、聊天、实际消息 ID、注册操作和 30 分钟有效期校验。每张卡只接收一次操作，回调消费与新任务在同一 SQLite 事务中保存；相同事件重送不会重复执行，不同点击不能重复消费。按钮、菜单、下拉选择和表单提交都成为新的用户请求，重新获得本轮工具上下文，不复用原请求的临时 token。操作后原卡片显示已处理状态，表单取消不会启动模型或执行业务动作。日期/时间选择只收集信息，不表示创建了通用定时任务。
+
+结构无效、素材无权限或飞书明确拒绝富消息时退回正文文字；网络失败保留原消息和幂等标识重试，避免因发送状态不明而额外发一条降级回复。富消息和卡片绑定均持久化，服务重启后仍可继续发送或处理未过期卡片。
+
+验证：`cargo test --locked reply` 和 `cargo test --locked rich_outbox`，涵盖各类组件、回调隔离/去重/失效、表单校验、素材权限、发送降级及网络重试。实际客户端的按钮和表单交互需在飞书中点击验收。
+
+## Agent 调用李老师内置能力
+
+bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢复会话时传入，TRAE 使用 thread 配置。内置 `builtin-mcp` 通过仅监听本机的接口调用同一套命令队列。可直接说“跟宝宝说该写作业了”“拍张照片给我看看”“录十秒视频”“检查一下坐姿”“开启坐姿提醒”“在平板首页提醒先写数学”“刚才的任务完成了吗”。原 slash 命令继续可用。
+
+| 工具 | 能力 |
+| --- | --- |
+| `teacher_speak` | Mac mini 喇叭播报、停止本会话语音，沿用现有音色，最多 500 字 |
+| `teacher_camera` | 摄像头照片、1–30 秒视频，直接发送到请求来源聊天 |
+| `teacher_posture` | 单次坐姿检测、开启或停止本聊天定时监测，保留原时段和采样间隔限制 |
+| `teacher_notice` | 平板首页通知、取消本用户在本聊天尚未送达的通知 |
+| `teacher_proxy` | 查询节点、按国家/地区筛选、测速排名、按用户要求切换节点或自动选择最低延迟节点 |
+| `teacher_query` | `/tasks`、`/task`、`/status`、`/channel`、`/cron list`、`/posture status`、`/notify list`、`/skills`、`/mcp`、`/help` |
+
+每次模型请求会附带一个临时上下文标识，工具只允许在该请求执行期间使用，用户、聊天和消息来源由桥接记录确定，不接受 Agent 自选用户/聊天。副作用操作使用 `operation_id` 去重，复用同一标识不会重复播报或拍摄；改变参数时不能复用同一标识。文本结果交回 Agent，照片/视频继续由现有媒体发送流程发送，避免重复文字回复。工具只回传拍摄状态和坐姿检测文字，未把摄像头画面交给 Agent，不能据此声称 Agent 已看过照片。
+
+长操作等待超时会返回任务 ID 和未确认状态，应查询原任务，不能换标识重做。通知排队不代表已送达，应查询通知状态。`/approve`、`/deny`、`/answer`、`/new`、`/agent`、`/models` 和通用 `/stop` 不作为 Agent 工具；直接命令和卡片仍可使用。这里接入的是文字自然语言调用，飞书语音消息识别尚未接入。
+
+验证：`cargo test --locked builtin` 覆盖参数边界、请求失效、用户/会话隔离、去重、本机接口认证和查询。`scripts/smoke-builtin.py bin/mr-li` 检查 stdio 握手和真实工具目录，不播放声音或拍摄。
+
 ## Home Assistant 内置命令与 Agent 工具
 
 在部署目录 `.env` 配置 `XIAOLI_HA_URL=http://127.0.0.1:8123` 和 `XIAOLI_HA_TOKEN`，或者用 `XIAOLI_HA_TOKEN_FILE` 指向权限为 `600` 的长期访问令牌文件。两者同时提供时优先使用直接配置的令牌。该地址是 Mac mini 同机地址，使用本地连接；远程 HA 可设置 HTTPS 地址。URL 查询参数会移除，`external_auth=1` 不能代替 API 认证。配置后重启 bridge。
@@ -397,3 +435,13 @@ MCP 配置仅传入程序路径、`ha-mcp` 子命令和私有 `.env` 路径，�
 参考音频、独立 Python 环境和缓存放在 Mac mini `.data/voice-clone/`，不提交仓库。`config.json` 配置 `endpoint` 与 `model_size`，`reference.wav` 为用户提供的参考音频。当前使用 Qwen 官方 Hugging Face Demo 的 `generate_voice_clone`，无需转写、无需 API Key；首次合成需联网，公共 Demo 可能排队或受配额限制，失败会报错，不会悄悄换成其他音色。同文字音频按参考音频、模型和文字哈希缓存，坐姿固定提醒提前缓存。
 
 播放使用 Mac mini 系统默认输出设备（配置时为内建输出）。`voice-clone.sh --cache-only` 从标准输入读取文字，只预生成缓存，不播放。Python 依赖 `gradio-client`，安装到 `.data/voice-clone/venv`；环境和音频均保留在 Mac mini，不依赖操作电脑或 Codex。
+
+代理管理也支持终端命令 `mr-li proxy status`、`mr-li proxy list 香港`、`mr-li proxy set HK-1`、`mr-li proxy test`。默认管理本机 `http://127.0.0.1:17990` 的 Mihomo `Proxy` 组，进程环境变量 `MR_LI_PROXY_CONTROLLER`、`MR_LI_PROXY_GROUP`、`MR_LI_PROXY_SECRET` 可覆盖。控制器请求始终直连本机；切换后回读确认，不修改系统代理或其他内核。节点持久化由内核配置的 `profile.store-selected` 决定。
+
+## ESP32 硬件控制
+
+独立固件位于 [hardware/esp32](hardware/esp32/README.md)，通过 Wi-Fi 本地 HTTP
+接入 Home Assistant，并保留 USB stdio MCP 适配器。支持极米投影的蓝牙学习、
+保存与开机，不包含小智或智能体运行时。
+
+代理 Agent 工具 `teacher_proxy` 与 `/proxy` 共用实现。可直接说“看看现在用的代理”“测一下日本节点速度”“切到香港最快节点”“比较全部节点，选最快的”。支持中文国家/地区、英文名称、JP/HK/US 等代码和旗帜；按订阅节点名称识别，不验证出口地理位置。批量测速每节点测试三次 Google 204 HTTP 延迟，至少两次成功才排名，以成功样本中位数排序（两次成功取较慢一次），不是下载带宽。最多并发8个节点，单次超时4秒，超过64个候选需先按国家筛选。`test`只测速，`auto`测速后切换并回读；所有候选失败时保留原节点。Agent 切换走带请求上下文和 operation_id 去重的原命令队列。

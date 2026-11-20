@@ -106,6 +106,14 @@ impl Fragments {
     }
 }
 
+#[derive(Debug)]
+pub struct MessageRejected(pub i64);
+impl std::fmt::Display for MessageRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "飞书回复错误码 {:?}", Some(self.0))
+    }
+}
+impl std::error::Error for MessageRejected {}
 pub struct Feishu {
     cfg: Arc<Config>,
     http: reqwest::Client,
@@ -416,7 +424,9 @@ impl Feishu {
         if matches!(code, Some(99991663 | 99991668)) {
             self.token.lock().await.0.clear();
         }
-        ensure!(code == Some(0), "飞书回复错误码 {:?}", code);
+        if code != Some(0) {
+            return Err(MessageRejected(code.unwrap_or(-1)).into());
+        }
         Ok(v)
     }
     pub async fn run(&self, store: Arc<Store>) -> Result<()> {
@@ -544,7 +554,11 @@ fn event_response(result: &Result<()>, callback: bool) -> Value {
     if callback {
         let (kind, text) = match result {
             Ok(()) => ("info", "已收到，正在处理"),
-            Err(_) => ("error", "卡片已失效或无操作权限"),
+            Err(e) => (
+                "error",
+                e.downcast_ref::<crate::reply::FormInputError>()
+                    .map_or("卡片已失效或无操作权限", |e| e.0.as_str()),
+            ),
         };
         let response = json!({"toast":{"type":kind,"content":text}}).to_string();
         json!({"code":200,"data":base64::engine::general_purpose::STANDARD.encode(response.as_bytes())})
@@ -555,6 +569,9 @@ fn event_response(result: &Result<()>, callback: bool) -> Value {
 fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<Job>> {
     if v["header"]["event_type"] != "card.action.trigger" {
         return Ok(None);
+    }
+    if let Some(job) = crate::reply::parse_action(v, cfg, store)? {
+        return Ok(Some(job));
     }
     let e = &v["event"];
     let owner = e["operator"]["open_id"].as_str().unwrap_or("");

@@ -1,5 +1,6 @@
 mod agent;
 mod bridge;
+mod builtin;
 mod camera;
 mod commands;
 mod config;
@@ -10,6 +11,8 @@ mod models;
 mod notices;
 mod opencode;
 mod posture;
+mod proxy;
+mod reply;
 mod service;
 mod speech;
 mod store;
@@ -26,6 +29,17 @@ async fn main() -> Result<()> {
         )
         .init();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "bridge".into());
+    if mode == "proxy" {
+        let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
+        println!("{}", proxy::command(&args).await?);
+        return Ok(());
+    }
+    if mode == "reply-check" {
+        return reply::check_stdio().await;
+    }
+    if mode == "builtin-mcp" {
+        return builtin::stdio().await;
+    }
     if mode == "ha-mcp" {
         return home_assistant::stdio().await;
     }
@@ -131,8 +145,11 @@ async fn main() -> Result<()> {
         feishu: feishu.clone(),
         agents: agents.clone(),
     });
+    let builtin = builtin::Server::bind(bridge.clone()).await?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
+        r=builtin.serve()=>r?,
+        _=builtin::maintain(&bridge.cfg, &oc)=>{},
         r=feishu.run(store.clone())=>r?,
         r=bridge.clone().run()=>r?,
         r=tablet.serve()=>r?,

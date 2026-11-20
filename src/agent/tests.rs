@@ -198,6 +198,17 @@ fn home_assistant_mcp_is_passed_to_acp_and_trae_without_credentials() -> Result<
         trae["mcp_servers"]["home_assistant"]["env"]["MR_LI_ENV"],
         "/private/ha.env"
     );
+    let teacher = acp
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "teacher")
+        .unwrap();
+    assert_eq!(teacher["args"], json!(["builtin-mcp"]));
+    assert_eq!(
+        trae["mcp_servers"]["teacher"]["args"],
+        json!(["builtin-mcp"])
+    );
     assert!(!acp.to_string().contains("private-ha-token"));
     assert!(!trae.to_string().contains("private-ha-token"));
     Ok(())

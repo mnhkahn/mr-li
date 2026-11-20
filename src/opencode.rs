@@ -48,6 +48,7 @@ impl OpenCode {
                 | "/api/mcp"
                 | "/api/skill"
                 | "/api/experimental/mcp/homework"
+                | "/api/experimental/mcp/teacher"
         ) {
             r = r.query(&[(
                 "location[directory]",

@@ -1,0 +1,25 @@
+list_apps:
+  name: 列出应用
+  description: 返回投影的已安装应用名称、包名和下拉选项标签；关机时可读取缓存。
+  fields:
+    entry_id:
+      description: 多台投影时指定配置条目 ID，只有一台可省略。
+      selector:
+        text:
+    refresh:
+      description: 立即重新读取列表，默认使用缓存。
+      selector:
+        boolean:
+open_app:
+  name: 打开应用
+  description: 发送局域网启动命令。需投影已开机；仅接受已安装应用的准确名称、标签或包名。UDP 无启动确认，不自动重发。
+  fields:
+    entry_id:
+      description: 多台投影时指定配置条目 ID，只有一台可省略。
+      selector:
+        text:
+    app:
+      required: true
+      example: com.xiaodianshi.tv.yst
+      selector:
+        text:

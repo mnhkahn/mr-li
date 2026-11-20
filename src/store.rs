@@ -22,6 +22,13 @@ pub struct FormCard {
     pub message_id: String,
     pub state: serde_json::Value,
 }
+pub struct ReplyCard {
+    pub token: String,
+    pub origin_key: String,
+    pub message_id: String,
+    pub spec: serde_json::Value,
+    pub used_job: String,
+}
 pub struct ProcessingReaction {
     pub job_id: String,
     pub message_id: String,
@@ -43,6 +50,9 @@ impl Store {
           CREATE TABLE IF NOT EXISTS model_cards (token TEXT PRIMARY KEY, origin_key TEXT NOT NULL,
           message_id TEXT NOT NULL DEFAULT '', expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
           CREATE TABLE IF NOT EXISTS form_cards (token TEXT PRIMARY KEY,origin_key TEXT NOT NULL,session TEXT NOT NULL,message_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS reply_cards (token TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL DEFAULT '',spec TEXT NOT NULL,expires INTEGER NOT NULL DEFAULT (unixepoch()+1800),used_job TEXT NOT NULL DEFAULT '');
+          CREATE INDEX IF NOT EXISTS reply_cards_message ON reply_cards(message_id);
+          CREATE TABLE IF NOT EXISTS builtin_contexts (token TEXT PRIMARY KEY,job_id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS processing_reactions (job_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,reaction_id TEXT NOT NULL,due INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS posture_watch (scope TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL,interval_seconds INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_due INTEGER NOT NULL DEFAULT (unixepoch()),last_note TEXT NOT NULL DEFAULT '',last_at INTEGER NOT NULL DEFAULT 0);
@@ -75,6 +85,117 @@ impl Store {
         }
         c.execute("UPDATE jobs SET output_kind='posture_report' WHERE id LIKE 'posture-report:%' AND status='replying' AND sent=0 AND output_kind='text'",[])?;
         Ok(Self(Mutex::new(c)))
+    }
+    pub fn save_reply_card(&self, token: &str, key: &str, spec: &serde_json::Value) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT OR IGNORE INTO reply_cards(token,origin_key,spec) VALUES (?,?,?)",
+            params![token, key, spec.to_string()],
+        )?;
+        Ok(())
+    }
+    pub fn attach_reply_card(&self, token: &str, message: &str) -> Result<()> {
+        self.0.lock().unwrap().execute("UPDATE reply_cards SET message_id=?2 WHERE token=?1 AND (message_id='' OR message_id=?2)",params![token,message])?;
+        Ok(())
+    }
+    pub fn delete_reply_card(&self, token: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "DELETE FROM reply_cards WHERE token=? AND message_id=''",
+            [token],
+        )?;
+        Ok(())
+    }
+    pub fn reply_card(&self, token: &str, message: &str) -> Result<Option<ReplyCard>> {
+        let c = self.0.lock().unwrap();
+        let row:Option<(String,String,String,String,String)>=c.query_row("SELECT token,origin_key,message_id,spec,used_job FROM reply_cards WHERE expires>unixepoch() AND ((?1<>'' AND token=?1) OR (?1='' AND message_id=?2))",params![token,message],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional()?;
+        row.map(|(token, origin_key, message_id, spec, used_job)| {
+            Ok(ReplyCard {
+                token,
+                origin_key,
+                message_id,
+                spec: serde_json::from_str(&spec)?,
+                used_job,
+            })
+        })
+        .transpose()
+    }
+    pub fn reply_card_for_job(&self, job: &str) -> Result<Option<ReplyCard>> {
+        let token: Option<String> = self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT token FROM reply_cards WHERE used_job=?",
+                [job],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match token {
+            Some(t) => self.reply_card(&t, ""),
+            None => Ok(None),
+        }
+    }
+    // Persist consumption and the new request together before acknowledging a callback.
+    pub fn consume_reply_card(&self, token: &str, job: &Job) -> Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        let used: String = tx.query_row(
+            "SELECT used_job FROM reply_cards WHERE token=? AND expires>unixepoch()",
+            [token],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(
+            used.is_empty() || used == job.id,
+            "这张卡片已处理，请使用最新卡片"
+        );
+        if used.is_empty() {
+            let pending: i64 =
+                tx.query_row("SELECT count(*) FROM jobs WHERE status<>'done'", [], |r| {
+                    r.get(0)
+                })?;
+            anyhow::ensure!(pending < 500, "任务队列已满");
+            tx.execute(
+                "INSERT INTO jobs(id,key,message_id,text) VALUES (?,?,?,?)",
+                params![job.id, job.key, job.message_id, job.text],
+            )?;
+            tx.execute(
+                "UPDATE reply_cards SET used_job=?2 WHERE token=?1",
+                params![token, job.id],
+            )?;
+        } else {
+            let existing: (String, String) =
+                tx.query_row("SELECT key,text FROM jobs WHERE id=?", [&job.id], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?;
+            anyhow::ensure!(
+                existing == (job.key.clone(), job.text.clone()),
+                "回调内容不一致"
+            );
+        }
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn builtin_context(&self, id: &str) -> Result<String> {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let c = self.0.lock().unwrap();
+        c.execute("DELETE FROM builtin_contexts WHERE job_id NOT IN (SELECT id FROM jobs WHERE status='running')", [])?;
+        c.execute(
+            "INSERT INTO builtin_contexts VALUES (?,?)",
+            params![token, id],
+        )?;
+        Ok(token)
+    }
+    pub fn builtin_origin(&self, token: &str) -> Result<Option<Job>> {
+        Ok(self.0.lock().unwrap().query_row(
+            "SELECT j.id,j.key,j.message_id,j.text,j.result,j.sent FROM builtin_contexts c JOIN jobs j ON j.id=c.job_id WHERE c.token=? AND j.status='running' AND substr(j.text,1,1)<>'/'",
+            [token], |r| Ok(Job {id:r.get(0)?,key:r.get(1)?,message_id:r.get(2)?,text:r.get(3)?,result:r.get(4)?,sent:r.get(5)?})
+        ).optional()?)
+    }
+    pub fn revoke_builtin_context(&self, token: &str) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM builtin_contexts WHERE token=?", [token])?;
+        Ok(())
     }
     pub fn use_v2_sessions(&self) -> Result<()> {
         let mut c = self.0.lock().unwrap();
@@ -430,7 +551,7 @@ impl Store {
     }
     pub fn finish(&self, id: &str, text: &str) -> Result<()> {
         self.0.lock().unwrap().execute(
-            "UPDATE jobs SET status='replying',result=?2,output_kind='text' WHERE id=?1",
+            "UPDATE jobs SET status=CASE WHEN substr(id,1,8)='builtin:' THEN 'done' ELSE 'replying' END,result=?2,output_kind='text' WHERE id=?1",
             params![id, text],
         )?;
         Ok(())
@@ -669,6 +790,11 @@ impl Store {
         Ok(())
     }
     pub fn prune(&self) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM reply_cards WHERE expires<unixepoch()", [])?;
+        self.0.lock().unwrap().execute("DELETE FROM builtin_contexts WHERE job_id NOT IN (SELECT id FROM jobs WHERE status='running')",[])?;
         self.0
             .lock()
             .unwrap()

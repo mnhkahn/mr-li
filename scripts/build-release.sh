@@ -28,6 +28,9 @@ if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
     if [[ -f ".data/pose-models/$name" ]]; then cp ".data/pose-models/$name" "$DEST/models/"; fi
   done
 fi
+mkdir -p "$DEST/resource"
+cp resource/feishu-replies.txt "$DEST/resource/"
+cp scripts/smoke-builtin.py "$DEST/scripts/"
 cp scripts/smoke-home-assistant.py "$DEST/scripts/"
 cp scripts/voice-clone.py scripts/voice-clone.sh "$DEST/scripts/"
 cp README.md .env.example opencode.example.json "$DEST/"

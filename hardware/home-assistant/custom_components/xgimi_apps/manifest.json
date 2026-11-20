@@ -1,0 +1,12 @@
+{
+  "domain": "xgimi_apps",
+  "name": "XGIMI Apps",
+  "version": "0.2.0",
+  "config_flow": true,
+  "documentation": "https://github.com/mnhkahn/mr-li/tree/main/hardware/home-assistant",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "codeowners": [
+    "@mnhkahn"
+  ]
+}

@@ -1,10 +1,9 @@
 use crate::{
+    agent::{AgentHub, Kind},
     camera, commands,
     config::Config,
     feishu::Feishu,
-    forms, models,
-    opencode::OpenCode,
-    speech,
+    forms, models, speech,
     store::{Job, Store},
 };
 use anyhow::{Context, Result, ensure};
@@ -16,7 +15,7 @@ pub struct Bridge {
     pub cfg: Arc<Config>,
     pub store: Arc<Store>,
     pub feishu: Arc<Feishu>,
-    pub oc: Arc<OpenCode>,
+    pub agents: Arc<AgentHub>,
     pub tablet: Option<Arc<crate::tablet::Gateway>>,
 }
 const HELP: &str = commands::HELP;
@@ -116,6 +115,13 @@ impl Bridge {
         }
         Ok(())
     }
+    fn selected_agent(&self, key: &str) -> Result<Kind> {
+        Kind::parse(&self.store.agent(&models::scope(key)?)?)
+    }
+    fn session(&self, key: &str) -> Result<Option<String>> {
+        self.store
+            .agent_session(key, self.selected_agent(key)?.id())
+    }
     fn selected_model(&self, key: &str) -> Result<String> {
         Ok(self
             .store
@@ -132,9 +138,9 @@ impl Bridge {
             }
             if !camera::is_capture(&j.text)
                 && !speech::is_command(&j.text)
-                && let Some(sid) = self.store.session(&j.key)?
+                && let Some(sid) = self.session(&j.key)?
             {
-                self.oc.abort(&sid).await?;
+                self.agents.abort(&sid).await?;
             }
             self.store.finish(&j.id,"服务曾中断，已请求停止当时的任务。为避免重复副作用，没有自动重跑；请检查结果后重新发送任务。")?;
         }
@@ -220,21 +226,22 @@ impl Bridge {
     }
     async fn execute(&self, j: &Job) -> Result<()> {
         // Freeze the choice when execution starts; later card clicks affect queued work only.
+        let kind = self.selected_agent(&j.key)?;
         let model = self.selected_model(&j.key)?;
         self.start_processing(j).await;
-        let sid = if let Some(sid) = self.store.session(&j.key)? {
+        let sid = if let Some(sid) = self.session(&j.key)? {
             // A missing session must not silently discard the conversation history.
-            self.oc
-                .get(&format!("/api/session/{sid}"))
+            self.agents
+                .validate_session(&sid)
                 .await
                 .context("会话不可用，请用 /new 创建新会话")?;
             sid
         } else {
-            let sid = self.oc.create(Some(&model)).await?;
-            self.store.set_session(&j.key, &sid)?;
+            let sid = self.agents.create_for(kind, Some(&model)).await?;
+            self.store.set_agent_session(&j.key, kind.id(), &sid)?;
             sid
         };
-        let text = self.oc.prompt(&sid, &j.text, Some(&model)).await?;
+        let text = self.agents.prompt(&sid, &j.text, Some(&model)).await?;
         self.store.finish(&j.id, &text)?;
         Ok(())
     }
@@ -251,11 +258,23 @@ impl Bridge {
             .split_once(char::is_whitespace)
             .unwrap_or((&j.text, ""));
         let args = args.trim();
-        let sid = self.store.session(&j.key)?;
+        let sid = self.session(&j.key)?;
         match cmd {
             "/help" => Ok(HELP.into()),
-            "/skills" => commands::skills(&self.oc.get("/api/skill").await?),
-            "/mcp" => commands::mcp(&self.oc.get("/api/mcp").await?),
+            "/ha" => {
+                if args.is_empty() {
+                    return Ok("/ha devices [名称/房间/类型]\n/ha commands <实体ID或设备ID>\n/ha control <实体ID> <domain.service> [JSON参数]".into());
+                }
+                let value =
+                    crate::home_assistant::command(self.cfg.home_assistant.as_ref(), args).await?;
+                Ok(serde_json::to_string_pretty(&value)?)
+            }
+            "/skills" | "/mcp" if self.selected_agent(&j.key)? != Kind::OpenCode => Ok(
+                "此 Agent 的技能和 MCP 由其 CLI 配置及会话管理；平板 MCP 会在创建会话时传入。"
+                    .into(),
+            ),
+            "/skills" => commands::skills(&self.agents.get("/api/skill").await?),
+            "/mcp" => commands::mcp(&self.agents.get("/api/mcp").await?),
             "/tasks" => Ok(commands::task_list(
                 &self.store.command_tasks(&j.key, &j.id)?,
             )),
@@ -311,7 +330,7 @@ impl Bridge {
                     self.store.posture_watch_status(&models::scope(&j.key)?)?
                 ))
             }
-            "/notify" => {
+            "/baby" | "/notify" => {
                 let tablet = self.tablet.as_ref().context("平板网关未启用")?;
                 let now = crate::posture::now_epoch() as i64;
                 let owner = models::scope(&j.key)?;
@@ -323,7 +342,9 @@ impl Bridge {
                     return Ok("已取消尚未送达的通知。".into());
                 }
                 if args.is_empty() || args == "send" || args == "cancel" || args == "help" {
-                    return Ok("/notify <内容> 在作业首页显示通知\n/notify list 查看本聊天你的通知和送达状态\n/notify cancel <ID> 取消尚未发送的通知\n/notify send --device <设备ID> <内容> 指定平板\n首页仅显示最新通知，当天结束后消失；已送达通知不能远程撤回，可发送新通知替换。".into());
+                    return Ok(format!(
+                        "{cmd} <内容> 给宝宝发消息，在平板作业首页显示\n{cmd} list 查看本聊天你的消息和送达状态\n{cmd} cancel <ID> 取消尚未发送的消息\n{cmd} send --device <设备ID> <内容> 指定平板\n首页仅显示最新消息，当天结束后消失；已送达消息不能远程撤回，可发送新消息替换。"
+                    ));
                 }
                 let publish = crate::notices::parse_send(args)?;
                 let devices = tablet.devices_status()?;
@@ -336,7 +357,7 @@ impl Bridge {
                 } else {
                     ensure!(
                         devices.len() == 1,
-                        "请先配对平板；多台设备时用 /notify send --device <设备ID> <内容>"
+                        "请先配对平板；多台设备时用 {cmd} send --device <设备ID> <内容>"
                     );
                     devices[0]["id"]
                         .as_str()
@@ -347,7 +368,7 @@ impl Bridge {
                     .notices
                     .publish(&owner, &j.id, &device, &publish.body, now)?;
                 Ok(format!(
-                    "通知已保存，等待平板确认送达。离线时会在当天重连后补发。\n{id}\n/notify list 查看状态"
+                    "通知已保存，等待平板确认送达。离线时会在当天重连后补发。\n{id}\n{cmd} list 查看状态"
                 ))
             }
             "/speak" => {
@@ -396,9 +417,14 @@ impl Bridge {
                     .filter(|q| q.key == j.key && speech::text(&q.text).is_some())
                     .count();
                 Ok(format!(
-                    "会话：{}\n模型：{}\n执行中：{}\n排队：{}\n语音播报中：{}\n待播报：{}",
+                    "Agent：{}\n会话：{}\n模型：{}\n执行中：{}\n排队：{}\n语音播报中：{}\n待播报：{}",
+                    self.selected_agent(&j.key)?.name(),
                     sid.as_deref().unwrap_or("尚未创建"),
-                    self.selected_model(&j.key)?,
+                    if self.selected_agent(&j.key)? == Kind::OpenCode {
+                        self.selected_model(&j.key)?
+                    } else {
+                        "免费账户 / 免费模型".into()
+                    },
                     active.is_some_and(|a| a.key == j.key),
                     pending,
                     speaking,
@@ -418,8 +444,9 @@ impl Bridge {
                         .any(|q| q.key == j.key && !is_command(q)),
                     "有任务排队，请先 /stop"
                 );
-                self.store.reset(&j.key)?;
-                Ok("下条消息将创建新会话，旧会话仍保存在 OpenCode。".into())
+                self.store
+                    .reset_agent_session(&j.key, self.selected_agent(&j.key)?.id())?;
+                Ok("下条消息将创建新会话，旧会话仍保存在对应 Agent。".into())
             }
             "/stop" => {
                 if let Ok(scope) = models::scope(&j.key) {
@@ -427,7 +454,7 @@ impl Bridge {
                     crate::posture::clear_frames(&self.cfg, &j.key)?;
                 }
                 if let Some(sid) = sid {
-                    self.oc.abort(&sid).await?;
+                    self.agents.abort(&sid).await?;
                 }
                 for q in self.store.jobs("queued")? {
                     if q.key == j.key
@@ -447,18 +474,21 @@ impl Bridge {
                     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
                     "请提供有效请求 ID"
                 );
-                let permissions = self
-                    .oc
-                    .get(&format!("/api/session/{sid}/permission"))
-                    .await?;
-                let questions = self.oc.get(&format!("/api/session/{sid}/form")).await?;
+                let permissions = if self.selected_agent(&j.key)? == Kind::OpenCode {
+                    self.agents
+                        .get(&format!("/api/session/{sid}/permission"))
+                        .await?
+                } else {
+                    json!([])
+                };
+                let questions = self.agents.forms(&sid).await?;
                 let owns = |v: &Value| {
                     v.as_array()
                         .is_some_and(|a| a.iter().any(|r| r["id"] == id && r["sessionID"] == sid))
                 };
                 if owns(&permissions) {
                     ensure!(cmd != "/answer", "权限请求请用 /approve 或 /deny");
-                    self.oc
+                    self.agents
                         .post(
                             &format!("/api/session/{sid}/permission/{id}/reply"),
                             json!({"decision":if cmd=="/approve"{"once"}else{"reject"}}),
@@ -467,9 +497,7 @@ impl Bridge {
                 } else if owns(&questions) {
                     ensure!(cmd != "/approve", "提问请用 /answer 或 /deny");
                     if cmd == "/deny" {
-                        self.oc
-                            .delete(&format!("/api/session/{sid}/form/{id}"))
-                            .await?;
+                        self.agents.answer_form(&sid, id, None).await?;
                     } else {
                         let form = questions
                             .as_array()
@@ -479,12 +507,7 @@ impl Bridge {
                             form,
                             serde_json::from_str(answer.trim()).context("请输入 JSON 答案")?,
                         )?;
-                        self.oc
-                            .post(
-                                &format!("/api/session/{sid}/form/{id}/reply"),
-                                json!({"answer":answers}),
-                            )
-                            .await?;
+                        self.agents.answer_form(&sid, id, Some(answers)).await?;
                     }
                 } else {
                     anyhow::bail!("请求不存在、已处理，或不属于当前用户和会话")
@@ -497,10 +520,46 @@ impl Bridge {
     async fn handle_command(&self, j: &Job, active: Option<&Job>) -> Result<()> {
         let mut words = j.text.split_whitespace();
         let cmd = words.next().unwrap_or("");
-        if cmd == "/_form" {
+        if cmd == "/agent" {
+            let selected = self.selected_agent(&j.key)?;
+            let token = uuid::Uuid::new_v4().simple().to_string();
+            self.store.register_agent_card(&token, &j.key)?;
+            self.store.finish_output(
+                &j.id,
+                "agent_card",
+                &json!({"token":token,"card":crate::agent::picker(selected,&token,false)}),
+            )?;
+        } else if cmd == "/_agent-select" {
+            ensure!(j.id.starts_with("card:"), "请在 Agent 卡片中选择");
+            let token = words.next().context("卡片标识缺失")?;
+            let selected = Kind::parse(words.next().context("请选择 Agent")?)?;
+            let card = self
+                .store
+                .agent_card(token)?
+                .context("卡片已过期，请重新输入 /agent")?;
+            ensure!(
+                card.origin_key == j.key && card.message_id == j.message_id,
+                "卡片不属于当前会话"
+            );
+            let scope = models::scope(&j.key)?;
+            ensure!(
+                !active
+                    .is_some_and(|a| models::scope(&a.key).ok().as_deref() == Some(scope.as_str())),
+                "本聊天有任务正在执行，请先 /stop，再切换 Agent"
+            );
+            // Switching is allowed before installation/login, so the card always exposes
+            // all five choices. Execution reports concrete setup failures lazily.
+            let updated = crate::agent::picker(selected, token, true);
+            self.store
+                .switch_agent_and_finish(&j.id, &scope, selected.id(), &updated)?;
+        } else if cmd == "/_form" {
             self.handle_form(j).await?;
         } else if matches!(cmd, "/models" | "/model") {
-            let available = models::free_models(&self.oc.catalog().await?);
+            ensure!(
+                self.selected_agent(&j.key)? == Kind::OpenCode,
+                "当前 Agent 使用免费账户或免费模型；请用 /agent 选择后端。/models 当前用于 OpenCode。"
+            );
+            let available = models::free_models(&self.agents.catalog().await?);
             ensure!(
                 !available.is_empty(),
                 "暂未找到可用的 OpenCode 免费模型，请稍后重试"
@@ -512,6 +571,10 @@ impl Bridge {
             self.store
                 .finish_output(&j.id, "model_card", &json!({"token":token,"card":card}))?;
         } else if cmd == "/_model-select" {
+            ensure!(
+                self.selected_agent(&j.key)? == Kind::OpenCode,
+                "当前 Agent 已切换，请用 /agent 选择 OpenCode 后再设置模型"
+            );
             ensure!(j.id.starts_with("card:"), "请在模型选择卡片中点选模型");
             let token = words.next().context("卡片标识缺失")?;
             let selected = words.next().context("请选择模型")?;
@@ -523,7 +586,7 @@ impl Bridge {
                 card.origin_key == j.key && card.message_id == j.message_id,
                 "卡片不属于当前会话"
             );
-            let available = models::free_models(&self.oc.catalog().await?);
+            let available = models::free_models(&self.agents.catalog().await?);
             ensure!(
                 available.iter().any(|m| m.id == selected),
                 "此模型已下线或不再免费，请重新打开模型选择"
@@ -558,14 +621,14 @@ impl Bridge {
         }
         let sid = &saved.session;
         ensure!(
-            self.store.session(&j.key)?.as_deref() == Some(sid),
+            self.session(&j.key)?.as_deref() == Some(sid),
             "会话已切换，旧提问已失效"
         );
         let id = state["form"]["id"]
             .as_str()
             .context("提问 ID 缺失")?
             .to_owned();
-        let pending = self.oc.get(&format!("/api/session/{sid}/form")).await?;
+        let pending = self.agents.forms(sid).await?;
         let owned = pending
             .as_array()
             .context("提问列表无效")?
@@ -579,9 +642,7 @@ impl Bridge {
             let index = state["index"].as_u64().context("进度缺失")? as usize;
             match payload["operation"].as_str() {
                 Some("cancel") => {
-                    self.oc
-                        .delete(&format!("/api/session/{sid}/form/{id}"))
-                        .await?;
+                    self.agents.answer_form(sid, &id, None).await?;
                     message = Some("已取消提问。".into());
                 }
                 Some("restart") => {
@@ -639,11 +700,8 @@ impl Bridge {
                     );
                     // OpenCode is authoritative for pattern/format and other server constraints.
                     match self
-                        .oc
-                        .post(
-                            &format!("/api/session/{sid}/form/{id}/reply"),
-                            json!({"answer":state["answers"]}),
-                        )
+                        .agents
+                        .answer_form(sid, &id, Some(state["answers"].clone()))
                         .await
                     {
                         Ok(_) => message = Some("答案已提交，正在继续任务。".into()),
@@ -673,11 +731,9 @@ impl Bridge {
                 continue;
             }
             let same_session =
-                self.store.session(&saved.origin_key)?.as_deref() == Some(saved.session.as_str());
+                self.session(&saved.origin_key)?.as_deref() == Some(saved.session.as_str());
             let pending = if same_session {
-                self.oc
-                    .get(&format!("/api/session/{}/form", saved.session))
-                    .await?
+                self.agents.forms(&saved.session).await?
             } else {
                 json!([])
             };
@@ -700,11 +756,11 @@ impl Bridge {
         Ok(())
     }
     async fn notify_pending(&self, j: &Job, seen: &mut HashSet<String>) -> Result<()> {
-        let Some(sid) = self.store.session(&j.key)? else {
+        let Some(sid) = self.session(&j.key)? else {
             return Ok(());
         };
-        self.oc.approve_pending(&sid).await?;
-        let list = self.oc.get(&format!("/api/session/{sid}/form")).await?;
+        self.agents.approve_pending(&sid).await?;
+        let list = self.agents.forms(&sid).await?;
         for p in list.as_array().context("OpenCode 待处理提问格式不兼容")? {
             if p["sessionID"] != sid {
                 continue;
@@ -936,6 +992,42 @@ impl Bridge {
                 self.store.status(&j.id, "done")?;
                 return Ok(());
             }
+            if kind == "agent_card" || kind == "agent_card_update" {
+                let mut payload: Value = serde_json::from_str(&j.result)?;
+                let current = self.selected_agent(&j.key)?;
+                let token = if kind == "agent_card" {
+                    payload["token"].as_str()
+                } else {
+                    payload["body"]["elements"][1]["behaviors"][0]["value"]["token"].as_str()
+                }
+                .context("卡片标识缺失")?
+                .to_owned();
+                let card = crate::agent::picker(current, &token, kind == "agent_card_update");
+                let result = if kind == "agent_card" {
+                    payload["card"] = card;
+                    let uuid = uuid::Uuid::new_v5(
+                        &uuid::Uuid::NAMESPACE_OID,
+                        format!("result:{}:agent-card", j.id).as_bytes(),
+                    )
+                    .to_string();
+                    match self
+                        .feishu
+                        .reply_card(&destination(j)?, &payload["card"], &uuid, false)
+                        .await
+                    {
+                        Ok(message) => self.store.attach_agent_card(&token, &message),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    self.feishu.update_card(&j.message_id, &card).await
+                };
+                if let Err(e) = result {
+                    self.store.retry_delivery(&j.id)?;
+                    return Err(e);
+                }
+                self.store.status(&j.id, "done")?;
+                return Ok(());
+            }
             if kind == "model_card" || kind == "model_card_update" {
                 let mut payload: Value = serde_json::from_str(&j.result)?;
                 let current = self.selected_model(&j.key)?;
@@ -994,6 +1086,22 @@ impl Bridge {
                 return Ok(());
             }
             self.store.status(&j.id, "done")?;
+        }
+        Ok(())
+    }
+    async fn finish_stopped_task(
+        &self,
+        key: &str,
+        active: &mut Option<(Job, JoinHandle<Result<()>>)>,
+    ) -> Result<()> {
+        if active.as_ref().is_some_and(|(job, _)| job.key == key) {
+            let (job, handle) = active.take().unwrap();
+            // Called only after /stop has confirmed backend termination. Before a
+            // session ID exists no model prompt has been sent; dropping creation
+            // also drops its supervised process and cancels a pending login.
+            handle.abort();
+            let _ = handle.await;
+            self.store.finish(&job.id, "任务已由 /stop 停止。")?;
         }
         Ok(())
     }
@@ -1140,11 +1248,15 @@ impl Bridge {
                     self.store.finish(&c.id, "摄像头任务已停止。")?;
                 }
                 self.store.status(&j.id, "running")?;
-                if let Err(e) = self
+                match self
                     .handle_command(j, active.as_ref().map(|(j, _)| j))
                     .await
                 {
-                    self.store.finish(&j.id, &format!("操作失败：{e}"))?;
+                    Ok(()) if j.text.trim() == "/stop" => {
+                        self.finish_stopped_task(&j.key, &mut active).await?
+                    }
+                    Ok(()) => {}
+                    Err(e) => self.store.finish(&j.id, &format!("操作失败：{e}"))?,
                 }
             }
             if active.is_none() {
@@ -1185,6 +1297,114 @@ impl Bridge {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stop_cancels_initial_agent_creation_before_a_session_exists() -> anyhow::Result<()> {
+        use super::*;
+        let cfg = Arc::new(Config::fixture());
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            tablet: None,
+        };
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        let job = Job {
+            id: "starting".into(),
+            key: key.clone(),
+            message_id: "om_job".into(),
+            text: "hello".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&job)?;
+        store.status(&job.id, "running")?;
+        let mut active = Some((
+            job.clone(),
+            tokio::spawn(std::future::pending::<Result<()>>()),
+        ));
+        b.finish_stopped_task("other-owner", &mut active).await?;
+        assert!(active.is_some());
+        let stop = Job {
+            id: "stop".into(),
+            text: "/stop".into(),
+            ..job.clone()
+        };
+        b.command(&stop, Some(&job)).await?;
+        b.finish_stopped_task(&key, &mut active).await?;
+        assert!(active.is_none());
+        assert!(store.jobs("running")?.is_empty());
+        assert!(
+            store
+                .jobs("replying")?
+                .iter()
+                .any(|j| j.id == job.id && j.result.contains("停止"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn agent_card_switches_only_when_chat_is_idle_and_restores_each_session()
+    -> anyhow::Result<()> {
+        use super::*;
+        let cfg = Arc::new(Config::fixture());
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            tablet: None,
+        };
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        let j = Job {
+            id: "command".into(),
+            key: key.clone(),
+            message_id: "om_source".into(),
+            text: "/agent".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&j)?;
+        b.handle_command(&j, None).await?;
+        let out = store.jobs("replying")?.remove(0);
+        let payload: Value = serde_json::from_str(&out.result)?;
+        assert_eq!(
+            payload["card"]["body"]["elements"][1]["options"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        let token = payload["token"].as_str().unwrap();
+        store.attach_agent_card(token, "om_agent")?;
+        let switch = Job {
+            id: "card:choose".into(),
+            key: key.clone(),
+            message_id: "om_agent".into(),
+            text: format!("/_agent-select {token} antigravity"),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&switch)?;
+        assert!(b.handle_command(&switch, Some(&j)).await.is_err());
+        assert_eq!(b.selected_agent(&key)?, Kind::OpenCode);
+        store.set_session(&key, "ses_original")?;
+        b.handle_command(&switch, None).await?;
+        assert_eq!(b.selected_agent(&key)?, Kind::Antigravity);
+        assert!(b.session(&key)?.is_none());
+        store.set_agent_session(&key, "antigravity", "agent_antigravity_test")?;
+        assert_eq!(b.session(&key)?.as_deref(), Some("agent_antigravity_test"));
+        let back = Job {
+            text: format!("/_agent-select {token} opencode"),
+            ..switch.clone()
+        };
+        b.handle_command(&back, None).await?;
+        assert_eq!(b.session(&key)?.as_deref(), Some("ses_original"));
+        Ok(())
+    }
+
     use super::*;
     #[tokio::test]
     async fn slash_commands_use_workspace_metadata_and_cancel_only_owned_speech() -> Result<()> {
@@ -1211,7 +1431,7 @@ mod tests {
             cfg: cfg.clone(),
             store: store.clone(),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
-            oc: Arc::new(OpenCode::new(cfg)?),
+            agents: Arc::new(AgentHub::new(cfg)?),
             tablet: None,
         };
         let key = json!(["workspace", "owner", "chat", "topic"]).to_string();
@@ -1285,7 +1505,7 @@ mod tests {
         let b = Bridge {
             cfg: cfg.clone(),
             store: Arc::new(Store::open(std::path::Path::new(":memory:"))?),
-            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
             tablet: Some(tablet.clone()),
         };
@@ -1298,9 +1518,11 @@ mod tests {
             sent: 0,
         };
         assert!(b.command(&j, None).await?.contains("明天带练习册"));
+        j.text = "/baby list".into();
+        assert!(b.command(&j, None).await?.contains("明天带练习册"));
         j.key = json!(["workspace", "other-parent", "chat", "topic-two"]).to_string();
         assert!(!b.command(&j, None).await?.contains("明天带练习册"));
-        j.text = format!("/notify cancel {id}");
+        j.text = format!("/baby cancel {id}");
         assert!(b.command(&j, None).await.is_err());
         j.key = json!(["workspace", "parent", "other-chat", "topic-two"]).to_string();
         assert!(b.command(&j, None).await.is_err());
@@ -1312,6 +1534,26 @@ mod tests {
                 .pending(crate::posture::now_epoch() as i64)?
                 .is_empty()
         );
+        j.text = "/baby".into();
+        assert!(b.command(&j, None).await?.contains("/baby <内容>"));
+        let db =
+            rusqlite::Connection::open(cfg.data_dir.join("tablet/teacher-devices-v1.sqlite3"))?;
+        db.execute(
+            "INSERT INTO devices VALUES ('tablet','学习平板','test-token')",
+            [],
+        )?;
+        j.id = "baby-message".into();
+        j.text = "/baby 宝宝，休息一下\n记得喝水！".into();
+        let reply = b.command(&j, None).await?;
+        assert!(reply.contains("等待平板确认送达"));
+        assert!(reply.contains("/baby list"));
+        // Retrying the same incoming message must not publish twice.
+        assert_eq!(b.command(&j, None).await?, reply);
+        let pending = tablet.notices.pending(crate::posture::now_epoch() as i64)?;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0]["device"], "tablet");
+        assert_eq!(pending[0]["body"], "宝宝，休息一下\n记得喝水！");
+        drop(db);
         drop(b);
         drop(tablet);
         std::fs::remove_dir_all(&cfg.data_dir)?;
@@ -1411,7 +1653,7 @@ mod tests {
             tablet: Some(tablet),
             store: store.clone(),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
-            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
         };
         let j = Job {
             id: "posture-report:test".into(),
@@ -1534,17 +1776,17 @@ mod tests {
         cfg.opencode_url = format!("http://{address}");
         let cfg = Arc::new(cfg);
         let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
-        store.set_session("owner-key", "ses_owner")?;
+        store.set_session(r#"["/tmp","ou_owner","oc_chat",""]"#, "ses_owner")?;
         store.save_form_card(
             "token",
-            "owner-key",
+            r#"["/tmp","ou_owner","oc_chat",""]"#,
             "ses_owner",
             &json!({"form":form,"index":0,"answers":{},"revision":0}),
         )?;
         store.attach_form_card("token", "om_card")?;
         let b = Bridge {
             tablet: None,
-            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
             cfg,
             store,
@@ -1557,7 +1799,7 @@ mod tests {
         ] {
             let job = Job {
                 id: format!("card:{i}"),
-                key: "owner-key".into(),
+                key: r#"["/tmp","ou_owner","oc_chat",""]"#.into(),
                 message_id: "om_card".into(),
                 text: format!(
                     "/_form {}",
@@ -1601,17 +1843,17 @@ mod tests {
         cfg.opencode_url = format!("http://{address}");
         let cfg = Arc::new(cfg);
         let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
-        store.set_session("owner-key", "ses_owner")?;
+        store.set_session(r#"["/tmp","ou_owner","oc_chat",""]"#, "ses_owner")?;
         let b = Bridge {
             tablet: None,
-            oc: Arc::new(OpenCode::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
             feishu: Arc::new(Feishu::new(cfg.clone())?),
             cfg,
             store,
         };
         let j = Job {
             id: "om_cmd".into(),
-            key: "owner-key".into(),
+            key: r#"["/tmp","ou_owner","oc_chat",""]"#.into(),
             message_id: "om_cmd".into(),
             text: "/approve per_foreign".into(),
             result: String::new(),

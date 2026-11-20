@@ -560,9 +560,7 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
     let owner = e["operator"]["open_id"].as_str().unwrap_or("");
     let chat = e["context"]["open_chat_id"].as_str().unwrap_or("");
     let message = e["context"]["open_message_id"].as_str().unwrap_or("");
-    if !cfg.allowed.iter().any(|id| id == owner)
-        || (!cfg.allowed_chats.is_empty() && !cfg.allowed_chats.iter().any(|id| id == chat))
-    {
+    if !cfg.allowed.iter().any(|id| id == owner) {
         return Ok(None);
     }
     let a = &e["action"];
@@ -575,6 +573,7 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
         if key[0] != cfg.workspace.to_string_lossy().as_ref()
             || key[1] != owner
             || key[2] != chat
+            || !chat_allowed(cfg, chat, key[3] == "")
             || card.message_id != message
         {
             return Ok(None);
@@ -594,25 +593,34 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
             sent: 0,
         }));
     }
-    if a["tag"] != "select_static" || a["value"]["action"] != "select_model" {
+    let agent_action = a["value"]["action"] == "select_agent";
+    if a["tag"] != "select_static" || (!agent_action && a["value"]["action"] != "select_model") {
         return Ok(None);
     }
     let token = a["value"]["token"].as_str().context("卡片缺少标识")?;
-    let Some(card) = store.model_card(token)? else {
+    let Some(card) = (if agent_action {
+        store.agent_card(token)?
+    } else {
+        store.model_card(token)?
+    }) else {
         return Ok(None);
     };
     let key: Value = serde_json::from_str(&card.origin_key)?;
     if key[0] != cfg.workspace.to_string_lossy().as_ref()
         || key[1] != owner
         || key[2] != chat
+        || !chat_allowed(cfg, chat, key[3] == "")
         || card.message_id != message
     {
         return Ok(None);
     }
     let model = a["option"].as_str().context("请选择模型")?;
+    if agent_action {
+        crate::agent::Kind::parse(model)?;
+    }
     ensure!(
         model.len() <= 200
-            && model.starts_with("opencode/")
+            && (agent_action || model.starts_with("opencode/"))
             && model
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)),
@@ -626,7 +634,14 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
         id: format!("card:{event_id}"),
         key: card.origin_key,
         message_id: message.into(),
-        text: format!("/_model-select {token} {model}"),
+        text: format!(
+            "{} {token} {model}",
+            if agent_action {
+                "/_agent-select"
+            } else {
+                "/_model-select"
+            }
+        ),
         result: String::new(),
         sent: 0,
     }))
@@ -656,17 +671,21 @@ fn observed_sender<'a>(v: &'a Value, chat: &str, challenge: &str) -> Option<&'a 
         .as_str()
         .filter(|id| id.starts_with("ou_"))
 }
+// Private chats use the user allowlist; group chats also use the chat allowlist.
+fn chat_allowed(cfg: &Config, chat: &str, private: bool) -> bool {
+    private || cfg.allowed_chats.is_empty() || cfg.allowed_chats.iter().any(|id| id == chat)
+}
 pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
     if v["header"]["event_type"] != "im.message.receive_v1" {
         return Ok(None);
     }
     let e = &v["event"];
     let m = &e["message"];
-    if !c.allowed_chats.is_empty()
-        && !m["chat_id"]
-            .as_str()
-            .is_some_and(|id| c.allowed_chats.iter().any(|allowed| allowed == id))
-    {
+    if !chat_allowed(
+        c,
+        m["chat_id"].as_str().unwrap_or(""),
+        m["chat_type"] == "p2p",
+    ) {
         return Ok(None);
     }
     let sender = e["sender"]["sender_id"]["open_id"].as_str().unwrap_or("");
@@ -1005,12 +1024,15 @@ mod tests {
     }
     #[test]
     fn form_callbacks_bind_owner_and_message_and_keep_typed_input() -> Result<()> {
-        let cfg = Config::fixture();
+        let mut cfg = Config::fixture();
         let store = Store::open(std::path::Path::new(":memory:"))?;
         let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
         store.save_form_card("token", &key, "ses_owned", &json!({"revision":0}))?;
         store.attach_form_card("token", "om_form")?;
         let mut v = json!({"header":{"event_type":"card.action.trigger","event_id":"form-event"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_form"},"action":{"tag":"button","value":{"action":"opencode_form","token":"token","revision":0,"operation":"next"},"form_value":{"answer":["one","two"]}}}});
+        cfg.allowed_chats = vec!["oc_other_group".into()];
+        assert!(parse_model_action(&v, &cfg, &store)?.is_none());
+        cfg.allowed_chats = vec!["oc_chat".into()];
         let job = parse_model_action(&v, &cfg, &store)?.unwrap();
         assert_eq!(job.key, key);
         assert!(store.insert(&job)?);
@@ -1025,6 +1047,39 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn agent_dropdown_callbacks_are_bound_typed_expiring_and_deduplicated() -> Result<()> {
+        let mut cfg = Config::fixture();
+        cfg.allowed.push("ou_other".into());
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        store.register_agent_card("agent-token", &key)?;
+        store.attach_agent_card("agent-token", "om_agent")?;
+        let mut event = json!({"header":{"event_type":"card.action.trigger","event_id":"agent-event"},"event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_agent"},"action":{"tag":"select_static","option":"antigravity","value":{"action":"select_agent","token":"agent-token"}}}});
+        cfg.allowed_chats = vec!["oc_other_group".into()];
+        assert!(parse_model_action(&event, &cfg, &store)?.is_none());
+        cfg.allowed_chats = vec!["oc_chat".into()];
+        let job = parse_model_action(&event, &cfg, &store)?.unwrap();
+        assert_eq!(job.text, "/_agent-select agent-token antigravity");
+        assert!(store.insert(&job)?);
+        assert!(!store.insert(&job)?);
+        for (pointer, value) in [
+            ("/event/operator/open_id", "ou_other"),
+            ("/event/context/open_chat_id", "oc_other"),
+            ("/event/context/open_message_id", "om_forwarded"),
+        ] {
+            let mut forged = event.clone();
+            *forged.pointer_mut(pointer).unwrap() = json!(value);
+            assert!(parse_model_action(&forged, &cfg, &store)?.is_none());
+        }
+        event["event"]["action"]["option"] = json!("claude-paid");
+        assert!(parse_model_action(&event, &cfg, &store).is_err());
+        event["event"]["action"]["option"] = json!("antigravity");
+        event["event"]["action"]["value"]["action"] = json!("select_model");
+        assert!(parse_model_action(&event, &cfg, &store)?.is_none());
+        assert!(store.agent_card("unknown-token")?.is_none());
+        Ok(())
+    }
+    #[test]
     fn card_callbacks_bind_owner_chat_message_and_are_deduplicated() -> Result<()> {
         let mut cfg = Config::fixture();
         cfg.allowed.push("ou_other".into());
@@ -1035,6 +1090,9 @@ mod tests {
         let mut v = json!({"header":{"event_type":"card.action.trigger","event_id":"evt1"},"event":{
             "operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_card"},
             "action":{"tag":"select_static","option":"opencode/free","value":{"action":"select_model","token":"nonce"}}}});
+        cfg.allowed_chats = vec!["oc_other_group".into()];
+        assert!(parse_model_action(&v, &cfg, &store)?.is_none());
+        cfg.allowed_chats = vec!["oc_chat".into()];
         let job = parse_model_action(&v, &cfg, &store)?.unwrap();
         assert_eq!(job.key, key);
         assert!(store.insert(&job)?);
@@ -1082,7 +1140,8 @@ mod tests {
     }
     #[test]
     fn sender_mention_and_thread_isolation() -> Result<()> {
-        let cfg = Config::fixture();
+        let mut cfg = Config::fixture();
+        cfg.allowed_chats = vec!["oc_chat".into()];
         let mut v = json!({"header":{"event_type":"im.message.receive_v1"},"event":{
             "sender":{"sender_type":"user","sender_id":{"open_id":"ou_owner"}},
             "message":{"message_type":"text","chat_type":"group","message_id":"om_root","chat_id":"oc_chat",
@@ -1098,10 +1157,46 @@ mod tests {
         v["event"]["sender"]["sender_id"]["open_id"] = json!("ou_owner");
         v["event"]["message"]["mentions"] = json!([]);
         assert!(parse_job(&v, &cfg, "ou_bot")?.is_none());
+        v["event"]["message"]["mentions"] = json!([{"key":"@_user_1","id":{"open_id":"ou_bot"}}]);
+        v["event"]["message"]["chat_id"] = json!("oc_private");
+        assert!(parse_job(&v, &cfg, "ou_bot")?.is_none());
         v["event"]["message"]["chat_type"] = json!("p2p");
+        v["event"]["message"]["mentions"] = json!([]);
         let private = parse_job(&v, &cfg, "ou_bot")?.unwrap();
         v["event"]["message"]["root_id"] = json!("om_another");
         assert_eq!(parse_job(&v, &cfg, "ou_bot")?.unwrap().key, private.key);
+        v["event"]["sender"]["sender_id"]["open_id"] = json!("ou_intruder");
+        assert!(parse_job(&v, &cfg, "ou_bot")?.is_none());
+        Ok(())
+    }
+    #[test]
+    fn private_cards_use_user_allowlist_with_restricted_groups() -> Result<()> {
+        let mut cfg = Config::fixture();
+        cfg.allowed_chats = vec!["oc_group".into()];
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let key = json!([cfg.workspace, "ou_owner", "oc_private", ""]).to_string();
+        store.register_model_card("model", &key)?;
+        store.attach_model_card("model", "om_card")?;
+        store.register_agent_card("agent", &key)?;
+        store.attach_agent_card("agent", "om_card")?;
+        store.save_form_card("form", &key, "ses_owned", &json!({"revision":0}))?;
+        store.attach_form_card("form", "om_card")?;
+        for (action, token, option) in [
+            ("select_model", "model", "opencode/free"),
+            ("select_agent", "agent", "antigravity"),
+            ("opencode_form", "form", ""),
+        ] {
+            let mut event = json!({"header":{"event_type":"card.action.trigger","event_id":"private-event"},
+                "event":{"operator":{"open_id":"ou_owner"},
+                "context":{"open_chat_id":"oc_private","open_message_id":"om_card"},
+                "action":{"tag":"select_static","option":option,"value":{"action":action,"token":token}}}});
+            assert!(parse_model_action(&event, &cfg, &store)?.is_some());
+            event["event"]["operator"]["open_id"] = json!("ou_intruder");
+            assert!(parse_model_action(&event, &cfg, &store)?.is_none());
+            event["event"]["operator"]["open_id"] = json!("ou_owner");
+            event["event"]["context"]["open_chat_id"] = json!("oc_forwarded");
+            assert!(parse_model_action(&event, &cfg, &store)?.is_none());
+        }
         Ok(())
     }
     #[test]

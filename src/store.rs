@@ -36,6 +36,9 @@ impl Store {
           text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', result TEXT NOT NULL DEFAULT '',
           sent INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT (unixepoch()));
           CREATE TABLE IF NOT EXISTS delivery_retry (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, due INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS selected_agents (scope TEXT PRIMARY KEY, agent TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS agent_sessions (key TEXT NOT NULL,agent TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(key,agent));
+          CREATE TABLE IF NOT EXISTS agent_cards (token TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL DEFAULT '',expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
           CREATE TABLE IF NOT EXISTS selected_models (scope TEXT PRIMARY KEY, model TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS model_cards (token TEXT PRIMARY KEY, origin_key TEXT NOT NULL,
           message_id TEXT NOT NULL DEFAULT '', expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
@@ -446,6 +449,82 @@ impl Store {
             |r| r.get(0),
         )?)
     }
+    pub fn agent(&self, scope: &str) -> Result<String> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT agent FROM selected_agents WHERE scope=?1",
+                [scope],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| "opencode".into()))
+    }
+    pub fn agent_session(&self, key: &str, agent: &str) -> Result<Option<String>> {
+        if agent == "opencode" {
+            return self.session(key);
+        }
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM agent_sessions WHERE key=?1 AND agent=?2",
+                params![key, agent],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+    pub fn set_agent_session(&self, key: &str, agent: &str, id: &str) -> Result<()> {
+        if agent == "opencode" {
+            return self.set_session(key, id);
+        }
+        self.0.lock().unwrap().execute("INSERT INTO agent_sessions VALUES (?1,?2,?3) ON CONFLICT(key,agent) DO UPDATE SET id=excluded.id",params![key,agent,id])?;
+        Ok(())
+    }
+    pub fn reset_agent_session(&self, key: &str, agent: &str) -> Result<()> {
+        if agent == "opencode" {
+            return self.reset(key);
+        }
+        self.0.lock().unwrap().execute(
+            "DELETE FROM agent_sessions WHERE key=?1 AND agent=?2",
+            params![key, agent],
+        )?;
+        Ok(())
+    }
+    pub fn register_agent_card(&self, token: &str, key: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO agent_cards(token,origin_key) VALUES (?1,?2)",
+            params![token, key],
+        )?;
+        Ok(())
+    }
+    pub fn agent_card(&self, token: &str) -> Result<Option<ModelCard>> {
+        Ok(self.0.lock().unwrap().query_row("SELECT origin_key,message_id FROM agent_cards WHERE token=?1 AND expires>unixepoch()",[token],|r|Ok(ModelCard{origin_key:r.get(0)?,message_id:r.get(1)?})).optional()?)
+    }
+    pub fn attach_agent_card(&self, token: &str, message: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "UPDATE agent_cards SET message_id=?2 WHERE token=?1",
+            params![token, message],
+        )?;
+        Ok(())
+    }
+    pub fn switch_agent_and_finish(
+        &self,
+        id: &str,
+        scope: &str,
+        agent: &str,
+        card: &serde_json::Value,
+    ) -> Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute("INSERT INTO selected_agents VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET agent=excluded.agent",params![scope,agent])?;
+        tx.execute("UPDATE jobs SET status='replying',output_kind='agent_card_update',result=?2 WHERE id=?1",params![id,card.to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn model(&self, scope: &str) -> Result<Option<String>> {
         Ok(self
             .0
@@ -603,6 +682,44 @@ impl Store {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_choices_and_sessions_are_durable_and_separate() -> anyhow::Result<()> {
+        use super::*;
+        let path =
+            std::env::temp_dir().join(format!("mr-li-agents-{}.sqlite3", uuid::Uuid::new_v4()));
+        {
+            let store = Store::open(&path)?;
+            store.set_agent_session("owner", "opencode", "ses_open")?;
+            store.set_agent_session("owner", "gemini", "agent_gemini_one")?;
+            store.set_agent_session("owner", "kilo", "agent_kilo_one")?;
+            store.switch_agent_and_finish(
+                "missing",
+                "user-chat",
+                "gemini",
+                &serde_json::json!({}),
+            )?;
+        }
+        let store = Store::open(&path)?;
+        assert_eq!(store.agent("user-chat")?, "gemini");
+        assert_eq!(store.agent("another-user-chat")?, "opencode");
+        assert_eq!(
+            store.agent_session("owner", "opencode")?.as_deref(),
+            Some("ses_open")
+        );
+        assert_eq!(
+            store.agent_session("owner", "gemini")?.as_deref(),
+            Some("agent_gemini_one")
+        );
+        assert!(store.agent_session("another-owner", "gemini")?.is_none());
+        store.reset_agent_session("owner", "gemini")?;
+        assert!(store.agent_session("owner", "gemini")?.is_none());
+        assert!(store.agent_session("owner", "kilo")?.is_some());
+        assert!(store.session("owner")?.is_some());
+        drop(store);
+        std::fs::remove_file(path)?;
+        Ok(())
+    }
+
     use super::*;
     #[test]
     fn task_commands_filter_before_limiting_and_cannot_cross_conversations() -> Result<()> {

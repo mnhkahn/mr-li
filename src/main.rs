@@ -1,9 +1,11 @@
+mod agent;
 mod bridge;
 mod camera;
 mod commands;
 mod config;
 mod feishu;
 mod forms;
+mod home_assistant;
 mod models;
 mod notices;
 mod opencode;
@@ -24,6 +26,23 @@ async fn main() -> Result<()> {
         )
         .init();
     let mode = std::env::args().nth(1).unwrap_or_else(|| "bridge".into());
+    if mode == "ha-mcp" {
+        return home_assistant::stdio().await;
+    }
+    if mode == "ha" {
+        let settings = home_assistant::Settings::load()?;
+        let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &home_assistant::command(settings.as_ref(), &args).await?
+            )?
+        );
+        return Ok(());
+    }
+    if mode == "agent-worker" {
+        return agent::worker().await;
+    }
     if mode == "tablet-mcp" {
         return tablet::stdio().await;
     }
@@ -69,7 +88,7 @@ async fn main() -> Result<()> {
         return service::watchdog(cfg.clone(), &oc, &domain).await;
     }
     if mode == "probe" {
-        oc.health().await?;
+        // OpenCode has its own watchdog. Its outage must not restart other Agents.
         let age = std::fs::metadata(cfg.data_dir.join("heartbeat"))?
             .modified()?
             .elapsed()?;
@@ -79,6 +98,10 @@ async fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("health") {
         oc.health().await?;
         println!("OpenCode V2 healthy");
+        return Ok(());
+    }
+    if mode == "agents" {
+        println!("{}", agent::AgentHub::new(cfg.clone())?.diagnostics());
         return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("check") {
@@ -94,9 +117,10 @@ async fn main() -> Result<()> {
     fs2::FileExt::try_lock_exclusive(&lock).context("已有一个李老师进程使用此数据目录")?;
     let store = Arc::new(store::Store::open(&cfg.data_dir.join("mr-li.sqlite3"))?);
     let feishu = Arc::new(feishu::Feishu::new(cfg.clone())?);
-    oc.health()
-        .await
-        .context("请先启动受支持的 OpenCode 服务")?;
+    if let Err(e) = oc.health().await {
+        tracing::warn!(error=%e,"OpenCode 暂不可用；其他 Agent 仍可通过 /agent 选择");
+    }
+    let agents = Arc::new(agent::AgentHub::new(cfg.clone())?);
     store.use_v2_sessions()?;
     feishu.identify().await?;
     let tablet = tablet::Gateway::open(cfg.clone())?;
@@ -105,13 +129,14 @@ async fn main() -> Result<()> {
         cfg,
         store: store.clone(),
         feishu: feishu.clone(),
-        oc: oc.clone(),
+        agents: agents.clone(),
     });
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
         r=feishu.run(store.clone())=>r?,
-        r=bridge.run()=>r?,
+        r=bridge.clone().run()=>r?,
         r=tablet.serve()=>r?,
+        _=async {if let Some(ha)=&bridge.cfg.home_assistant {ha.maintain(&oc).await}else{std::future::pending::<()>().await}}=>{},
         _=tokio::signal::ctrl_c()=>{},
         _=terminate.recv()=>{},
     }
@@ -120,8 +145,9 @@ async fn main() -> Result<()> {
         if camera::is_capture(&j.text) || speech::is_command(&j.text) {
             continue;
         }
-        if let Some(sid) = store.session(&j.key)?
-            && let Err(e) = oc.abort(&sid).await
+        let selected = store.agent(&models::scope(&j.key)?)?;
+        if let Some(sid) = store.agent_session(&j.key, &selected)?
+            && let Err(e) = agents.abort(&sid).await
         {
             tracing::warn!(error=%e,"退出时中止任务失败，重启后将再次尝试");
         }

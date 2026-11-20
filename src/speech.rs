@@ -19,10 +19,22 @@ pub fn text(text: &str) -> Option<&str> {
 }
 pub async fn speak(cfg: &Config, text: &str) -> Result<()> {
     play(
-        Path::new("/usr/bin/say"),
+        Path::new(&cfg.speech_program),
         cfg,
         text,
         Duration::from_secs(180),
+    )
+    .await
+}
+pub async fn speak_posture(cfg: &Config, text: &str) -> Result<()> {
+    let mut cfg = cfg.clone();
+    cfg.speak_voice = cfg.posture_voice.clone();
+    cfg.speak_audio_device = cfg.posture_audio_device.clone();
+    play(
+        Path::new(&cfg.speech_program),
+        &cfg,
+        text,
+        Duration::from_secs(20),
     )
     .await
 }
@@ -111,6 +123,32 @@ mod tests {
             )
         );
         assert!(!dir.join("SHOULD_NOT_EXIST").exists());
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn manual_and_posture_share_configured_backend_and_stdin() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("mr-li-voice-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let program = dir.join("voice");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' \"$@\" > '{}'\n",
+                dir.join("text").display(),
+                dir.join("args").display()
+            ),
+        )?;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+        let mut cfg = Config::fixture();
+        cfg.speech_program = program.to_string_lossy().into_owned();
+        speak(&cfg, "新闻内容").await?;
+        assert_eq!(std::fs::read_to_string(dir.join("text"))?, "新闻内容");
+        cfg.posture_voice = "posture-voice".into();
+        cfg.posture_audio_device = "posture-output".into();
+        speak_posture(&cfg, "坐直一点").await?;
+        assert_eq!(std::fs::read_to_string(dir.join("text"))?, "坐直一点");
+        assert!(std::fs::read_to_string(dir.join("args"))?.contains("posture-output"));
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }

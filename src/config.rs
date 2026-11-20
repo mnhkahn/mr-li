@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::{env, path::PathBuf, time::Duration};
 #[derive(Clone)]
 pub struct Config {
+    pub home_assistant: Option<crate::home_assistant::Settings>,
     pub tablet_listen: String,
     pub tablet_public_url: String,
     pub app_id: String,
@@ -18,6 +19,11 @@ pub struct Config {
     pub agent: String,
     pub task_timeout: Duration,
     pub opencode_bin: String,
+    pub antigravity_bin: String,
+    pub kilo_bin: String,
+    pub trae_bin: String,
+    pub cline_bin: String,
+    pub cline_model: String,
     pub free_only: bool,
     pub direct_network: bool,
     pub homebridge_config: PathBuf,
@@ -28,6 +34,7 @@ pub struct Config {
     pub pose_detector: Option<PathBuf>,
     pub pose_roi: String,
     pub photo_archive_dir: PathBuf,
+    pub speech_program: String,
     pub speak_voice: String,
     pub speak_audio_device: String,
     pub posture_speech: bool,
@@ -100,6 +107,7 @@ impl Config {
             );
         }
         Ok(Self {
+            home_assistant: crate::home_assistant::Settings::from_settings(get, &env_path)?,
             tablet_listen: get("MR_LI_TABLET_LISTEN", "127.0.0.1:8787"),
             tablet_public_url: get("MR_LI_TABLET_PUBLIC_URL", ""),
             app_id: get("FEISHU_APP_ID", "cli_aa9b39cf2f789eef"),
@@ -121,6 +129,11 @@ impl Config {
             agent: get("OPENCODE_AGENT", "build"),
             task_timeout: Duration::from_secs(timeout),
             opencode_bin: get("OPENCODE_BIN", "opencode"),
+            antigravity_bin: get("MR_LI_ANTIGRAVITY_BIN", "agy"),
+            kilo_bin: get("MR_LI_KILO_BIN", "kilo"),
+            trae_bin: get("MR_LI_TRAE_BIN", "traecli"),
+            cline_bin: get("MR_LI_CLINE_BIN", "cline"),
+            cline_model: get("MR_LI_CLINE_MODEL", ""),
             homebridge_config: PathBuf::from(get(
                 "MR_LI_HOMEBRIDGE_CONFIG",
                 &format!(
@@ -143,6 +156,7 @@ impl Config {
             .map(PathBuf::from),
             pose_roi: get("MR_LI_POSE_ROI", ""),
             photo_archive_dir: PathBuf::from(get("MR_LI_PHOTO_ARCHIVE_DIR", "photos")),
+            speech_program: get("MR_LI_SPEECH_PROGRAM", "/usr/bin/say"),
             speak_voice: get(
                 "MR_LI_SPEAK_VOICE",
                 &get("MR_LI_POSTURE_VOICE", "Ting-Ting"),
@@ -176,6 +190,7 @@ impl Config {
 impl Config {
     pub fn fixture() -> Self {
         Self {
+            home_assistant: None,
             tablet_listen: "127.0.0.1:8787".into(),
             tablet_public_url: String::new(),
             app_id: "app".into(),
@@ -192,6 +207,11 @@ impl Config {
             agent: "build".into(),
             task_timeout: Duration::from_secs(30),
             opencode_bin: "opencode".into(),
+            antigravity_bin: "agy".into(),
+            kilo_bin: "kilo".into(),
+            trae_bin: "traecli".into(),
+            cline_bin: "cline".into(),
+            cline_model: String::new(),
             free_only: true,
             direct_network: true,
             homebridge_config: std::env::temp_dir().join("mr-li-no-homebridge.json"),
@@ -202,6 +222,7 @@ impl Config {
             pose_detector: None,
             pose_roi: String::new(),
             photo_archive_dir: std::env::temp_dir().join("mr-li-test-photo-archive"),
+            speech_program: "/usr/bin/say".into(),
             speak_voice: "Ting-Ting".into(),
             speak_audio_device: "Built-in Output".into(),
             posture_speech: false,

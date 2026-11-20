@@ -1,23 +1,66 @@
 # 李老师（mr-li）
 
-一个 Rust 常驻桥接服务：通过飞书接收消息，把执行交给 OpenCode，再把结果、授权请求和补充提问发回飞书。
+一个 Rust 常驻桥接服务：通过飞书接收消息，把执行交给可选的 Agent，再把结果和补充提问发回飞书。OpenCode 是默认后端，另支持 Antigravity CLI、Kilo CLI、TRAE 国内版和 Cline CLI。
 
 ```mermaid
 flowchart LR
     U[飞书私聊 / 群内 @李老师] <-->|出站 WSS| B[Rust 桥接]
     B <--> D[(SQLite 队列 / 会话映射 / 结果发件箱)]
-    B <-->|本机 HTTP + Basic Auth| O[OpenCode serve]
+    B <--> H[Agent 对接层]
+    H <-->|本机 HTTP + Basic Auth| O[OpenCode serve]
+    H <-->|app-server stdio| T[TRAE 国内版]
+    H <-->|ACP stdio| C[Antigravity / Kilo / Cline CLI]
     O --> A[模型 / 工具 / MCP / Skills]
+    T --> A
+    C --> A
     L[macOS launchd] --> B
     L --> O
     W[每分钟健康检查] --> L
 ```
 
+## Agent 选择与对接
+
+在飞书输入 `/agent`，服务返回交互卡片，展开下拉框后点选即可。默认是 OpenCode；另外四个选项为 Antigravity CLI、Kilo CLI、TRAE 国内版、Cline CLI。选择按工作目录、用户和聊天保存，不同话题共用选择，各话题及各 Agent 的会话分别保存。切回原 Agent 会恢复其会话。当前聊天有模型任务执行时先 `/stop`，再切换；排队但尚未执行的任务采用执行开始时的选择。`/new` 只清除当前 Agent 的会话映射。
+
+| Agent | 官方调用入口 | 运行方式 | 免费用量策略 |
+| --- | --- | --- | --- |
+| OpenCode | 原生 HTTP V2.3 | 独立 `opencode serve` | 保留现有官方免费模型目录检查 |
+| Antigravity CLI | `agy acp` | 常驻 stdio JSON-RPC，事件推送 | Google 个人账号 OAuth，固定免费档 Gemini 3.8 Flash，不用模型 API Key |
+| Kilo CLI | `kilo acp` | 常驻 stdio JSON-RPC，事件推送 | 固定 Auto Free；后台标题、摘要等内置 Agent 也固定免费模型 |
+| TRAE 国内版 | `traecli app-server --listen stdio://` | 原生 app-server，常驻 stdio JSON-RPC，事件推送 | 检查国内 TRAE 登录身份，使用账号积分；不使用 API Key 或其他账号提供方 |
+| Cline CLI | `cline --acp` | 常驻 stdio JSON-RPC，事件推送 | 优先选择官方免费目录与 CLI 列表交集；ACP 漏列时使用官方目录中的 cline-free/* 专用免费入口，每次任务前重新核实 |
+
+这些是支持常驻和推送的官方接口选择，没有对各协议做性能排名。复用进程可以省去逐次启动 CLI 的等待，三个 ACP 后端不轮询结果。OpenCode 适配器继续保留现有 HTTP 轮询。每个外部 Agent 会话使用独立进程，最多保留 8 个空闲/运行中的会话进程；空闲进程被回收后，通过官方会话恢复接口重连。CLI 若不支持恢复，会提示 `/new`，不会悄悄丢弃上下文或重放旧任务。
+
+Gemini CLI 已于 2026-06-18 停止服务个人免费、Pro 和 Ultra 账号，Google 后端使用官方后继 Antigravity CLI（个人免费档每周刷新额度）。旧 `gemini` 选择标识兼容映射到 Antigravity；旧 Gemini 会话不能迁移。参见[官方迁移公告](https://github.com/google-gemini/gemini-cli/discussions/27274)和[免费档说明](https://antigravity.google/pricing)。
+
+部署时先安装并登录所需 CLI，再配置 `.env` 的 `MR_LI_ANTIGRAVITY_BIN`、`MR_LI_KILO_BIN`、`MR_LI_TRAE_BIN`、`MR_LI_CLINE_BIN`（可以用绝对路径）。Antigravity 用 `agy acp --login` 登录 Google 个人账号；TRAE 用支持 app-server 的 CLI 2.0 运行 `traecli login`；Cline 用 `cline auth` 登录 Cline，并选 Cline 账户提供方；Kilo Auto Free 可按其账号规则使用，需登录时用 `kilo auth login`。服务不会从开发机复制凭证。`mr-li agents` 只检查程序路径并显示协议，不调用模型、不代表登录或额度已验证。
+
+TRAE IDE 免费积分不等于 CLI/app-server 权限：当前官方 CLI 文档仍限制企业旗舰版，实际国内免费账号是否有权限需要登录后确认。旧的 TRAE CLI 0.120.13 没有 app-server，不能使用此适配器。运行失败会在飞书提示，保持所选 Agent，不切到其他后端或付费模型。Antigravity/TRAE 的额度由所登录账号控制；本服务不自动充值、不代领签到积分，也不能从协议中保证账号是免费套餐。Cline 免费模型促销结束或目录不可用时会停止，而不使用付费模型。
+
+`/models` 目前继续管理 OpenCode 免费模型。其他 Agent 使用上述免费账户/免费模型策略。`/status` 显示当前 Agent；其他 Agent 的 `/skills`、`/mcp` 暂返回配置说明，避免误展示 OpenCode 的目录。平板启用后，ACP 会话创建/恢复时传入本机 homework MCP，TRAE 使用 thread 配置覆盖；OpenCode 保留原有自动注册流程。TRAE 的结构化补充提问复用飞书表单卡片；ACP 普通补充提问作为文字回答展示，用户可继续回复。
+
+外部 CLI 不继承飞书密钥或模型 API Key，保留用户网络代理设置。`/stop`、超时及协议断开会终止所属进程组并等待确认；独立 worker 在桥接崩溃导致 stdin 关闭时清理 CLI 和工具子进程。重启不自动重跑中断任务。推理和工具输出不转发到飞书。
+
+验证：真实 CLI 握手通过：Antigravity 1.5.12、Kilo 7.8.27、TRAE 0.216.0、Cline 3.0.74。Kilo 另外验证了无登录创建会话和选择 Auto Free，已通过真实模型请求，返回 OK。Antigravity 1.5.12 已在 Mac mini（macOS 12 / Intel）完成个人账号登录和 ACP 验证。协议测试覆盖事件流、会话恢复、补充提问、停止/超时和免费额度错误，卡片测试覆盖用户/聊天/消息绑定及持久化选择。原 Agent 层已部署到 Mac mini；Antigravity 后继适配尚待部署。Antigravity 账号已登录，但首次实际模型请求返回许可证错误 #3501，尚不能使用；飞书实机卡片尚待验证。
+
+```sh
+cargo test --bin mr-li
+cargo clippy --bin mr-li --tests -- -D warnings
+cargo build --bin mr-li
+python3 scripts/test-watchdog.py
+python3 scripts/smoke-agents.py target/debug/mr-li
+# 可选：用临时 HOME/XDG 验证真实 CLI 握手，不登录、不调用模型
+python3 scripts/smoke-agents.py target/debug/mr-li --cli trae /absolute/path/to/traecli
+```
+
+协议参考：[Antigravity ACP](https://antigravity.google/docs/cli/acp/)、[Kilo CLI](https://kilo.ai/docs/code-with-ai/platforms/cli-reference)、[TRAE 命令行](https://docs.trae.cn/cli_command-line-parameters)、[Cline ACP](https://docs.cline.bot/usage/acp)、[Cline 免费模型](https://docs.cline.bot/getting-started/free-models)。
+
 ## 为什么使用 HTTP，而不先接 ACP
 
-OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交任务、中止任务和处理权限/提问。桥接层用 `reqwest` 直接调用这些接口，无需额外的 JS SDK、Node、ACP JSON-RPC 客户端或终端模拟。ACP 更适合将来需要兼容多种 Agent/编辑器的场景；目前只接 OpenCode，HTTP 更直接。`opencode run --format json` 也可做一次性调用，但长期桥接还需要自行处理子进程、会话、授权和提问，因此当前选择常驻 HTTP 服务。
+OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交任务、中止任务和处理权限/提问。桥接层用 `reqwest` 直接调用这些接口，无需额外的 JS SDK、Node、ACP JSON-RPC 客户端或终端模拟。ACP 用于兼容其他 Agent；OpenCode 适配器直接使用原生 HTTP；其他后端通过上文的 Agent 对接层接入。`opencode run --format json` 也可做一次性调用，但长期桥接还需要自行处理子进程、会话、授权和提问，因此当前选择常驻 HTTP 服务。
 
-**本版只接入 OpenCode V2.3.x，已验证 macOS 12 兼容版 2.3.0**。使用 `/api/info`、`/api/model`、`/api/session` 等 V2 接口，不再运行独立的 V1。macOS 12 必须保留可运行的兼容启动器及其底层包，不能用普通官方二进制覆盖。
+**OpenCode 适配器只接入 V2.3.x，已验证 macOS 12 兼容版 2.3.0**。使用 `/api/info`、`/api/model`、`/api/session` 等 V2 接口，不再运行独立的 V1。macOS 12 必须保留可运行的兼容启动器及其底层包，不能用普通官方二进制覆盖。
 
 参考：[V2 API](https://opencode.ai/docs/api)、[飞书官方长连接实现](https://github.com/larksuite/oapi-sdk-python/blob/v2_main/lark_oapi/ws/client.py)。
 
@@ -25,7 +68,7 @@ OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交
 
 - 飞书企业自建应用 WebSocket：发现地址、Protobuf 帧、心跳、分片重组、ACK、断线退避重连；不需要公网端口。
 - 应用 ID 默认 `cli_aa9b39cf2f789eef`，Secret 从部署机的 `.env` 读取。
-- 支持飞书和 Lark 国际版（`FEISHU_DOMAIN=feishu` / `lark`）；可通过 `FEISHU_ALLOWED_CHAT_IDS` 限定群 ID。
+- 支持飞书和 Lark 国际版（`FEISHU_DOMAIN=feishu` / `lark`）；可通过 `FEISHU_ALLOWED_CHAT_IDS` 限定群 ID；私聊仅校验 `FEISHU_ALLOWED_OPEN_IDS` 用户白名单，无需另加会话 ID。
 - 用户 open_id 白名单；私聊直接接收，群聊必须 @当前机器人；过滤机器人消息。支持文字消息和模型选择卡片；图片、文件和音频尚未接入。
 - 私聊按用户和聊天保留会话；群聊再按话题根消息隔离。不同用户不共享 OpenCode 会话，但共用配置的工作目录和文件。
 - 默认全局只执行 **1 个模型任务**，其他消息进持久队列（上限 500）；指令和授权回复仍可处理。单线程 Tokio，避免为桥接创建大量工作线程。
@@ -168,7 +211,7 @@ sudo ./scripts/service.sh uninstall system
 
 用户模式是 LaunchAgent，登录后启动，退出登录停止。系统和用户模式择一安装；更换模式前先卸载旧模式。`install` 会重新生成并加载 plist，升级二进制后用 `restart`。服务安装路径或部署用户变化后重新执行 `install`。
 
-两个服务均配置 `KeepAlive`，重启节流 15 秒。watchdog 每 60 秒检查，OpenCode 连续 3 次健康失败触发重启；用户模式下桥接心跳超过 180 秒重启桥接，系统模式下探针连续 3 次失败会重启两者。故障检测不是即时的。重启 OpenCode 会中断正在执行的任务。launchd 无法让睡眠中的电脑继续工作；需要常驻时，在系统设置中调整睡眠和断电恢复。FileVault 下整机重启仍可能需要先解锁磁盘。
+两个服务均配置 `KeepAlive`，重启节流 15 秒。watchdog 每 60 秒检查，OpenCode 连续 3 次健康失败触发重启；用户模式下桥接心跳超过 180 秒重启桥接，系统模式下 OpenCode HTTP 与桥接心跳分别计数，连续 3 次失败只重启对应服务。桥接探针不依赖 OpenCode HTTP，以免 OpenCode 单独故障打断其他 Agent。故障检测不是即时的。重启 OpenCode 会中断正在执行的任务。launchd 无法让睡眠中的电脑继续工作；需要常驻时，在系统设置中调整睡眠和断电恢复。FileVault 下整机重启仍可能需要先解锁磁盘。
 
 日志位于安装目录 `logs/`；SQLite 和心跳位于 `MR_LI_DATA_DIR`。目录默认仅当前用户可访问。日志当前不自动轮转，应定期检查大小。watchdog 不替代业务监控；配置错误、模型认证失效、飞书缺权限需要根据日志修正。
 
@@ -178,6 +221,9 @@ sudo ./scripts/service.sh uninstall system
 |---|---|
 | 普通文字 | 在当前会话执行任务，忙时排队 |
 | `/help` | 帮助 |
+| `/baby <内容>` | 给宝宝发消息，显示在平板 Homework 作业首页；离线时保留待发 |
+| `/baby list`、`/baby cancel <ID>` | 查看送达状态、取消尚未发送的消息 |
+| `/baby send --device <ID> <内容>` | 多台平板时指定目标 |
 | `/notify <内容>` | 在 Homework 作业首页显示通知；离线时保留待发 |
 | `/notify list` | 查看当前用户在本聊天最近 10 条通知及送达状态 |
 | `/notify cancel <ID>` | 取消尚未发送的通知，不能撤回已送达或发送中的通知 |
@@ -195,6 +241,7 @@ sudo ./scripts/service.sh uninstall system
 | `/posture status`、`/posture stop` | 查询最近采样结果、停止定时试验 |
 | `/photo` | 获取小米摄像头当前照片，直接回复图片 |
 | `/video [秒数]` | 从现在录像并回复可播放的视频；默认 10 秒，支持 1–30 秒 |
+| `/agent` | 下拉选择 Agent，按用户和聊天保存 |
 | `/models`、`/model` 或“切换模型” | 打开免费模型下拉卡片，点选即切换 |
 | `/status` | 当前会话、模型、执行和排队状态 |
 | `/new` | 下条消息新建会话；旧会话保留。忙时先 `/stop` |
@@ -205,11 +252,13 @@ sudo ./scripts/service.sh uninstall system
 
 群聊中，文字指令需要 @李老师。模型选择在你当前聊天的所有话题中生效；`/stop`、权限回复等会话操作请在发起任务的同一话题发送。卡片点选无需再 @机器人，卡片 30 分钟有效，转发后不可操作。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片、附件收发或过程工具日志展示。
 
-`/speak` 不调用模型或在线 TTS，不受坐姿监测时段限制。文字经标准输入交给 macOS `/usr/bin/say`，不会作为 shell 命令或命令行选项执行；使用 `MR_LI_SPEAK_VOICE` 和 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的声音与输出设备。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
+`/speak` 不受坐姿监测时段限制。默认使用系统本地 TTS；配置全局克隆音色后，未缓存文字通过 Qwen 克隆服务合成。文字经标准输入交给 macOS `/usr/bin/say`，不会作为 shell 命令或命令行选项执行；使用 `MR_LI_SPEAK_VOICE` 和 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的声音与输出设备。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
 
 `/skills`、`/mcp` 直接读取 OpenCode 当前工作目录的真实接口；`/tasks`、`/task` 只读本会话的 SQLite 记录。`/cron` 目前只展示已有坐姿监测，不引入新的通用定时器。旧小李的记忆、提醒、历史会话切换及模型余额查询尚未迁移。
 
-`/notify` 直接复用当前 Homework APP 的 `self.notify.send`，无需升级 APK。通知以“李老师通知”为标题，在作业首页已有的通知卡片显示；首页只显示最新通知，收到当日结束后自动消失。通知管理只记录通过 `/notify` 发布的通知，不导入旧小李的通知数据，也不恢复旧服务端推送协议。
+`/baby` 与 `/notify` 共用同一通知通道和记录。例如 `/baby 宝宝，休息一下，记得喝水！` 会把文字发送到平板 App，不调用模型。
+
+`/baby`、`/notify` 直接复用当前 Homework APP 的 `self.notify.send`，无需升级 APK。通知以“李老师通知”为标题，在作业首页已有的通知卡片显示；首页只显示最新通知，收到当日结束后自动消失。通知管理只记录通过 `/baby` 或 `/notify` 发布的通知，不导入旧小李的通知数据，也不恢复旧服务端推送协议。
 
 通知保存到 `tablet/notices.sqlite3`：未开始发送的通知离线后会等待重连，待发通知到北京时间当天结束失效；同一台平板新的通知替换仍在等待发送的旧通知。收到 APP 的 MCP `delivered=true` 才标记已送达。发送中的请求若遇到断线、超时或服务重启，会标记“送达未确认”，不自动重复发送，避免重复弹出；此时应先查看 APP。取消仅作用于尚未发送的记录，不会假称已从平板撤回。列表和取消按用户＋聊天隔离，同一聊天跨话题可管理自己的通知。
 
@@ -306,3 +355,45 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 其他命令：`tablet-devices` 查看已配对设备，`tablet-revoke <设备ID>` 撤销凭证，`tablet-mcp-config` 输出手动接入配置。网关公开地址留空则关闭。设备凭证 SQLite 与控制 token 置于私有目录，文件权限 0600；不打包进发布包。
 
 验证覆盖新协议配对、凭证轮换、WSS/MCP 往返、旧接口/握手拒绝、媒体隔离和 OpenCode V2 注册。真实扫码需安装新版 APK 后完成。
+
+
+## Mac mini 每日早间新闻播报
+
+每天北京时间 08:30 在 Mac mini 本机获取当天科技及 AI 新闻，经本机 OpenCode 免费模型整理为五条中文早间简报，再调用 `scripts/run.sh speak`，复用 `/speak` 的声音和喇叭设置。任务由 Mac mini 的 crontab 运行，无需 Codex 或其他电脑在线。
+
+在 Mac mini 的部署目录执行 `/usr/bin/python3 scripts/install-news-broadcast.py` 安装或更新任务，保留其他 crontab 条目并自动备份。Mac mini 系统时区须为北京时间。依赖 `~/.local/bin/cyeam`、现有本机 OpenCode 服务与 `.env`；新闻获取对该子进程设置 `NO_PROXY=*`，避免 CLI 包装脚本使用未运行的本机代理。
+
+`/usr/bin/python3 scripts/news-broadcast.py --preview` 获取并生成新闻稿但不播放。实际播报为 60–500 字，摘要优先使用配置中的 OpenCode 免费模型；配置的模型已下线时，从本机最新目录选取可用免费模型，不使用付费模型。当天新闻为空或获取失败时，每隔 5 分钟重试，最多重试两次；失败会写入 `logs/news-broadcast.log`。新闻正文属于输入数据，不作为命令执行。
+
+状态与新闻稿保存在 `.data/news-broadcast/YYYY-MM-DD.json`。互斥锁防止并发，启动播放前持久化状态，成功后标记 `done`；`sending` 或 `uncertain` 状态不会自动重播。机器需开机且网络、声音设备可用，错过 08:30 不补播；正常重启后 crontab 保留。
+
+## Home Assistant 内置命令与 Agent 工具
+
+在部署目录 `.env` 配置 `XIAOLI_HA_URL=http://127.0.0.1:8123` 和 `XIAOLI_HA_TOKEN`，或者用 `XIAOLI_HA_TOKEN_FILE` 指向权限为 `600` 的长期访问令牌文件。两者同时提供时优先使用直接配置的令牌。该地址是 Mac mini 同机地址，使用本地连接；远程 HA 可设置 HTTPS 地址。URL 查询参数会移除，`external_auth=1` 不能代替 API 认证。配置后重启 bridge。
+
+飞书命令（不消耗模型额度）：
+
+- `/ha devices`：返回物理设备、品牌型号、房间、实体类型、状态和属性；也可加名称、类型、房间或 ID 筛选，如 `/ha devices 客厅`。
+- `/ha commands <实体ID或设备ID>`：查询实际可用操作与参数。实体域（如 `light`、`sensor`、`remote`）作为类型，一个物理设备可以包含多种类型。只读传感器返回空操作。
+- `/ha control <实体ID> <domain.service> [JSON参数]`：控制一个明确实体，例如 `/ha control light.living_room light.turn_on {"brightness_pct":40}`。示例 ID 必须替换成查询实际返回的 ID。
+
+本机通过 `./scripts/run.sh ha devices`、`ha commands <ID>`、`ha control <ID> <domain.service> '{"参数":值}'` 使用同一实现，输出 JSON。命令入口也可独立运行，不需要飞书或 OpenCode 配置。
+
+程序自带 `ha-mcp` stdio MCP，工具名为 `ha_devices`、`ha_commands`、`ha_control`。bridge 会向 OpenCode 自动注册 `home_assistant` MCP，每 30 秒检查并恢复连接；其他 ACP Agent 在创建/恢复会话时传入 MCP，TRAE 在 thread 配置中传入。可对 Agent 说“查看家里有哪些设备”“投影仪支持哪些操作”“把客厅灯调到 40%”。名称有歧义时先澄清，不猜实体。切换 Agent 后需创建或恢复会话，才能加载新工具。
+
+MCP 配置仅传入程序路径、`ha-mcp` 子命令和私有 `.env` 路径，令牌由该工具进程读取，不进入模型参数、工具清单或错误响应。环境变量可覆盖 `.env`；给 Agent 自动接入时将 HA 配置保存在该 `.env` 或它引用的令牌文件中。`ha-mcp` 的 stdout 仅输出 JSON-RPC，运行日志走 stderr。
+
+工具通过 HA WebSocket API 读取设备、实体、房间、状态和服务描述，按 HA target、supported_features、属性过滤操作与参数，检查必填参数和简单数值范围；不支持的 selector 约束保守处理，复杂参数最终由 HA 验证。跨集成域的操作需要显式匹配实体域。控制只允许单个实体，参数不能另传 `entity_id`、`device_id`、`area_id`、`label_id` 或 `target` 扩大控制范围。HA 的实体权限由令牌用户决定。
+
+控制返回的 `accepted` 表示 HA 服务调用成功，`observed_state` 是即时回读，不等同于物理动作证据（`physical_effect_confirmed` 固定 false）。设备可能稍后更新。回读失败保留 accepted 并返回 `state_readback_error`；控制超时或断线时结果可能未知，不自动重试。
+
+验证：`cargo test --locked home_assistant`。部署机可运行 `python3 scripts/smoke-home-assistant.py bin/mr-li` 检查真实设备、命令及 MCP；使用 HA 虚拟环境 Python 并加 `--control` 可创建临时开关，验证控制与回读后自动删除，不控制家里的电器。
+
+
+### 全局克隆音色
+
+`MR_LI_SPEECH_PROGRAM` 默认 `/usr/bin/say`。设置为部署目录的 `scripts/voice-clone.sh` 后，手动 `/speak`、每日新闻和坐姿提醒统一使用 Qwen 音色克隆。工作脚本通过标准输入接收文字，不把新闻作为 shell 命令；停止播报会终止当前播放进程。
+
+参考音频、独立 Python 环境和缓存放在 Mac mini `.data/voice-clone/`，不提交仓库。`config.json` 配置 `endpoint` 与 `model_size`，`reference.wav` 为用户提供的参考音频。当前使用 Qwen 官方 Hugging Face Demo 的 `generate_voice_clone`，无需转写、无需 API Key；首次合成需联网，公共 Demo 可能排队或受配额限制，失败会报错，不会悄悄换成其他音色。同文字音频按参考音频、模型和文字哈希缓存，坐姿固定提醒提前缓存。
+
+播放使用 Mac mini 系统默认输出设备（配置时为内建输出）。`voice-clone.sh --cache-only` 从标准输入读取文字，只预生成缓存，不播放。Python 依赖 `gradio-client`，安装到 `.data/voice-clone/venv`；环境和音频均保留在 Mac mini，不依赖操作电脑或 Codex。

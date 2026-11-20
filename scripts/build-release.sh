@@ -28,6 +28,8 @@ if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
     if [[ -f ".data/pose-models/$name" ]]; then cp ".data/pose-models/$name" "$DEST/models/"; fi
   done
 fi
+cp scripts/smoke-home-assistant.py "$DEST/scripts/"
+cp scripts/voice-clone.py scripts/voice-clone.sh "$DEST/scripts/"
 cp README.md .env.example opencode.example.json "$DEST/"
 chmod +x "$DEST/bin/mr-li" "$DEST/scripts/"*.sh
 COPYFILE_DISABLE=1 tar -czf "$ROOT/dist/mr-li-$PLATFORM.tar.gz" -C "$ROOT/dist" "mr-li-$PLATFORM"

@@ -184,32 +184,7 @@ pub async fn speak(cfg: &Config, assessment: Assessment) -> Result<()> {
     let Some(text) = assessment.speech() else {
         return Ok(());
     };
-    let mut child = tokio::process::Command::new("/usr/bin/say")
-        .args([
-            "-v",
-            &cfg.posture_voice,
-            "-a",
-            &cfg.posture_audio_device,
-            "-r",
-            "180",
-            text,
-        ])
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("无法启动 Mac 语音播报")?;
-    let status = match tokio::time::timeout(Duration::from_secs(20), child.wait()).await {
-        Ok(status) => status?,
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            anyhow::bail!("Mac 语音播报超时，已停止")
-        }
-    };
-    ensure!(status.success(), "Mac 语音播报失败，请检查语音与输出设备");
-    Ok(())
+    crate::speech::speak_posture(cfg, text).await
 }
 
 /// Run an isolated local worker; the main bridge does not link the ML runtime.

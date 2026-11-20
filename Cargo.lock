@@ -933,6 +933,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "image",
+ "libc",
  "ort",
  "ort-sys",
  "prost",

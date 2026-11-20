@@ -5,6 +5,7 @@ mod camera;
 mod commands;
 mod config;
 mod feishu;
+mod files;
 mod forms;
 mod home_assistant;
 mod models;
@@ -136,7 +137,7 @@ async fn main() -> Result<()> {
     let store = Arc::new(store::Store::open(&cfg.data_dir.join("mr-li.sqlite3"))?);
     let feishu = Arc::new(feishu::Feishu::new(cfg.clone())?);
     if let Err(e) = oc.health().await {
-        tracing::warn!(error=%e,"OpenCode 暂不可用；其他 Agent 仍可通过 /agent 选择");
+        tracing::warn!(error=%e,"OpenCode 暂不可用；其他 Agent 仍可通过 /model 选择");
     }
     let agents = Arc::new(agent::AgentHub::new(cfg.clone())?);
     store.use_v2_sessions()?;

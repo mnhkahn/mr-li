@@ -11,4 +11,5 @@ if [[ "$(uname -s)" == Darwin && "$(sw_vers -productVersion | cut -d. -f1)" -lt 
   SHERPA_VERSION=1.10.46
 fi
 .data/voice/venv/bin/python -m pip install "sherpa-onnx==$SHERPA_VERSION" 'sounddevice==0.5.3' 'numpy>=1.23,<3'
+bash scripts/build-voice-mic.sh
 exec .data/voice/venv/bin/python scripts/setup-voice-models.py "$@"

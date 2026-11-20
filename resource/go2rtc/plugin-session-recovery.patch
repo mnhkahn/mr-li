@@ -1,0 +1,13 @@
+diff --git a/lib/platform.js b/lib/platform.js
+--- a/lib/platform.js
++++ b/lib/platform.js
+@@ -137,7 +137,8 @@
+       username: config.uiUsername,
+       password: config.uiPassword,
+     });
+-    this.go2rtc.onSourceLost = () => this.scheduleGo2rtcRestart();
++    // A camera timeout must release that session, not restart every stream.
++    // The patched relay bounds authentication/writes and closes failed sockets.
+ 
+     await this.go2rtc.ensureBinary();
+     await this.go2rtc.writeConfig();

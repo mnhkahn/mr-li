@@ -68,6 +68,7 @@ pub fn tools() -> Value {
     let mut tools = json!([
         {"name":"teacher_speak","description":"通过 Mac mini 喇叭说话，或停止当前会话语音。沿用现有音色；text 最多500字。超时先查任务，不要重复播报。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["say","stop"]},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["action"]}},
         {"name":"teacher_camera","description":"摄像头拍照或录制1–30秒视频，结果直接发到发起请求的飞书聊天。返回状态不代表你已看过画面，不得编造画面内容。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["photo","video"]},"seconds":{"type":"integer","minimum":1,"maximum":30}},"required":["action"]}},
+        {"name":"teacher_file","description":"将Agent工作目录内已有的普通文件作为附件发送到当前飞书聊天，支持PDF、Word、表格、压缩包等。先生成并保存文件，再传相对工作目录的路径或目录内绝对路径；可用file_name设置接收者看到的文件名。单文件非空且不超过30MB，目录需先压缩。上传完成不代表已发送，应检查file_delivery或用teacher_query查询原任务；重试沿用operation_id。","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"file_name":{"type":"string","minLength":1,"maxLength":200}},"required":["path"]}},
         {"name":"teacher_posture","description":"单次坐姿检测并发送标注图，或开启/停止当前聊天的定时坐姿监测。定时监测仅每日北京时间17:00–21:30，默认每60秒采样、每10分钟汇总；interval_seconds支持30–3600。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["check","start","stop"]},"interval_seconds":{"type":"integer","minimum":30,"maximum":3600}},"required":["action"]}},
         {"name":"teacher_notice","description":"给学习平板首页发送文字通知，或取消当前用户在当前聊天尚未送达的通知。保存/排队不代表送达；用teacher_query notices查询确认。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["send","cancel"]},"text":{"type":"string","minLength":1,"maxLength":2000},"device_id":{"type":"string"},"notice_id":{"type":"string"}},"required":["action"]}},
         {"name":"teacher_proxy","description":"查询Mac mini代理节点、按国家/地区筛选、测试延迟或按用户要求切换。status/countries/list为查询；test无country测当前节点，有country批量测3次并排名（all为全部）；auto按country测速并切换最低延迟节点，未指定国家时比较全部节点。延迟不是下载带宽，国家按节点名称识别。set需要node唯一名称或关键字。仅在用户要求切换时使用set/auto。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["status","list","countries","test","set","auto"]},"country":{"type":"string","minLength":1,"maxLength":80},"node":{"type":"string","minLength":1,"maxLength":200}},"required":["action"]}},
@@ -164,6 +165,9 @@ fn validate(name: &str, args: &Value) -> Result<()> {
 async fn command(bridge: &Bridge, name: &str, args: &Value) -> Result<String> {
     let action = args["action"].as_str().unwrap_or("");
     Ok(match name {
+        "teacher_file" => {
+            crate::files::command(argument(args, "path")?, args["file_name"].as_str())?
+        }
         "teacher_query" => match argument(args, "kind")? {
             "task" => format!("/task {}", identifier(args, "task_id")?),
             "cron" => "/cron list".into(),
@@ -306,11 +310,23 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
         if state == "done" || state == "replying" {
             let text = task["result"].as_str().unwrap_or("");
             ensure!(
-                !["操作失败：", "播报失败：", "摄像头操作失败：", "任务失败："]
-                    .iter()
-                    .any(|s| text.starts_with(s)),
+                ![
+                    "操作失败：",
+                    "播报失败：",
+                    "摄像头操作失败：",
+                    "文件发送失败：",
+                    "任务失败："
+                ]
+                .iter()
+                .any(|s| text.starts_with(s)),
                 "{text}"
             );
+            if task["kind"] == "file_attachment" {
+                let file: Value = serde_json::from_str(text)?;
+                return Ok(
+                    json!({"task_id":j.id,"execution":"completed","file_delivery":if state=="done" {"sent"} else {"pending"},"file_name":file["file_name"],"size":file["size"],"message":"附件通过飞书原生文件消息发送到当前聊天。pending只表示已上传并等待发送，不得宣称已送达；请查询原任务，不要重复发送。"}),
+                );
+            }
             if task["kind"] == "camera_media" {
                 let media: Value = serde_json::from_str(text)?;
                 let mut notes = Vec::new();
@@ -333,6 +349,7 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
                 "语音播报已停止。",
                 "语音任务已取消。",
                 "摄像头任务已停止。",
+                "文件上传已停止。",
                 "任务已由 /stop 取消。",
                 "来源任务已结束，操作已取消。",
             ]
@@ -752,10 +769,38 @@ mod tests {
         ] {
             assert!(command(&f.bridge, "teacher_proxy", &args).await.is_err());
         }
-        assert_eq!(tools().as_array().unwrap().len(), 6);
+        assert_eq!(tools().as_array().unwrap().len(), 7);
         assert!(!tools().to_string().contains("teacher_approve"));
         let config = mcp_acp(&f.bridge.cfg)?;
         assert!(!config.to_string().contains(&f.bridge.cfg.app_secret));
+        Ok(())
+    }
+    #[tokio::test]
+    async fn file_tool_deduplicates_and_reports_upload_separately_from_delivery() -> Result<()> {
+        let f = Fixture::new()?;
+        let args = json!({"request_token":f.token,"operation_id":"file-1","path":"成果/report 1.pdf","file_name":"中文报告.pdf"});
+        validate("teacher_file", &args)?;
+        let text = command(&f.bridge, "teacher_file", &args).await?;
+        assert_eq!(crate::files::parse(&text)?.path, "成果/report 1.pdf");
+        let j = operation_job(&f.parent, "file-1", text);
+        f.bridge.store.insert(&j)?;
+        f.bridge.store.finish_output(&j.id, "file_attachment", &json!({"msg_type":"file","content":{"file_key":"private-upload-key"},"file_name":"中文报告.pdf","size":123}))?;
+        let result = call(&f.bridge, "teacher_file", &args).await?;
+        assert_eq!(result["file_delivery"], "pending");
+        assert_eq!(result["file_name"], "中文报告.pdf");
+        assert!(!result.to_string().contains("private-upload-key"));
+        f.bridge.store.status(&j.id, "done")?;
+        let sent = call(&f.bridge, "teacher_file", &args).await?;
+        assert_eq!(sent["task_id"], j.id);
+        assert_eq!(sent["file_delivery"], "sent");
+        let mut changed = args.clone();
+        changed["path"] = json!("another.txt");
+        assert!(call(&f.bridge, "teacher_file", &changed).await.is_err());
+        let mut forged = args.clone();
+        forged["chat_id"] = json!("other-chat");
+        assert!(validate("teacher_file", &forged).is_err());
+        f.bridge.store.finish(&f.parent.id, "finished")?;
+        assert!(call(&f.bridge, "teacher_file", &args).await.is_err());
         Ok(())
     }
     #[tokio::test]

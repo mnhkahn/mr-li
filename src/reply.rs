@@ -409,7 +409,7 @@ fn media(store: &Store, key: &str, task: &str) -> Result<Value> {
         .command_task(key, task)?
         .context("素材不存在或不属于当前会话")?;
     ensure!(
-        row["kind"] == "camera_media"
+        (row["kind"] == "camera_media" || row["kind"] == "file_attachment")
             && matches!(row["status"].as_str(), Some("replying" | "done")),
         "素材尚未准备好"
     );
@@ -417,7 +417,7 @@ fn media(store: &Store, key: &str, task: &str) -> Result<Value> {
     ensure!(
         matches!(
             payload["msg_type"].as_str(),
-            Some("image" | "post" | "media")
+            Some("image" | "post" | "media" | "file")
         ),
         "不支持的素材类型"
     );
@@ -1176,6 +1176,36 @@ mod tests {
             parse_action(&v, &cfg, &store)?.unwrap().text,
             "/_reply_cancel"
         );
+        Ok(())
+    }
+    #[test]
+    fn rich_file_attachments_require_an_uploaded_task_owned_by_the_same_session() -> Result<()> {
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let source = Job {
+            id: "builtin:report".into(),
+            key: "owner-session".into(),
+            message_id: "om_parent".into(),
+            text: "file".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&source)?;
+        store.finish_output(
+            &source.id,
+            "file_attachment",
+            &json!({"msg_type":"file","content":{"file_key":"file_report"},"file_name":"报告.pdf"}),
+        )?;
+        let r: Reply = serde_json::from_value(
+            json!({"feishu_reply":1,"text":"报告已生成","media":[source.id]}),
+        )?;
+        let out = render(&r, &store, &source.key, "token")?;
+        assert_eq!(out.packets.last().unwrap().kind, "file");
+        assert_eq!(
+            out.packets.last().unwrap().content,
+            json!({"file_key":"file_report"})
+        );
+        assert!(render(&r, &store, "another-session", "token").is_err());
+        assert!(image_key(&store, &source.key, &source.id).is_err());
         Ok(())
     }
     #[test]

@@ -161,6 +161,12 @@ impl AgentHub {
             }
             Kind::Cline => {
                 command.args(["--acp", "--provider", "cline"]);
+                // Cline 3.0.74 accepts ACP mcpServers but does not load them.
+                // Its core does load this documented settings-file override.
+                command.env("CLINE_MCP_SETTINGS_PATH", self.cline_mcp_settings()?);
+                // A pre-existing detached hub does not inherit this process's
+                // settings path. Keep execution and MCP children in our worker.
+                command.env("CLINE_SESSION_BACKEND_MODE", "local");
             }
             Kind::OpenCode => bail!("OpenCode 使用独立 HTTP 服务"),
         }
@@ -188,14 +194,26 @@ impl AgentHub {
         } else {
             json!({"protocolVersion":1,"clientInfo":{"name":"mr-li","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false}})
         };
+        // Kilo cold startup exceeded 30s on the busy 4GB Mac mini. Give
+        // initialization more time; subsequent control requests stay bounded.
+        let startup_timeout = if kind == Kind::Kilo {
+            Duration::from_secs(90)
+        } else {
+            CONTROL_TIMEOUT
+        };
         let init = rpc
-            .request("initialize", params, CONTROL_TIMEOUT)
+            .request("initialize", params, startup_timeout)
             .await
             .with_context(|| {
-                format!(
-                    "{} 协议握手失败，请检查 CLI 版本；TRAE 需要支持 app-server 的 2.0 版",
-                    kind.name()
-                )
+                if kind == Kind::Trae {
+                    "TRAE 协议握手失败，需要支持 app-server 的 2.0 版".into()
+                } else {
+                    format!(
+                        "{} 启动或协议握手失败（等待上限 {} 秒），请检查 CLI 日志",
+                        kind.name(),
+                        startup_timeout.as_secs()
+                    )
+                }
             })?;
         if kind == Kind::Trae {
             rpc.notify("initialized", json!({})).await?;
@@ -241,7 +259,53 @@ impl AgentHub {
         servers.push(crate::builtin::mcp_acp(&self.cfg)?);
         Ok(json!(servers))
     }
-    async fn select_free(&self, kind: Kind, rpc: &Rpc, raw: &str, session: &Value) -> Result<()> {
+    fn cline_mcp_settings(&self) -> Result<std::path::PathBuf> {
+        use std::{io::Write, os::unix::fs::OpenOptionsExt};
+        let directory = self.cfg.data_dir.join("agents/cline");
+        std::fs::create_dir_all(&directory)?;
+        let directory = std::fs::canonicalize(directory)?;
+        let path = directory.join("mcp-settings.json");
+        let mut servers = serde_json::Map::new();
+        for server in self.mcp_servers()?.as_array().unwrap() {
+            let env: serde_json::Map<String, Value> = server["env"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| (e["name"].as_str().unwrap().into(), e["value"].clone()))
+                .collect();
+            servers.insert(
+                server["name"].as_str().unwrap().into(),
+                json!({
+                    "command":server["command"], "args":server["args"], "env":env,
+                    "disabled":false, "autoApprove":[]
+                }),
+            );
+        }
+        let temporary = directory.join(format!(".mcp-{}.json", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<()> {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temporary)?;
+            file.write_all(&serde_json::to_vec_pretty(&json!({"mcpServers":servers}))?)?;
+            std::fs::rename(&temporary, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result.context("无法生成 Cline 内置工具配置")?;
+        Ok(path)
+    }
+    async fn select_free(
+        &self,
+        kind: Kind,
+        rpc: &Rpc,
+        raw: &str,
+        session: &Value,
+        preferred: Option<&str>,
+    ) -> Result<()> {
         let model = match kind {
             Kind::Antigravity => {
                 let model = "gemini-3.8-flash-high";
@@ -255,23 +319,13 @@ impl AgentHub {
             }
             Kind::Kilo => "kilo/kilo-auto/free".to_owned(),
             Kind::Cline => {
-                let response = reqwest::Client::new()
-                    .get("https://api.cline.bot/api/v1/ai/cline/recommended-models")
-                    .timeout(Duration::from_secs(15))
-                    .send()
-                    .await?
-                    .error_for_status()?;
-                let mut response = response;
-                let mut bytes = Vec::new();
-                while let Some(chunk) = response.chunk().await? {
-                    ensure!(
-                        bytes.len() + chunk.len() <= 2 * 1024 * 1024,
-                        "Cline 免费模型目录过大"
-                    );
-                    bytes.extend_from_slice(&chunk);
-                }
-                let catalog: Value = serde_json::from_slice(&bytes)?;
-                cline_choice(&catalog, session, &self.cfg.cline_model)?
+                let catalog = self.cline_catalog().await?;
+                let preferred = preferred.unwrap_or(&self.cfg.cline_model);
+                cline_choice(
+                    &catalog,
+                    session,
+                    if preferred == "auto" { "" } else { preferred },
+                )?
             }
             _ => return Ok(()),
         };
@@ -313,7 +367,8 @@ impl AgentHub {
         }
         .context("Agent 未返回会话 ID")?
         .to_owned();
-        self.select_free(kind, &rpc, &raw, &result).await?;
+        self.select_free(kind, &rpc, &raw, &result, selected)
+            .await?;
         let id = qualified(kind, &raw);
         self.remember(
             &id,
@@ -377,7 +432,11 @@ impl AgentHub {
             )
             .await?
         };
-        self.select_free(kind, &rpc, &raw, &result).await?;
+        // Cline is revalidated with the chat's selected model before every
+        // prompt; a legacy global preference must not block session restore.
+        if kind != Kind::Cline {
+            self.select_free(kind, &rpc, &raw, &result, None).await?;
+        }
         let runtime = Arc::new(Runtime {
             rpc,
             raw,
@@ -421,6 +480,7 @@ impl AgentHub {
                 &runtime.rpc,
                 &runtime.raw,
                 &runtime.model_catalog,
+                selected,
             )
             .await?;
         }
@@ -535,6 +595,25 @@ impl AgentHub {
             .await?;
         runtime.forms.lock().unwrap().remove(form);
         Ok(())
+    }
+    pub async fn cline_catalog(&self) -> Result<Value> {
+        let response = reqwest::Client::new()
+            .get("https://api.cline.bot/api/v1/ai/cline/recommended-models")
+            .timeout(Duration::from_secs(15))
+            .send()
+            .await?
+            .error_for_status()?;
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                bytes.len() + chunk.len() <= 2 * 1024 * 1024,
+                "Cline 免费模型目录过大"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let catalog: Value = serde_json::from_slice(&bytes)?;
+        Ok(catalog)
     }
     // OpenCode-specific capabilities stay behind this boundary.
     pub async fn catalog(&self) -> Result<Value> {

@@ -126,11 +126,70 @@ impl Bridge {
             .agent_session(key, self.selected_agent(key)?.id())
     }
     fn selected_model(&self, key: &str) -> Result<String> {
-        Ok(self
+        let agent = self.selected_agent(key)?;
+        let saved = self
             .store
-            .model(&models::scope(key)?)?
-            .or_else(|| self.cfg.model.clone())
-            .unwrap_or_else(|| "opencode/glm-5.3-flash-free".into()))
+            .model(&models::model_scope(&models::scope(key)?, agent))?;
+        Ok(if agent == Kind::OpenCode {
+            saved
+                .filter(|s| s != "auto")
+                .or_else(|| self.cfg.model.clone())
+                .unwrap_or_else(|| "opencode/glm-5.3-flash-free".into())
+        } else {
+            saved.unwrap_or_else(|| {
+                if agent == Kind::Cline && !self.cfg.cline_model.is_empty() {
+                    self.cfg.cline_model.clone()
+                } else {
+                    models::default_model(agent).into()
+                }
+            })
+        })
+    }
+    fn selected_choice(&self, key: &str) -> Result<String> {
+        let agent = self.selected_agent(key)?;
+        let saved = self
+            .store
+            .model(&models::model_scope(&models::scope(key)?, agent))?;
+        let model = saved.unwrap_or_else(|| {
+            if agent == Kind::OpenCode {
+                self.cfg.model.clone().unwrap_or_else(|| "auto".into())
+            } else if agent == Kind::Cline && !self.cfg.cline_model.is_empty() {
+                self.cfg.cline_model.clone()
+            } else {
+                models::default_model(agent).into()
+            }
+        });
+        Ok(models::choice_id(agent, &model))
+    }
+    async fn runtime_choices(&self) -> Vec<models::FreeModel> {
+        let (open, cline) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(8), self.agents.catalog()),
+            tokio::time::timeout(Duration::from_secs(8), self.agents.cline_catalog())
+        );
+        models::runtime_models(
+            open.ok().and_then(Result::ok).as_ref(),
+            cline.ok().and_then(Result::ok).as_ref(),
+        )
+    }
+    async fn validate_choice(&self, agent: Kind, model: &str) -> Result<()> {
+        let valid = if model == models::default_model(agent) {
+            true
+        } else {
+            match agent {
+                Kind::OpenCode => models::free_models(&self.agents.catalog().await?)
+                    .iter()
+                    .any(|m| m.id == model),
+                Kind::Cline => self.agents.cline_catalog().await?["free"]
+                    .as_array()
+                    .is_some_and(|ms| ms.iter().any(|m| m["id"] == model)),
+                _ => false,
+            }
+        };
+        ensure!(
+            valid,
+            "此模型不属于该 Agent 的免费选项，或已下线，请重新输入 /model"
+        );
+        Ok(())
     }
     pub async fn recover(&self) -> Result<()> {
         for j in self.store.jobs("running")? {
@@ -140,6 +199,7 @@ impl Bridge {
                 continue;
             }
             if !camera::is_capture(&j.text)
+                && !crate::files::is_send(&j.text)
                 && !speech::is_command(&j.text)
                 && let Some(sid) = self.session(&j.key)?
             {
@@ -201,6 +261,19 @@ impl Bridge {
         self.store.finish_output(&j.id, "camera_media", &payload)?;
         Ok(())
     }
+    async fn send_file(&self, j: &Job) -> Result<()> {
+        ensure!(
+            j.id.starts_with("builtin:"),
+            "请通过 Agent 的文件发送工具发送附件"
+        );
+        let request = crate::files::parse(&j.text)?;
+        let file = crate::files::prepare(&self.cfg, &request).await?;
+        let key = self.feishu.upload_file(&file).await?;
+        self.store.finish_output(&j.id, "file_attachment", &json!({
+            "msg_type":"file", "content":{"file_key":key}, "file_name":file.name, "size":file.size
+        }))?;
+        Ok(())
+    }
     async fn record_posture(
         &self,
         j: &Job,
@@ -254,7 +327,7 @@ impl Bridge {
         };
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
-            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求；同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
+            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求。用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
         let prompt = if crate::voice::is_job(j) {
@@ -332,6 +405,7 @@ impl Bridge {
                         "飞书"
                     }
                 );
+                text.push_str("\n文件发送：已接入飞书附件，可发送工作目录内非空且不超过30MB的文件");
                 if let Some(tablet) = &self.tablet {
                     let devices = tablet.devices_status()?;
                     if devices.is_empty() {
@@ -453,11 +527,7 @@ impl Bridge {
                     "Agent：{}\n会话：{}\n模型：{}\n执行中：{}\n排队：{}\n语音播报中：{}\n待播报：{}",
                     self.selected_agent(&j.key)?.name(),
                     sid.as_deref().unwrap_or("尚未创建"),
-                    if self.selected_agent(&j.key)? == Kind::OpenCode {
-                        self.selected_model(&j.key)?
-                    } else {
-                        "免费账户 / 免费模型".into()
-                    },
+                    self.selected_model(&j.key)?,
                     active.is_some_and(|a| a.key == j.key),
                     pending,
                     speaking,
@@ -493,6 +563,7 @@ impl Bridge {
                     if q.key == j.key
                         && (!is_command(&q)
                             || camera::is_capture(&q.text)
+                            || crate::files::is_send(&q.text)
                             || speech::is_command(&q.text))
                     {
                         self.store.finish(&q.id, "任务已由 /stop 取消。")?;
@@ -563,15 +634,14 @@ impl Bridge {
                 tracing::warn!(error=%e,"更新取消卡片失败");
             }
             self.store.status(&j.id, "done")?;
-        } else if cmd == "/agent" {
-            let selected = self.selected_agent(&j.key)?;
+        } else if matches!(cmd, "/model" | "/models" | "/agent") {
             let token = uuid::Uuid::new_v4().simple().to_string();
-            self.store.register_agent_card(&token, &j.key)?;
-            self.store.finish_output(
-                &j.id,
-                "agent_card",
-                &json!({"token":token,"card":crate::agent::picker(selected,&token,false)}),
-            )?;
+            let available = self.runtime_choices().await;
+            let current = self.selected_choice(&j.key)?;
+            let card = models::runtime_picker(&available, &current, &token, false);
+            self.store.register_runtime_card(&token, &j.key, &card)?;
+            self.store
+                .finish_output(&j.id, "model_card", &json!({"token":token,"card":card}))?;
         } else if cmd == "/_agent-select" {
             ensure!(j.id.starts_with("card:"), "请在 Agent 卡片中选择");
             let token = words.next().context("卡片标识缺失")?;
@@ -579,7 +649,7 @@ impl Bridge {
             let card = self
                 .store
                 .agent_card(token)?
-                .context("卡片已过期，请重新输入 /agent")?;
+                .context("卡片已过期，请重新输入 /model")?;
             ensure!(
                 card.origin_key == j.key && card.message_id == j.message_id,
                 "卡片不属于当前会话"
@@ -597,26 +667,43 @@ impl Bridge {
                 .switch_agent_and_finish(&j.id, &scope, selected.id(), &updated)?;
         } else if cmd == "/_form" {
             self.handle_form(j).await?;
-        } else if matches!(cmd, "/models" | "/model") {
+        } else if cmd == "/_runtime-select" {
+            ensure!(j.id.starts_with("card:"), "请在 /model 卡片中选择");
+            let token = words.next().context("卡片标识缺失")?;
+            let value = words.next().context("请选择 Agent 和模型")?;
+            let (agent, model) = models::parse_choice(value)?;
+            let card = self
+                .store
+                .model_card(token)?
+                .context("卡片已过期，请重新输入 /model")?;
             ensure!(
-                self.selected_agent(&j.key)? == Kind::OpenCode,
-                "当前 Agent 使用免费账户或免费模型；请用 /agent 选择后端。/models 当前用于 OpenCode。"
+                card.origin_key == j.key && card.message_id == j.message_id,
+                "卡片不属于当前会话"
             );
-            let available = models::free_models(&self.agents.catalog().await?);
+            let mut snapshot = self.store.runtime_card(token)?;
+            let selector = &snapshot["body"]["elements"][1];
             ensure!(
-                !available.is_empty(),
-                "暂未找到可用的 OpenCode 免费模型，请稍后重试"
+                selector["behaviors"][0]["value"]["action"] == "select_runtime"
+                    && selector["options"]
+                        .as_array()
+                        .is_some_and(|opts| opts.iter().any(|o| o["value"] == value)),
+                "请选择卡片中提供的 Agent 和模型"
             );
-            let token = uuid::Uuid::new_v4().simple().to_string();
-            let selected = self.selected_model(&j.key)?;
-            let card = models::picker(&available, &selected, &token, false);
-            self.store.register_model_card(&token, &j.key)?;
+            let scope = models::scope(&j.key)?;
+            ensure!(
+                !active
+                    .is_some_and(|a| models::scope(&a.key).ok().as_deref() == Some(scope.as_str())),
+                "本聊天有任务正在执行，请先 /stop，再切换 Agent 和模型"
+            );
+            self.validate_choice(agent, model).await?;
+            snapshot["header"]["template"] = json!("green");
+            let updated = models::refresh_selection(&snapshot, value)?;
             self.store
-                .finish_output(&j.id, "model_card", &json!({"token":token,"card":card}))?;
+                .switch_runtime_and_finish(&j.id, &scope, agent, model, &updated)?;
         } else if cmd == "/_model-select" {
             ensure!(
                 self.selected_agent(&j.key)? == Kind::OpenCode,
-                "当前 Agent 已切换，请用 /agent 选择 OpenCode 后再设置模型"
+                "当前 Agent 已切换，请用 /model 选择 Agent 和模型"
             );
             ensure!(j.id.starts_with("card:"), "请在模型选择卡片中点选模型");
             let token = words.next().context("卡片标识缺失")?;
@@ -1001,7 +1088,7 @@ impl Bridge {
                         self.store.attach_reply_card(&packet.token, &message)?;
                     }
                 }
-                "post" | "image" | "media" => {
+                "post" | "image" | "media" | "file" => {
                     self.feishu
                         .reply_camera_media(
                             &destination(j)?,
@@ -1060,12 +1147,21 @@ impl Bridge {
                 }
                 return Ok(());
             }
-            if kind == "camera_media" {
+            if kind == "camera_media" || kind == "file_attachment" {
                 if j.sent == 0 {
                     let payload: Value = serde_json::from_str(&j.result)?;
                     let uuid = uuid::Uuid::new_v5(
                         &uuid::Uuid::NAMESPACE_OID,
-                        format!("result:{}:camera", j.id).as_bytes(),
+                        format!(
+                            "result:{}:{}",
+                            j.id,
+                            if kind == "file_attachment" {
+                                "file"
+                            } else {
+                                "camera"
+                            }
+                        )
+                        .as_bytes(),
                     )
                     .to_string();
                     if let Err(e) = self
@@ -1153,7 +1249,18 @@ impl Bridge {
             }
             if kind == "model_card" || kind == "model_card_update" {
                 let mut payload: Value = serde_json::from_str(&j.result)?;
-                let current = self.selected_model(&j.key)?;
+                let card = if kind == "model_card" {
+                    &payload["card"]
+                } else {
+                    &payload
+                };
+                let unified = card["body"]["elements"][1]["behaviors"][0]["value"]["action"]
+                    == "select_runtime";
+                let current = if unified {
+                    self.selected_choice(&j.key)?
+                } else {
+                    self.selected_model(&j.key)?
+                };
                 if kind == "model_card" {
                     payload["card"] = models::refresh_selection(&payload["card"], &current)?;
                 } else {
@@ -1228,6 +1335,7 @@ impl Bridge {
         let mut active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut camera_active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut speech_active: Option<(Job, JoinHandle<Result<()>>)> = None;
+        let mut file_active: Option<(Job, JoinHandle<Result<()>>)> = None;
         let mut seen = HashSet::new();
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         let mut count = 0u64;
@@ -1254,8 +1362,10 @@ impl Bridge {
                         return Err(e);
                     }
                     tracing::error!(error=%e,"任务失败");
-                    self.store
-                        .finish(&j.id, &format!("任务失败：{e}。可用 /status 查看会话。"))?;
+                    self.store.finish_failure(
+                        &j.id,
+                        &format!("任务失败：{e}。可用 /status 查看会话。"),
+                    )?;
                 }
                 seen.clear();
             }
@@ -1289,6 +1399,12 @@ impl Bridge {
                 let (j, h) = speech_active.take().unwrap();
                 if let Err(e) = h.await.context("语音执行器异常退出").and_then(|r| r) {
                     self.store.finish(&j.id, &format!("播报失败：{e}"))?;
+                }
+            }
+            if file_active.as_ref().is_some_and(|(_, h)| h.is_finished()) {
+                let (j, h) = file_active.take().unwrap();
+                if let Err(e) = h.await.context("文件执行器异常退出").and_then(|r| r) {
+                    self.store.finish(&j.id, &format!("文件发送失败：{e}"))?;
                 }
             }
             self.store.queue_due_posture_reports()?;
@@ -1330,14 +1446,36 @@ impl Bridge {
                     tokio::spawn(async move { b.speak_job(&job).await }),
                 ));
             }
+            if file_active.is_none()
+                && let Some(j) = queued.iter().find(|j| crate::files::is_send(&j.text))
+            {
+                self.store.status(&j.id, "running")?;
+                let b = self.clone();
+                let job = j.clone();
+                file_active = Some((
+                    j.clone(),
+                    tokio::spawn(async move { b.send_file(&job).await }),
+                ));
+            }
             // Commands stay responsive while the sole model task waits for an approval.
             for j in queued
                 .iter()
                 .filter(|j| {
-                    is_command(j) && !camera::is_capture(&j.text) && speech::text(&j.text).is_none()
+                    is_command(j)
+                        && !camera::is_capture(&j.text)
+                        && speech::text(&j.text).is_none()
+                        && !crate::files::is_send(&j.text)
                 })
                 .take(1)
             {
+                if j.text.trim() == "/stop"
+                    && file_active.as_ref().is_some_and(|(f, _)| f.key == j.key)
+                {
+                    let (f, h) = file_active.take().unwrap();
+                    h.abort();
+                    let _ = h.await;
+                    self.store.finish(&f.id, "文件上传已停止。")?;
+                }
                 if (speech::is_stop(&j.text) || j.text.trim() == "/stop")
                     && speech_active.as_ref().is_some_and(|(s, _)| s.key == j.key)
                 {
@@ -1415,6 +1553,143 @@ impl Bridge {
 }
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn file_upload_and_durable_native_delivery_survive_retry_and_restart()
+    -> anyhow::Result<()> {
+        use super::*;
+        use axum::{Json, Router, extract::Multipart, routing::post};
+        use std::sync::Mutex;
+        let uploads = Arc::new(Mutex::new(0));
+        let sends = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let count = uploads.clone();
+        let sent = sends.clone();
+        let app = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post(|| async {
+                    Json(json!({"code":0,"tenant_access_token":"test-file-token","expire":7200}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/files",
+                post(move |mut multipart: Multipart| {
+                    let count = count.clone();
+                    async move {
+                        let mut fields = std::collections::HashMap::new();
+                        while let Some(field) = multipart.next_field().await.unwrap() {
+                            fields.insert(
+                                field.name().unwrap().to_owned(),
+                                field.bytes().await.unwrap().to_vec(),
+                            );
+                        }
+                        assert_eq!(fields["file_type"], b"stream");
+                        assert_eq!(fields["file_name"], "中文报告 终稿.pdf".as_bytes());
+                        assert_eq!(fields["file"], b"%PDF-1.4 test report");
+                        *count.lock().unwrap() += 1;
+                        Json(json!({"code":0,"data":{"file_key":"file_report"}}))
+                    }
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages",
+                post(move |Json(body): Json<Value>| {
+                    let sent = sent.clone();
+                    async move {
+                        assert_eq!(body["receive_id"], "oc_chat");
+                        assert_eq!(body["msg_type"], "file");
+                        assert_eq!(
+                            serde_json::from_str::<Value>(body["content"].as_str().unwrap())
+                                .unwrap(),
+                            json!({"file_key":"file_report"})
+                        );
+                        let mut sent = sent.lock().unwrap();
+                        sent.push(body);
+                        if sent.len() == 1 {
+                            (
+                                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                                Json(json!({"code":1})),
+                            )
+                        } else {
+                            (
+                                axum::http::StatusCode::OK,
+                                Json(json!({"code":0,"data":{"message_id":"om_file"}})),
+                            )
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir =
+            std::env::temp_dir().join(format!("mr-li-file-delivery-{}", uuid::Uuid::new_v4()));
+        let mut cfg = Config::fixture();
+        cfg.workspace = dir.join("workspace");
+        cfg.data_dir = dir.join("data");
+        cfg.feishu_base_url = format!("http://{address}");
+        std::fs::create_dir_all(&cfg.workspace)?;
+        std::fs::create_dir_all(&cfg.data_dir)?;
+        std::fs::write(cfg.workspace.join("report.pdf"), b"%PDF-1.4 test report")?;
+        let cfg = Arc::new(cfg);
+        let db = cfg.data_dir.join("jobs.sqlite3");
+        let store = Arc::new(Store::open(&db)?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            tablet: None,
+        };
+        let j = Job {
+            id: "builtin:file-test".into(),
+            key: json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string(),
+            message_id: "om_source".into(),
+            text: crate::files::command("report.pdf", Some("中文报告 终稿.pdf"))?,
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&j)?;
+        store.status(&j.id, "running")?;
+        b.send_file(&j).await?;
+        assert_eq!(*uploads.lock().unwrap(), 1);
+        assert_eq!(
+            std::fs::read_dir(cfg.data_dir.join("outgoing-files"))?.count(),
+            0
+        );
+        assert!(
+            commands::task(&store.command_task(&j.key, &j.id)?.unwrap())
+                .contains("已上传，等待发送")
+        );
+        assert!(b.deliver().await.is_err());
+        std::fs::remove_file(cfg.workspace.join("report.pdf"))?;
+        drop(b);
+        drop(store);
+        let store = Arc::new(Store::open(&db)?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            tablet: None,
+        };
+        b.recover().await?;
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        b.deliver().await?;
+        let done = store.command_task(&j.key, &j.id)?.unwrap();
+        assert_eq!(done["status"], "done");
+        assert!(commands::task(&done).contains("已发送"));
+        assert_eq!(*uploads.lock().unwrap(), 1);
+        assert_eq!(sends.lock().unwrap().len(), 2);
+        {
+            let packets = sends.lock().unwrap();
+            assert_eq!(packets[0]["uuid"], packets[1]["uuid"]);
+        }
+        server.abort();
+        drop(b);
+        drop(store);
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
     #[tokio::test]
     async fn slash_and_speech_reactions_last_until_result_delivery() -> Result<()> {
         use axum::{
@@ -1753,6 +2028,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unified_picker_rejects_models_that_are_no_longer_free_without_switching() -> Result<()>
+    {
+        use axum::{Json, Router, routing::get};
+        let app = Router::new().route("/api/model", get(|| async { Json(json!([
+            {"providerID":"opencode","id":"formerly-free","cost":[{"input":1,"output":2,"cache":{"read":0,"write":0}}]}
+        ])) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut cfg = Config::fixture();
+        cfg.opencode_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let cfg = Arc::new(cfg);
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            tablet: None,
+        };
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        let scope = models::scope(&key)?;
+        store.switch_runtime_and_finish(
+            "job",
+            &scope,
+            Kind::Kilo,
+            "kilo/kilo-auto/free",
+            &json!({}),
+        )?;
+        let options = [models::FreeModel {
+            id: "opencode:opencode/formerly-free".into(),
+            name: "Formerly Free".into(),
+        }];
+        let card = models::runtime_picker(&options, &options[0].id, "retired", false);
+        store.register_runtime_card("retired", &key, &card)?;
+        store.attach_model_card("retired", "om_retired")?;
+        let j = Job {
+            id: "card:retired".into(),
+            key: key.clone(),
+            message_id: "om_retired".into(),
+            text: "/_runtime-select retired opencode:opencode/formerly-free".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        let error = b.handle_command(&j, None).await.unwrap_err();
+        assert!(error.to_string().contains("已下线"));
+        assert_eq!(b.selected_agent(&key)?, Kind::Kilo);
+        assert!(store.model(&scope)?.is_none());
+        server.abort();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn unified_picker_switches_agent_and_model_atomically_and_preserves_sessions()
+    -> Result<()> {
+        let cfg = Arc::new(Config::fixture());
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let b = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+            tablet: None,
+        };
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        let scope = models::scope(&key)?;
+        let card = models::runtime_picker(
+            &models::runtime_models(None, None),
+            "opencode:auto",
+            "unified",
+            false,
+        );
+        store.register_runtime_card("unified", &key, &card)?;
+        store.attach_model_card("unified", "om_unified")?;
+        store.set_session(&key, "ses_open")?;
+        store.set_agent_session(&key, "kilo", "agent_kilo_saved")?;
+        let j = Job {
+            id: "card:unified".into(),
+            key: key.clone(),
+            message_id: "om_unified".into(),
+            text: "/_runtime-select unified kilo:kilo/kilo-auto/free".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&j)?;
+        assert!(b.handle_command(&j, Some(&j)).await.is_err());
+        assert_eq!(b.selected_agent(&key)?, Kind::OpenCode);
+        assert!(
+            store
+                .model(&models::model_scope(&scope, Kind::Kilo))?
+                .is_none()
+        );
+        b.handle_command(&j, None).await?;
+        assert_eq!(b.selected_agent(&key)?, Kind::Kilo);
+        assert_eq!(b.selected_model(&key)?, "kilo/kilo-auto/free");
+        assert_eq!(b.session(&key)?.as_deref(), Some("agent_kilo_saved"));
+        assert_eq!(store.output_kind(&j.id)?, "model_card_update");
+        let back = Job {
+            text: "/_runtime-select unified opencode:auto".into(),
+            ..j.clone()
+        };
+        b.handle_command(&back, None).await?;
+        assert_eq!(b.selected_agent(&key)?, Kind::OpenCode);
+        assert_eq!(b.session(&key)?.as_deref(), Some("ses_open"));
+        assert_eq!(store.model(&scope)?.as_deref(), Some("auto"));
+        assert_eq!(
+            store
+                .model(&models::model_scope(&scope, Kind::Kilo))?
+                .as_deref(),
+            Some("kilo/kilo-auto/free")
+        );
+        let bad = Job {
+            text: "/_runtime-select unified kilo:paid".into(),
+            ..j.clone()
+        };
+        assert!(b.handle_command(&bad, None).await.is_err());
+        assert_eq!(b.selected_agent(&key)?, Kind::OpenCode);
+        let forged = Job {
+            message_id: "om_forwarded".into(),
+            ..j
+        };
+        assert!(b.handle_command(&forged, None).await.is_err());
+        Ok(())
+    }
+    #[tokio::test]
     async fn agent_card_switches_only_when_chat_is_idle_and_restores_each_session()
     -> anyhow::Result<()> {
         use super::*;
@@ -1774,18 +2172,9 @@ mod tests {
             result: String::new(),
             sent: 0,
         };
-        store.insert(&j)?;
-        b.handle_command(&j, None).await?;
-        let out = store.jobs("replying")?.remove(0);
-        let payload: Value = serde_json::from_str(&out.result)?;
-        assert_eq!(
-            payload["card"]["body"]["elements"][1]["options"]
-                .as_array()
-                .unwrap()
-                .len(),
-            5
-        );
-        let token = payload["token"].as_str().unwrap();
+        // Cards issued before the unified picker remain valid after upgrade.
+        let token = "legacy-agent";
+        store.register_agent_card(token, &key)?;
         store.attach_agent_card(token, "om_agent")?;
         let switch = Job {
             id: "card:choose".into(),

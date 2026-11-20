@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location('auto_deploy', Path(__file__).with_name('auto-deploy.py'))
+auto = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(auto)
+
+
+class DeploymentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.root = self.base / 'runtime'
+        self.root.mkdir()
+        self.state = self.root / '.data/auto-deploy'
+        self.state.mkdir(parents=True)
+        self.package = self.base / 'package'
+        (self.package / 'bin').mkdir(parents=True)
+        (self.package / 'bin/mr-li').write_text('#!/bin/sh\nexit 0\n')
+        (self.package / 'bin/mr-li').chmod(0o755)
+        self.source = self.base / 'source'
+        self.source.mkdir()
+        self.git('init', '-q')
+        self.git('config', 'user.email', 'test@example.invalid')
+        self.git('config', 'user.name', 'Test')
+        (self.source / 'file').write_text('one')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'initial')
+        self.value = auto.manifest(self.package, self.source)
+        self.old_binary = self.root / 'bin/mr-li'
+        self.old_binary.parent.mkdir()
+        self.old_binary.write_text('old executable')
+        (self.root / '.env').write_text('secret remains')
+        self.old_state = {'version': 'old', 'revision': self.value['revision']}
+        auto.write_json(self.state / 'installed.json', self.old_state)
+
+    def git(self, *args):
+        return auto.output(['git', '-C', self.source, *args])
+
+    def test_success_and_repeat_skips_restart(self):
+        with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
+            auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 1)
+            self.assertEqual(json.loads((self.state / 'installed.json').read_text()), self.value)
+            auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 1)
+        self.assertEqual((self.root / '.env').read_text(), 'secret remains')
+
+    def test_same_content_new_revision_updates_record_without_restart(self):
+        with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
+            auto.deploy(self.root, self.package, 'test/501')
+            self.git('commit', '--allow-empty', '-qm', 'empty release')
+            updated = auto.manifest(self.package, self.source)
+            self.assertEqual(updated['version'], self.value['version'])
+            auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 1)
+        self.assertEqual(json.loads((self.state / 'installed.json').read_text())['revision'], updated['revision'])
+
+    def test_failed_health_rolls_back_files_and_state(self):
+        (self.package / 'resource').mkdir()
+        (self.package / 'resource/new.txt').write_text('new')
+        auto.manifest(self.package, self.source)
+        with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy', side_effect=RuntimeError('unhealthy')):
+            with self.assertRaisesRegex(RuntimeError, 'unhealthy'):
+                auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 2)
+        self.assertEqual(self.old_binary.read_text(), 'old executable')
+        self.assertFalse((self.root / 'resource/new.txt').exists())
+        self.assertEqual(json.loads((self.state / 'installed.json').read_text()), self.old_state)
+
+    def test_tamper_rejected_before_restart(self):
+        (self.package / 'bin/mr-li').write_text('tampered')
+        with patch.object(auto, 'restart') as restart:
+            with self.assertRaisesRegex(RuntimeError, 'hash mismatch'):
+                auto.deploy(self.root, self.package, 'test/501')
+            restart.assert_not_called()
+
+    def test_package_cannot_replace_secrets_or_symlinks(self):
+        (self.package / '.env').write_text('overwrite')
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected package'):
+            auto.validate(self.package)
+        (self.package / '.env').unlink()
+        (self.package / 'bin/link').symlink_to(self.old_binary)
+        with self.assertRaisesRegex(RuntimeError, 'Unexpected package'):
+            auto.validate(self.package)
+
+    def test_failed_config_check_leaves_running_files(self):
+        (self.package / 'bin/mr-li').write_text('#!/bin/sh\nexit 1\n')
+        auto.manifest(self.package, self.source)
+        with patch.object(auto, 'restart') as restart:
+            with self.assertRaises(subprocess.CalledProcessError):
+                auto.deploy(self.root, self.package, 'test/501')
+            restart.assert_not_called()
+        self.assertEqual(self.old_binary.read_text(), 'old executable')
+
+    def test_local_incoming_takes_priority(self):
+        auto.write_json(self.state / 'config.json', {'domain': 'test/501'})
+        self.package.rename(self.state / 'incoming')
+        with patch.object(auto, 'restart'), patch.object(auto, 'healthy'), patch.object(auto, 'remote_package') as remote:
+            auto.once(self.root)
+            remote.assert_not_called()
+        self.assertFalse((self.state / 'incoming').exists())
+
+    def test_parallel_tick_skipped(self):
+        with (self.state / 'lock').open('a') as lock:
+            auto.fcntl.flock(lock, auto.fcntl.LOCK_EX | auto.fcntl.LOCK_NB)
+            with patch.object(auto, 'remote_package') as remote:
+                auto.once(self.root)
+                remote.assert_not_called()
+
+    def prepare_remote(self, revision):
+        # Real local Git transport exercises fetching/ancestry without the network.
+        remote = self.state / 'source'
+        auto.run(['git', 'clone', '-q', self.source, remote])
+        branch = self.git('branch', '--show-current')
+        auto.write_json(self.state / 'installed.json', {'revision': revision})
+        return remote, {'repo': str(self.source), 'branch': branch}
+
+    def test_same_github_commit_does_not_build(self):
+        _, config = self.prepare_remote(self.value['revision'])
+        self.assertIsNone(auto.remote_package(self.root, config))
+
+    def test_new_github_commit_builds_in_isolated_checkout(self):
+        remote, config = self.prepare_remote(self.value['revision'])
+        (self.source / 'file').write_text('new GitHub code')
+        self.git('commit', '-qam', 'new release')
+        revision = self.git('rev-parse', 'HEAD')
+        original_run = auto.run
+        platform = auto.output(['uname', '-s']) + '-' + auto.output(['uname', '-m'])
+        built = remote / 'dist' / ('mr-li-' + platform)
+
+        def fake_build(args, **kwargs):
+            if str(args[0]) == '/bin/bash':
+                self.assertEqual(kwargs['cwd'], remote)
+                self.assertEqual(auto.output(['git', '-C', remote, 'rev-parse', 'HEAD']), revision)
+                auto.shutil.copytree(self.package, built)
+                auto.manifest(built, remote)
+                return None
+            return original_run(args, **kwargs)
+
+        with patch.object(auto, 'run', side_effect=fake_build):
+            self.assertEqual(auto.remote_package(self.root, config), built)
+        self.assertEqual(auto.validate(built)['revision'], revision)
+        self.assertEqual(self.old_binary.read_text(), 'old executable')
+
+    def test_github_behind_local_does_not_downgrade(self):
+        (self.source / 'file').write_text('two')
+        self.git('commit', '-qam', 'second')
+        second = self.git('rev-parse', 'HEAD')
+        remote, config = self.prepare_remote(second)
+        self.git('reset', '--hard', self.value['revision'])
+        self.assertIsNone(auto.remote_package(self.root, config))
+        self.assertEqual(auto.output(['git', '-C', remote, 'rev-parse', 'HEAD']), second)
+
+    def test_local_file_change_requires_redeploy_even_same_manifest(self):
+        with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
+            auto.deploy(self.root, self.package, 'test/501')
+            self.old_binary.write_text('changed externally')
+            auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 2)
+        self.assertEqual(self.old_binary.read_bytes(), (self.package / 'bin/mr-li').read_bytes())
+
+
+if __name__ == '__main__':
+    unittest.main()

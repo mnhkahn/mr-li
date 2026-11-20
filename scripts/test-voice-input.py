@@ -3,7 +3,12 @@
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace as NS
+import json
+import subprocess
+import sys
 import unittest
+from unittest.mock import patch
+import tempfile
 
 spec = importlib.util.spec_from_file_location("voice_input", Path(__file__).with_name("voice-input.py"))
 voice = importlib.util.module_from_spec(spec)
@@ -11,16 +16,41 @@ spec.loader.exec_module(voice)
 
 
 class CaptureTest(unittest.TestCase):
-    def capture(self, *, wake_at=None, segments=(), listening=False):
-        state = NS(frame=0, open=False, decoded=0)
+    def test_mac_selects_private_bundled_audio_library_before_global_library(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            package=Path(temporary)
+            directory=package/"portaudio-binaries"
+            directory.mkdir()
+            (directory/"libportaudio.dylib").touch()
+            with patch.object(voice.sys,"platform","darwin"), patch.dict(sys.modules,{"_sounddevice_data":NS(__path__=[str(package)])}), patch.dict(voice.os.environ,{"DYLD_LIBRARY_PATH":"/existing"}):
+                voice.prefer_bundled_portaudio()
+                self.assertEqual(voice.os.environ["DYLD_LIBRARY_PATH"],str(directory)+":/existing")
+    def test_native_audio_diagnostics_cannot_corrupt_json_protocol(self):
+        fixture = '''import importlib.util, os, sys
+spec=importlib.util.spec_from_file_location("voice",sys.argv[1])
+voice=importlib.util.module_from_spec(spec);spec.loader.exec_module(voice)
+voice.isolate_protocol()
+os.write(1,b"||PaMacCore|| native input failure\\n")
+print("library diagnostic",flush=True)
+voice.emit("ready")
+voice.emit("text",text="帮我查一下作业")
+'''
+        result=subprocess.run([sys.executable,"-c",fixture,str(Path(__file__).with_name("voice-input.py"))],capture_output=True,text=True,check=True)
+        self.assertEqual([json.loads(line) for line in result.stdout.splitlines()],
+                         [{"event":"ready"},{"event":"text","text":"帮我查一下作业"}])
+        self.assertIn("native input failure",result.stderr)
+        self.assertIn("library diagnostic",result.stderr)
+
+    def capture(self, *, wake_at=None, segments=(), listening=False, overflow_at=()):
+        state = NS(frame=0, open=False, decoded=0, resets=0, options=None)
 
         class Audio:
             def reshape(self, _):
                 return self
 
         class Mic:
-            def __init__(self, **_):
-                pass
+            def __init__(self, **options):
+                state.options = options
             def __enter__(self):
                 state.open = True
                 return self
@@ -30,7 +60,7 @@ class CaptureTest(unittest.TestCase):
                 state.frame += 1
                 if state.frame > 20:
                     raise RuntimeError("fixture exhausted")
-                return Audio(), False
+                return Audio(), state.frame in overflow_at
 
         class Vad:
             def __init__(self, *_, **__):
@@ -41,6 +71,9 @@ class CaptureTest(unittest.TestCase):
                 return not self.pending
             def is_speech_detected(self):
                 return False
+            def reset(self):
+                self.pending.clear()
+                state.resets += 1
             @property
             def front(self):
                 return NS(samples=self.pending[0])
@@ -88,6 +121,18 @@ class CaptureTest(unittest.TestCase):
     def test_followup_needs_no_second_wake(self):
         event, _ = self.capture(listening=True, segments=[(3, "那明天呢？")])
         self.assertEqual(event, {"event": "text", "text": "那明天呢？"})
+
+    def test_transient_overflow_discards_partial_request_and_listens_again(self):
+        event, state = self.capture(listening=True, wake_at=6, overflow_at=(3,),
+                                    segments=[(3,"不要执行这段残缺的话"),(8,"你好李老师，查一下作业")])
+        self.assertEqual(event,{"event":"text","text":"查一下作业"})
+        self.assertEqual(state.resets,1)
+        self.assertEqual(state.decoded,1)
+        self.assertEqual(state.options["latency"],0.5)
+
+    def test_sustained_overflow_fails_instead_of_dispatching_partial_speech(self):
+        with self.assertRaisesRegex(RuntimeError,"连续丢帧8次"):
+            self.capture(listening=True,overflow_at=tuple(range(1,9)))
 
     def test_strips_only_leading_wake_phrase(self):
         self.assertEqual(voice.strip_wake("你好，李老师！打开灯，然后播报天气。"), "打开灯，然后播报天气。")

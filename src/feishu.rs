@@ -401,6 +401,49 @@ impl Feishu {
             .context("飞书上传未返回媒体标识")?
             .to_owned())
     }
+    /// Generic files use the IM resource API, followed by a native file message.
+    pub async fn upload_file(&self, file: &crate::files::Prepared) -> Result<String> {
+        let part = reqwest::multipart::Part::file(&file.path)
+            .await?
+            .file_name(file.name.clone())
+            .mime_str("application/octet-stream")?;
+        let form = reqwest::multipart::Form::new()
+            .text("file_type", "stream")
+            .text("file_name", file.name.clone())
+            .part("file", part);
+        let response = self
+            .http
+            .post(format!(
+                "{}/open-apis/im/v1/files",
+                self.cfg.feishu_base_url
+            ))
+            .bearer_auth(self.token().await?)
+            .multipart(form)
+            .timeout(Duration::from_secs(90))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("飞书文件上传网络请求失败"))?;
+        ensure!(
+            response.status().is_success(),
+            "飞书文件上传 HTTP {}",
+            response.status().as_u16()
+        );
+        let value: Value = response.json().await.context("飞书文件上传响应格式错误")?;
+        let code = value["code"].as_i64();
+        if matches!(code, Some(99991663 | 99991668)) {
+            self.token.lock().await.0.clear();
+        }
+        ensure!(
+            code == Some(0),
+            "飞书文件上传错误码 {:?}（请确认应用已开通 im:resource 或 im:resource:upload 权限）",
+            code
+        );
+        Ok(value["data"]["file_key"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("飞书上传未返回文件标识")?
+            .into())
+    }
     pub async fn reply_camera_media(
         &self,
         message: &str,
@@ -409,7 +452,10 @@ impl Feishu {
         thread: bool,
     ) -> Result<()> {
         let kind = payload["msg_type"].as_str().context("媒体类型缺失")?;
-        ensure!(matches!(kind, "image" | "media" | "post"), "未知媒体类型");
+        ensure!(
+            matches!(kind, "image" | "media" | "post" | "file"),
+            "未知媒体类型"
+        );
         self.reply_message(message, kind, payload["content"].clone(), uuid, thread)
             .await?;
         Ok(())
@@ -687,7 +733,10 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
         }));
     }
     let agent_action = a["value"]["action"] == "select_agent";
-    if a["tag"] != "select_static" || (!agent_action && a["value"]["action"] != "select_model") {
+    let runtime_action = a["value"]["action"] == "select_runtime";
+    if a["tag"] != "select_static"
+        || (!agent_action && !runtime_action && a["value"]["action"] != "select_model")
+    {
         return Ok(None);
     }
     let token = a["value"]["token"].as_str().context("卡片缺少标识")?;
@@ -698,6 +747,14 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
     }) else {
         return Ok(None);
     };
+    if !agent_action {
+        let saved = store.runtime_card(token)?;
+        let unified =
+            saved["body"]["elements"][1]["behaviors"][0]["value"]["action"] == "select_runtime";
+        if unified != runtime_action {
+            return Ok(None);
+        }
+    }
     let key: Value = serde_json::from_str(&card.origin_key)?;
     if key[0] != cfg.workspace.to_string_lossy().as_ref()
         || key[1] != owner
@@ -711,14 +768,18 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
     if agent_action {
         crate::agent::Kind::parse(model)?;
     }
-    ensure!(
-        model.len() <= 200
-            && (agent_action || model.starts_with("opencode/"))
-            && model
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)),
-        "模型选项无效"
-    );
+    if runtime_action {
+        crate::models::parse_choice(model)?;
+    } else {
+        ensure!(
+            model.len() <= 200
+                && (agent_action || model.starts_with("opencode/"))
+                && model
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c)),
+            "模型选项无效"
+        );
+    }
     let event_id = v["header"]["event_id"]
         .as_str()
         .filter(|s| !s.is_empty())
@@ -731,6 +792,8 @@ fn parse_model_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<J
             "{} {token} {model}",
             if agent_action {
                 "/_agent-select"
+            } else if runtime_action {
+                "/_runtime-select"
             } else {
                 "/_model-select"
             }
@@ -878,7 +941,8 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
         }
     }
     let text = match text.trim() {
-        "切换模型" | "选择模型" | "模型列表" => "/models",
+        "切换模型" | "选择模型" | "模型列表" | "切Agent" | "切Model" | "切模型" | "切换Agent"
+        | "切换 Agent" | "切换agent" => "/model",
         other => other,
     }
     .to_string();
@@ -1323,6 +1387,39 @@ mod tests {
         event["event"]["action"]["value"]["action"] = json!("select_model");
         assert!(parse_model_action(&event, &cfg, &store)?.is_none());
         assert!(store.agent_card("unknown-token")?.is_none());
+        Ok(())
+    }
+    #[test]
+    fn unified_callbacks_bind_card_type_owner_chat_and_message() -> Result<()> {
+        let mut cfg = Config::fixture();
+        cfg.allowed_chats = vec!["oc_chat".into()];
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let key = json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string();
+        let card = crate::models::runtime_picker(
+            &crate::models::runtime_models(None, None),
+            "opencode:auto",
+            "pair",
+            false,
+        );
+        store.register_runtime_card("pair", &key, &card)?;
+        store.attach_model_card("pair", "om_pair")?;
+        let event = json!({"header":{"event_type":"card.action.trigger","event_id":"pair-event"},"event":{
+            "operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_pair"},
+            "action":{"tag":"select_static","option":"kilo:kilo/kilo-auto/free","value":{"action":"select_runtime","token":"pair"}}}});
+        let job = parse_model_action(&event, &cfg, &store)?.unwrap();
+        assert_eq!(job.text, "/_runtime-select pair kilo:kilo/kilo-auto/free");
+        assert!(store.insert(&job)?);
+        assert!(!store.insert(&job)?);
+        for (pointer, value) in [
+            ("/event/operator/open_id", "ou_other"),
+            ("/event/context/open_chat_id", "oc_other"),
+            ("/event/context/open_message_id", "om_forwarded"),
+            ("/event/action/value/action", "select_model"),
+        ] {
+            let mut forged = event.clone();
+            *forged.pointer_mut(pointer).unwrap() = json!(value);
+            assert!(parse_model_action(&forged, &cfg, &store)?.is_none());
+        }
         Ok(())
     }
     #[test]

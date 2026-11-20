@@ -84,9 +84,22 @@ fn enqueue(store: &Store, origin: &Job, text: &str) -> Result<Job> {
     store.insert(&job)?;
     Ok(job)
 }
+const RATE_LIMIT_REPLY: &str = "我听到了，但当前模型限流了，请稍后再试。";
+const FAILURE_REPLY: &str = "我听到了，但这次处理失败了，请稍后再试。";
+
 fn spoken_result(value: &Value) -> Result<String> {
     let raw = value["result"].as_str().context("缺少任务结果")?;
-    if value["kind"] == "rich_reply" {
+    if value["kind"] == "voice_error" {
+        let limited = raw.contains("HTTP 429")
+            || raw.to_ascii_lowercase().contains("rate limit")
+            || raw.contains("限流");
+        Ok(if limited {
+            RATE_LIMIT_REPLY
+        } else {
+            FAILURE_REPLY
+        }
+        .into())
+    } else if value["kind"] == "rich_reply" {
         let out: crate::reply::Output = serde_json::from_str(raw)?;
         Ok(out.fallback)
     } else {
@@ -201,7 +214,7 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
                         // A failed task is never resubmitted automatically.
                         if let Err(e) = converse(&cfg, &store, &origin, &text).await {
                             tracing::error!(error=%e, "语音任务未完成，请在飞书查看状态");
-                            speech::speak(&cfg, "这次对话遇到问题，请在飞书查看任务状态。").await?;
+                            speech::speak(&cfg, FAILURE_REPLY).await?;
                             // Avoid accepting more work while the bridge may still be executing.
                             return Err(e);
                         }
@@ -268,6 +281,8 @@ emit('wake')
 resume(True, '我在，请说。')
 emit('text', text='看看今天的任务')
 resume(True, '已经查到今天的任务。')
+emit('text', text='再查一下明天的任务')
+resume(True, '我听到了，但当前模型限流了，请稍后再试。')
 emit('text', text='结束对话')
 resume(False, '好的，再见。')
 (root / 'passed').write_text('ok')
@@ -279,12 +294,24 @@ resume(False, '好的，再见。')
         store.save_incoming(&source.id, &json!({}))?;
         store.status(&source.id, "done")?;
         let worker = async {
+            let mut completed = 0;
             loop {
                 if let Some(j) = store.jobs("queued")?.into_iter().find(is_job) {
-                    assert_eq!(j.text, "看看今天的任务");
                     assert_eq!(j.key, source.key);
-                    store.finish(&j.id, "已经查到今天的任务。")?;
-                    return Ok::<(), anyhow::Error>(());
+                    if completed == 0 {
+                        assert_eq!(j.text, "看看今天的任务");
+                        store.finish(&j.id, "已经查到今天的任务。")?;
+                    } else {
+                        assert_eq!(j.text, "再查一下明天的任务");
+                        store.finish_failure(
+                            &j.id,
+                            "任务失败：OpenCode HTTP 429。可用 /status 查看会话。",
+                        )?;
+                    }
+                    completed += 1;
+                    if completed == 2 {
+                        return Ok::<(), anyhow::Error>(());
+                    }
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -294,12 +321,12 @@ resume(False, '好的，再见。')
         })
         .await?;
         worker?;
-        // The fixture exits after all three handshakes; production treats EOF as a device error.
+        // EOF follows all four handshakes, including resuming after a spoken failure.
         assert!(frontend.is_err());
         assert_eq!(std::fs::read_to_string(dir.join("passed"))?, "ok");
         let args = std::fs::read_to_string(dir.join("args"))?;
-        assert_eq!(args.matches("configured-clone").count(), 3);
-        assert_eq!(args.matches("configured-output").count(), 3);
+        assert_eq!(args.matches("configured-clone").count(), 4);
+        assert_eq!(args.matches("configured-output").count(), 4);
         assert!(store.jobs("queued")?.is_empty());
         assert!(store.jobs("replying")?.is_empty());
         std::fs::remove_dir_all(dir)?;
@@ -314,6 +341,35 @@ resume(False, '好的，再见。')
             result: String::new(),
             sent: 0,
         }
+    }
+    #[test]
+    fn only_failed_jobs_use_short_spoken_errors_and_keep_full_diagnostics() -> Result<()> {
+        let cfg = Config::fixture();
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let source = origin(&cfg, "ou_owner", "oc_chat");
+        let j = enqueue(&store, &source, "查一下时间")?;
+        let detail = "任务失败：OpenCode HTTP 429；未切换付费模型。";
+        store.finish_failure(&j.id, detail)?;
+        let value = store.command_task(&j.key, &j.id)?.unwrap();
+        assert_eq!(value["result"], detail);
+        assert_eq!(value["kind"], "voice_error");
+        assert_eq!(spoken_result(&value)?, RATE_LIMIT_REPLY);
+        assert!(store.jobs("replying")?.is_empty());
+        store.finish_failure(&j.id, "任务失败：网络连接中断")?;
+        assert_eq!(
+            spoken_result(&store.command_task(&j.key, &j.id)?.unwrap())?,
+            FAILURE_REPLY
+        );
+        store.finish(&j.id, "HTTP 429表示请求过于频繁")?;
+        assert_eq!(
+            spoken_result(&store.command_task(&j.key, &j.id)?.unwrap())?,
+            "HTTP 429表示请求过于频繁"
+        );
+        store.insert(&source)?;
+        store.finish_failure(&source.id, detail)?;
+        assert_eq!(store.output_kind(&source.id)?, "text");
+        assert_eq!(store.jobs("replying")?.len(), 1);
+        Ok(())
     }
     #[test]
     fn binding_requires_an_unambiguous_allowed_scope() -> Result<()> {

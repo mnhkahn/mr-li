@@ -248,3 +248,46 @@ fn home_assistant_mcp_is_passed_to_acp_and_trae_without_credentials() -> Result<
     assert!(!trae.to_string().contains("private-ha-token"));
     Ok(())
 }
+
+#[tokio::test]
+async fn cline_launch_loads_private_native_mcp_settings() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut cfg = Config::fixture();
+    cfg.data_dir = fixture.0.join("relative-data");
+    cfg.workspace = fixture.0.clone();
+    cfg.cline_bin = fixture.0.join("fake-agent").to_string_lossy().into();
+    cfg.tablet_public_url = "https://tablet.example".into();
+    cfg.home_assistant = crate::home_assistant::Settings::from_settings(
+        |k, _| match k {
+            "XIAOLI_HA_URL" => "http://127.0.0.1:8123".into(),
+            "XIAOLI_HA_TOKEN" => "private-ha-token".into(),
+            _ => String::new(),
+        },
+        "/private/ha.env",
+    )?;
+    let hub = AgentHub::new(Arc::new(cfg))?;
+    let (rpc, _) = hub.launch(Kind::Cline).await?;
+    let path: PathBuf = std::fs::read_to_string(fixture.0.join("cline-settings-path"))?.into();
+    assert!(path.is_absolute());
+    let text = std::fs::read_to_string(&path)?;
+    assert!(!text.contains("private-ha-token"));
+    assert_eq!(
+        std::fs::metadata(&path)?.permissions().mode() & 0o777,
+        0o600
+    );
+    let value: Value = serde_json::from_str(&text)?;
+    let servers = &value["mcpServers"];
+    assert_eq!(servers.as_object().unwrap().len(), 3);
+    assert_eq!(servers["home_assistant"]["args"], json!(["ha-mcp"]));
+    assert_eq!(
+        servers["home_assistant"]["env"]["MR_LI_ENV"],
+        "/private/ha.env"
+    );
+    assert_eq!(servers["homework"]["args"], json!(["tablet-mcp"]));
+    assert_eq!(servers["teacher"]["args"], json!(["builtin-mcp"]));
+    // A second launch refreshes atomically, retaining a complete valid file.
+    let (other, _) = hub.launch(Kind::Cline).await?;
+    assert_eq!(std::fs::read_to_string(path)?, text);
+    drop((rpc, other));
+    Ok(())
+}

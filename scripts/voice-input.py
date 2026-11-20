@@ -7,12 +7,36 @@ on stdin. The Rust frontend resumes capture only after playback has finished.
 import argparse
 from collections import deque
 import json
+import os
 from pathlib import Path
 import re
 import sys
 import time
 
 RATE = 16000
+PROTOCOL = None
+
+
+def isolate_protocol():
+    """PortAudio can write native errors to fd 1; keep them out of JSON stdout."""
+    global PROTOCOL
+    sys.stdout.flush()
+    PROTOCOL = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8", buffering=1)
+    os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+
+
+def prefer_bundled_portaudio():
+    # sounddevice otherwise finds /usr/local/lib first. An old 19.6 build there
+    # uses Component Manager, rejected by macOS when hosted by modern Python.
+    # Keep this scoped to this process; never replace the system-wide library.
+    if sys.platform != "darwin":
+        return
+    import _sounddevice_data
+    directory = Path(next(iter(_sounddevice_data.__path__))) / "portaudio-binaries"
+    if not (directory / "libportaudio.dylib").is_file():
+        raise FileNotFoundError("缺少语音环境自带的PortAudio录音库，请运行setup-voice.sh")
+    previous = os.environ.get("DYLD_LIBRARY_PATH", "")
+    os.environ["DYLD_LIBRARY_PATH"] = str(directory) + (os.pathsep + previous if previous else "")
 
 
 def strip_wake(text):
@@ -21,7 +45,9 @@ def strip_wake(text):
 
 
 def emit(event, **values):
-    print(json.dumps(dict(event=event, **values), ensure_ascii=False), flush=True)
+    if event in ("wake", "text"):
+        print(f"VOICE_EVENT {event}", file=sys.stderr, flush=True)
+    print(json.dumps(dict(event=event, **values), ensure_ascii=False), file=PROTOCOL, flush=True)
 
 
 def segment_with_preroll(segment, history, total, window, np):
@@ -61,7 +87,7 @@ def load_models(root, sherpa, recognizer=None):
     return spotter, recognizer
 
 
-def capture(sd, sherpa, np, root, device, spotter, recognizer, listening):
+def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify_ready=False):
     config = sherpa.VadModelConfig()
     config.silero_vad.model = str(root / "silero_vad.onnx")
     config.silero_vad.min_silence_duration = 0.8
@@ -74,18 +100,43 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening):
     active = listening
     deadline = time.monotonic() + 15 if active else None
     history = deque(maxlen=int(35 * RATE / window))
+    overflows = deque(maxlen=8)
     total = 0
+    diagnostics = os.environ.get("MR_LI_VOICE_DIAGNOSTICS") == "1"
+    next_diagnostic = time.monotonic() + 5
+    peak = 0.0
     # Exceptions (no input hardware, permissions, device unplugged) end the process
     # visibly instead of silently switching to an unrelated device or audio source.
-    with sd.InputStream(device=device, channels=1, dtype="float32", samplerate=RATE) as mic:
+    with sd.InputStream(device=device, channels=1, dtype="float32", samplerate=RATE,
+                        blocksize=window, latency=0.5) as mic:
+        if notify_ready:
+            emit("ready")
         while True:
             samples, overflow = mic.read(window)
             if overflow:
-                raise RuntimeError("麦克风缓冲溢出，请检查输入设备或CPU负载")
+                now = time.monotonic()
+                overflows.append(now)
+                if len(overflows) == overflows.maxlen and now - overflows[0] < 10:
+                    raise RuntimeError("麦克风在10秒内连续丢帧8次，无法完整收音，请检查CPU负载或输入设备")
+                # A gap invalidates the partial request: never dispatch truncated words.
+                vad.reset()
+                stream = spotter.create_stream()
+                history.clear()
+                total = 0
+                active = False
+                deadline = None
+                print("麦克风短暂丢帧，已恢复等待唤醒，请重新说“你好，李老师”。", file=sys.stderr, flush=True)
+                continue
             samples = np.ascontiguousarray(samples.reshape(-1))
             history.append(samples)
             total += window
             vad.accept_waveform(samples)
+            if diagnostics:
+                peak = max(peak, float(np.max(np.abs(samples))))
+                if time.monotonic() >= next_diagnostic:
+                    print(f"MIC_SIGNAL peak={peak:.6f} speech={vad.is_speech_detected()}", file=sys.stderr, flush=True)
+                    next_diagnostic = time.monotonic() + 5
+                    peak = 0.0
             if active and vad.is_speech_detected():
                 # The 15-second follow-up window limits waiting, not the request length.
                 deadline = time.monotonic() + 35
@@ -126,8 +177,11 @@ def main():
     backend.add_argument("--local-asr", dest="local_asr", action="store_true", default=True, help="使用本地SenseVoice（默认，不消耗在线额度）")
     backend.add_argument("--cloud-asr", dest="local_asr", action="store_false", help="显式使用xiaoli的在线ASR接口")
     args = parser.parse_args()
+    if not args.check:
+        isolate_protocol()
     import numpy as np
     import sherpa_onnx as sherpa
+    prefer_bundled_portaudio()
     import sounddevice as sd
 
     device = int(args.device) if args.device.isdigit() else (args.device or None)
@@ -140,10 +194,12 @@ def main():
     if args.check:
         print("PASS: 唤醒、ASR模型及16kHz输入设备检查通过（未录音）")
         return
-    emit("ready")
     listening = False
+    ready = False
     while True:
-        event = capture(sd, sherpa, np, args.models, device, spotter, recognizer, listening)
+        event = capture(sd, sherpa, np, args.models, device, spotter, recognizer, listening,
+                        notify_ready=not ready)
+        ready = True
         # capture's with-block has closed the microphone before stdout is written.
         emit(**event)
         line = sys.stdin.readline(4096)
@@ -161,5 +217,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as error:
-        print(f"语音输入失败：{error}。请检查输入设备、macOS麦克风权限及setup-voice.sh。", file=sys.stderr)
+        print(f"语音输入失败：{error}", file=sys.stderr)
         sys.exit(1)

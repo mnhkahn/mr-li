@@ -11,6 +11,7 @@ if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
 fi
 PLATFORM="$(uname -s)-$(uname -m)"
 DEST="$ROOT/dist/mr-li-$PLATFORM"
+rm -rf -- "$DEST"
 mkdir -p "$DEST/bin" "$DEST/scripts"
 cp target/release/mr-li "$DEST/bin/"
 cp scripts/init.sh scripts/init-camera.sh scripts/setup-pose.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh scripts/boot-start.sh "$DEST/scripts/"
@@ -34,10 +35,13 @@ cp scripts/smoke-builtin.py "$DEST/scripts/"
 cp scripts/smoke-home-assistant.py "$DEST/scripts/"
 cp scripts/voice-clone.py scripts/voice-clone.sh "$DEST/scripts/"
 cp scripts/voice-input.py scripts/setup-voice.sh scripts/setup-voice-models.py "$DEST/scripts/"
+cp scripts/voice-mic-permission.m scripts/build-voice-mic.sh scripts/voice-start.sh "$DEST/scripts/"
 cp scripts/speech_api.py scripts/speech-api.sh scripts/import-xiaoli-speech.py "$DEST/scripts/"
 cp scripts/local-voice.cc scripts/local-voice.py scripts/local-voice.sh scripts/build-local-voice.sh "$DEST/scripts/"
 cp README.md .env.example opencode.example.json "$DEST/"
+cp scripts/auto-deploy.py "$DEST/scripts/"
 chmod +x "$DEST/bin/mr-li" "$DEST/scripts/"*.sh
+python3 scripts/auto-deploy.py manifest --package "$DEST" --source "$ROOT"
 COPYFILE_DISABLE=1 tar -czf "$ROOT/dist/mr-li-$PLATFORM.tar.gz" -C "$ROOT/dist" "mr-li-$PLATFORM"
 echo "Built: $ROOT/dist/mr-li-$PLATFORM.tar.gz"
 echo 'The binary architecture must match the deployment Mac. No secrets or conversation data are packaged.'

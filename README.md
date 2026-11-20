@@ -20,7 +20,9 @@ flowchart LR
 
 ## Agent 选择与对接
 
-在飞书输入 `/agent`，服务返回交互卡片，展开下拉框后点选即可。默认是 OpenCode；另外四个选项为 Antigravity CLI、Kilo CLI、TRAE 国内版、Cline CLI。选择按工作目录、用户和聊天保存，不同话题共用选择，各话题及各 Agent 的会话分别保存。切回原 Agent 会恢复其会话。当前聊天有模型任务执行时先 `/stop`，再切换；排队但尚未执行的任务采用执行开始时的选择。`/new` 只清除当前 Agent 的会话映射。
+在飞书输入 `/model`，打开统一的 Agent 和模型选择卡片。下拉选项直接显示“Agent · Model”，点一次同时切换两项；`/agent` 和 `/models` 作为兼容入口打开相同卡片。OpenCode 列出实时免费模型，Cline 列出官方免费目录并支持自动选择；Kilo 使用 Auto Free，Antigravity 使用 Gemini 3.8 Flash，TRAE 使用免费账户默认模型。模型目录暂不可用时仍可选择各 Agent 的默认入口，实际执行时继续检查免费模型和账号权限。选择按工作目录、用户和聊天保存，不同话题共用选择；各 Agent 的模型偏好和会话分别保留，跨重启保存。当前聊天有模型任务执行时先 `/stop` 再切换；排队任务使用执行开始时的选择。`/new` 只清除当前 Agent 的会话映射。
+
+Kilo 首次启动在繁忙的 Mac mini 上可能超过 30 秒，桥接为其协议初始化保留最多 90 秒；后续控制请求仍为 30 秒。启动失败提示包含等待上限，避免误判为设备工具未接入。Kilo 通过 ACP 加载设备工具，无需使用 Cline 的专用配置兼容入口。
 
 | Agent | 官方调用入口 | 运行方式 | 免费用量策略 |
 | --- | --- | --- | --- |
@@ -38,7 +40,7 @@ Gemini CLI 已于 2026-06-18 停止服务个人免费、Pro 和 Ultra 账号，G
 
 TRAE IDE 免费积分不等于 CLI/app-server 权限：当前官方 CLI 文档仍限制企业旗舰版，实际国内免费账号是否有权限需要登录后确认。旧的 TRAE CLI 0.120.13 没有 app-server，不能使用此适配器。运行失败会在飞书提示，保持所选 Agent，不切到其他后端或付费模型。Antigravity/TRAE 的额度由所登录账号控制；本服务不自动充值、不代领签到积分，也不能从协议中保证账号是免费套餐。Cline 免费模型促销结束或目录不可用时会停止，而不使用付费模型。
 
-`/models` 目前继续管理 OpenCode 免费模型。其他 Agent 使用上述免费账户/免费模型策略。`/status` 显示当前 Agent；其他 Agent 的 `/skills`、`/mcp` 暂返回配置说明，避免误展示 OpenCode 的目录。平板启用后，ACP 会话创建/恢复时传入本机 homework MCP，TRAE 使用 thread 配置覆盖；OpenCode 保留原有自动注册流程。TRAE 的结构化补充提问复用飞书表单卡片；ACP 普通补充提问作为文字回答展示，用户可继续回复。
+`/model` 同时管理 Agent 和模型。`/status` 显示当前 Agent 与模型选择；其他 Agent 的 `/skills`、`/mcp` 暂返回配置说明，避免误展示 OpenCode 的目录。平板启用后，ACP 会话创建/恢复时传入本机 homework MCP，TRAE 使用 thread 配置覆盖；OpenCode 保留原有自动注册流程。TRAE 的结构化补充提问复用飞书表单卡片；ACP 普通补充提问作为文字回答展示，用户可继续回复。
 
 外部 CLI 不继承飞书密钥或模型 API Key，保留用户网络代理设置。`/stop`、超时及协议断开会终止所属进程组并等待确认；独立 worker 在桥接崩溃导致 stdin 关闭时清理 CLI 和工具子进程。重启不自动重跑中断任务。推理和工具输出不转发到飞书。
 
@@ -74,7 +76,7 @@ OpenCode 自身提供 `opencode serve`，可以通过 HTTP 创建会话、提交
 - 默认全局只执行 **1 个模型任务**，其他消息进持久队列（上限 500）；指令和授权回复仍可处理。单线程 Tokio，避免为桥接创建大量工作线程。
 - 消息先落 SQLite 再 ACK；按 message_id 去重（完成记录保留 30 天）。回复分片并记录进度，失败指数退避重试；UUID 减少飞书重试产生的重复回复。跨平台/跨进程不承诺端到端 exactly-once。
 - 重启保留会话、未执行任务和结果发件箱；执行中的任务先请求中止并提示，不自动重跑。操作可能已发生，用户检查后再决定是否重发。
-- `/models` 或“切换模型”打开交互卡片：下拉点选免费模型，按用户与聊天保存选择，跨话题及重启保留；不改变正在执行的任务。卡片只允许发起者在原聊天操作，回调幂等处理。
+- `/model` 或“切换模型”打开统一交互卡片：下拉点选“Agent · Model”，原子保存两项选择。卡片只允许发起者在原聊天操作，回调幂等处理；提交时重新验证显式免费模型是否仍然免费。
 - `/approve` 只批准一次，并核对请求是否属于当前用户/聊天/话题对应的会话。不会自动批准所有工具。
 - OpenCode 默认使用独立直连进程：清除该进程继承的大小写 HTTP/HTTPS/ALL_PROXY，设置 NO_PROXY=*；不修改系统代理。`MR_LI_DIRECT_NETWORK=false` 可显式恢复继承网络环境。桥接访问本机 OpenCode API 始终不走代理。
 - 上游 429 只表示免费请求被限流或拒绝，不能直接当成账号额度耗尽；代理出口和不兼容的内核也可能触发拒绝。
@@ -104,6 +106,29 @@ python3 scripts/smoke-opencode.py /absolute/path/to/opencode
 ```
 
 这个检查保留兼容启动器所需的 HOME，使用临时 XDG、数据库和工作目录，不连接飞书、不提交模型任务、不触碰日常 OpenCode 会话。它验证真实 V2 的健康、鉴权、会话、权限/表单和配置接口。
+
+## GitHub 与本机自动部署
+
+在目标 Mac mini 的**现有服务目录**安装检查任务，不要在开发机安装：
+
+```bash
+python3 scripts/auto-deploy.py install --repo https://github.com/mnhkahn/mr-li.git --branch main
+```
+
+默认服务域是 `user/<uid>`，适用于上面的无人登录启动方案。登录型 LaunchAgent 传 `--domain gui/$(id -u)`；系统服务需要有权重启 system 域的部署机制，此脚本不申请管理员权限。自定义 `MR_LI_DATA_DIR` 时，安装命令同时传 `--data-dir /实际数据目录`。需 Python 3、Git、Rust 1.88+ 和 Command Line Tools；这些工具应提前安装，后台任务不弹窗、不交互登录。私有仓库需事先为部署用户配置 Git 只读凭据。需要每次一起更新坐姿二进制时加 `--pose`，否则保留现有坐姿二进制和模型。
+
+安装后每分钟检查一次 `main`，不依赖其他电脑在线或桌面登录。GitHub 新提交会拉到独立的 `.data/auto-deploy/source`，测试、构建成功后才替换部署文件，重启 OpenCode 与 bridge。Git 提交号相同就跳过构建和重启；不会仅比较一直未变的 `Cargo.toml` 版本。GitHub 落后于已部署的本机提交或历史分叉时跳过，避免覆盖现场新代码；请把本机提交推送到配置分支后再继续自动更新。尚未提交的现场改动需提交、推送后才能长期保留在后续 GitHub 版本中。
+
+人在电脑旁时仍可本机构建 `./scripts/build-release.sh`。发布包现在含 `release.json`（提交号、工作区是否有改动、内容哈希）。把**完整解压目录**复制到目标机 `.data/auto-deploy/incoming.tmp`，复制结束后重命名为 `incoming`，下一次检查会优先部署它。不要复制到正在运行的 `bin/` 后再生成版本文件。相同内容版本跳过部署和重启。也可立即应用一个完整包：
+
+```bash
+python3 scripts/auto-deploy.py once --package /绝对路径/mr-li-Darwin-x86_64
+python3 scripts/auto-deploy.py status
+```
+
+并发检查共用文件锁；安装、手动应用均使用同一份版本记录。部署前核对完整包的哈希并检查配置，部署后等待新进程心跳及 OpenCode 健康检查；90 秒内不健康则恢复本次替换的旧文件并重启。回滚不撤销新进程可能产生的数据写入。`.env`、会话数据库、凭据及可选模型不会被发布包清空。第一次安装没有可信版本记录时会部署一次；只有健康检查通过才记录版本，失败后保留旧版本并在下次检查重试。重启会打断正在执行的任务，请在可接受的时间推送发布代码。
+
+配置与版本记录在 `.data/auto-deploy/`，日志在 `logs/auto-deploy.log`。安装任务保留并备份原 crontab；停用时在 `crontab -e` 删除标有 `# MR-LI AUTO-DEPLOY` 的一行。验证脚本：`python3 scripts/test-auto-deploy.py`。
 
 ## Mac mini 首次部署
 
@@ -248,8 +273,7 @@ sudo ./scripts/service.sh uninstall system
 | `/posture status`、`/posture stop` | 查询最近采样结果、停止定时试验 |
 | `/photo` | 获取小米摄像头当前照片，直接回复图片 |
 | `/video [秒数]` | 从现在录像并回复可播放的视频；默认 10 秒，支持 1–30 秒 |
-| `/agent` | 下拉选择 Agent，按用户和聊天保存 |
-| `/models`、`/model` 或“切换模型” | 打开免费模型下拉卡片，点选即切换 |
+| `/model` 或“切换模型” | 在同一张卡片中选择 Agent 和模型；`/agent`、`/models` 为兼容入口 |
 | `/status` | 当前会话、模型、执行和排队状态 |
 | `/new` | 下条消息新建会话；旧会话保留。忙时先 `/stop` |
 | `/stop` | 请求中止当前会话、语音和定时监测，取消其排队任务 |
@@ -388,7 +412,7 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ## Mac mini 麦克风语音对话
 
-新增独立的 `voice` 输入进程：说“你好，李老师”唤醒，停顿后会用配置的音色回答“我在，请说”；也支持唤醒词后直接接着说要求。本机 sherpa-onnx 负责关键词检测、Silero VAD 断句和离线 SenseVoice 转写，录音不落盘，转写后进入现有 bridge 队列。默认ASR不消耗在线额度；也保留了与xiaoli相同的硅基流动ASR接口作为显式可选后端。语音不选择 Agent：执行时读取绑定聊天当前 `/agent` 和 `/models` 设置，复用同一话题的会话、权限处理和内置工具。普通回复仅在本机显示并播报；Agent 的结构化补充提问仍通过绑定飞书聊天处理。
+新增独立的 `voice` 输入进程：说“你好，李老师”唤醒，停顿后会用配置的音色回答“我在，请说”；也支持唤醒词后直接接着说要求。本机 sherpa-onnx 负责关键词检测、Silero VAD 断句和离线 SenseVoice 转写，录音不落盘，转写后进入现有 bridge 队列。默认ASR不消耗在线额度；也保留了与xiaoli相同的硅基流动ASR接口作为显式可选后端。语音不选择 Agent：执行时读取绑定聊天当前 `/model` 设置，复用同一话题的会话、权限处理和内置工具。普通回复仅在本机显示并播报；Agent 的结构化补充提问仍通过绑定飞书聊天处理。
 
 ```bash
 # 从源码运行时先编译；发布包已包含二进制。
@@ -397,16 +421,17 @@ cargo build --locked --release
 bash scripts/setup-voice.sh
 # bridge 应已运行；目标飞书聊天至少发送过一次消息。
 scripts/run.sh voice-check
-scripts/run.sh voice
+# 在 Mac mini 本机桌面终端运行，先向 macOS 申请麦克风权限。
+bash scripts/voice-start.sh
 ```
 
-如果有多个允许的用户或聊天，在 `.env` 指定 `MR_LI_VOICE_USER_ID` 和 `MR_LI_VOICE_CHAT_ID`；只有唯一候选时才自动绑定。启动时固定为该聊天最近收到消息的话题，后续 Agent 切换实时生效。`MR_LI_VOICE_INPUT_DEVICE` 可选设备名称或数字 ID，留空使用系统默认输入；`voice-check` 列出设备并加载模型检查，不录音。Mac mini 需要系统中实际存在的麦克风输入设备，没有输入时会报错。首次在部署用户的桌面终端前台启动并允许 macOS 麦克风权限；该进程与现有无桌面登录的后台 bridge 分开启动，暂不自动安装开机录音服务。
+如果有多个允许的用户或聊天，在 `.env` 指定 `MR_LI_VOICE_USER_ID` 和 `MR_LI_VOICE_CHAT_ID`；只有唯一候选时才自动绑定。启动时固定为该聊天最近收到消息的话题，后续 Agent 切换实时生效。`MR_LI_VOICE_INPUT_DEVICE` 可选设备名称或数字 ID，留空使用系统默认输入；`voice-check` 列出设备并加载模型检查，不录音。Mac mini 需要系统中实际存在的麦克风输入设备，没有输入时会报错。首次在部署用户的桌面终端前台运行 `voice-start.sh`，通过包含 `NSMicrophoneUsageDescription` 的原生授权程序调用苹果公开API申请麦克风权限，系统弹窗点“允许”后才启动监听。`voice-check` 只检查设备/格式，不会完成首次授权；没有“终端”条目时先运行启动脚本，不手动修改TCC权限库。被明确拒绝后，需在系统麦克风隐私列表中重新允许对应终端，再启动；该进程与现有无桌面登录的后台 bridge 分开启动，暂不自动安装开机录音服务。
 
-回复继续使用 `MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和现有输出设备，不修改音色。处理要求和播报期间关闭麦克风，播报结束后重新收音；15 秒内可继续说话，超时恢复等待唤醒，说“结束对话”“停止对话”或“再见”也会回到待唤醒状态。单段最长 30 秒，停顿约 0.8 秒提交。进程退出不重发已提交的任务，也不重播旧结果；需要停止正在执行的任务时，在绑定飞书聊天使用 `/stop`。语音进程和 bridge 必须使用相同 `.env`、工作目录与数据目录。
+回复继续使用 `MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和现有输出设备，不修改音色。语音任务失败会明确播报简短提示：429限流时说“我听到了，但当前模型限流了，请稍后再试。”，其他失败说“我听到了，但这次处理失败了，请稍后再试。”；本地克隆模式部署时提前缓存这两句，避免临时合成详细错误造成长时间无反馈。完整错误仍保留在任务记录中；正常回复中提到429不会被误改成错误提示。处理要求和播报期间关闭麦克风，播报结束后重新收音；15 秒内可继续说话，超时恢复等待唤醒，说“结束对话”“停止对话”或“再见”也会回到待唤醒状态。单段最长 30 秒，停顿约 0.8 秒提交。进程退出不重发已提交的任务，也不重播旧结果；需要停止正在执行的任务时，在绑定飞书聊天使用 `/stop`。语音进程和 bridge 必须使用相同 `.env`、工作目录与数据目录。
 
 可选云语音：`python3 scripts/import-xiaoli-speech.py ../xiaoli/server` 导入xiaoli的ASR/TTS模型配置与凭证，不修改xiaoli。语音API配置保存在私有 `.data/speech/config.json`，密钥在权限为600的独立 `api-key` 文件，不进入Agent提示词、命令行或示例配置。运行 `scripts/speech-api.sh --register-voice /absolute/path/to/reference.wav` 用原参考音频注册CosyVoice克隆，成功后才把 `MR_LI_SPEECH_PROGRAM` 指向部署目录 `scripts/speech-api.sh`；不会换成anna等演示音色。云ASR须显式给 `voice-input.py` 传 `--cloud-asr`；`setup-voice.sh --cloud-asr` 可以省略离线ASR模型。新文字可由硅基流动实时合成，缓存仅用于重复请求，不依赖HF公共Demo；云服务失败时不会悄悄切换音色。
 
-Mac mini（i5-4260U、4GB、macOS12.7.6）本地ASR实测：5.4秒系统中文测试音频，识别约0.48秒，含加载的进程峰值约780MB，首次模型加载约5.07秒。`setup-voice.sh` 为macOS15之前的系统选择兼容的sherpa-onnx 1.10.46，避免新轮子依赖不存在的CoreML符号。设备已安装离线普通话音色Ting-Ting，但当前部署按用户要求保留克隆说话人，使用下文的本地ZipVoice，不切换到系统音色。
+Mac mini（i5-4260U、4GB、macOS12.7.6）本地ASR实测：5.4秒系统中文测试音频，识别约0.48秒，含加载的进程峰值约780MB，首次模型加载约5.07秒。`setup-voice.sh` 为macOS15之前的系统选择兼容的sherpa-onnx 1.10.46，避免新轮子依赖不存在的CoreML符号。macOS录音固定优先使用sounddevice轮子自带的PortAudio19.7，避免`/usr/local/lib`中的旧19.6录音库抢先被加载，后者在现代Python上可能因旧Component Manager接口报`-66748`。Python及原生库的诊断统一走stderr，JSON事件使用独立文件描述符，避免底层错误误报成“语音输入协议无效”。收音使用0.5秒缓冲；偶发溢出时重置唤醒/断句状态并丢弃残缺要求，继续等待唤醒，10秒内连续8次丢帧才退出。“麦克风已就绪”仅在实际打开输入设备后显示。设备已安装离线普通话音色Ting-Ting，但当前部署按用户要求保留克隆说话人，使用下文的本地ZipVoice，不切换到系统音色。
 
 关键词模型参考 [sherpa-onnx 官方关键词检测](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html)；在线语音参考硅基流动的[ASR](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post)、[TTS](https://docs.siliconflow.cn/docs/api/audio-speech-post)和[克隆音色注册](https://docs.siliconflow.cn/docs/api/uploads-audio-voice-post)。ASR/TTS若返回HTTP402，表示当前账户余额不足；不自动更换密钥、充值或切换到其他音色。Mac mini尚未接入实体麦克风时可先部署，收音进程保持不启动。
 
@@ -418,6 +443,7 @@ bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢�
 | --- | --- |
 | `teacher_speak` | Mac mini 喇叭播报、停止本会话语音，沿用现有音色，最多 500 字 |
 | `teacher_camera` | 摄像头照片、1–30 秒视频，直接发送到请求来源聊天 |
+| `teacher_file` | 发送工作目录内的 PDF、Word、表格、压缩包等普通文件，可指定中文文件名，单文件非空且不超过 30MB |
 | `teacher_posture` | 单次坐姿检测、开启或停止本聊天定时监测，保留原时段和采样间隔限制 |
 | `teacher_notice` | 平板首页通知、取消本用户在本聊天尚未送达的通知 |
 | `teacher_proxy` | 查询节点、按国家/地区筛选、测速排名、按用户要求切换节点或自动选择最低延迟节点 |
@@ -425,7 +451,11 @@ bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢�
 
 每次模型请求会附带一个临时上下文标识，工具只允许在该请求执行期间使用，用户、聊天和消息来源由桥接记录确定，不接受 Agent 自选用户/聊天。副作用操作使用 `operation_id` 去重，复用同一标识不会重复播报或拍摄；改变参数时不能复用同一标识。文本结果交回 Agent，照片/视频继续由现有媒体发送流程发送，避免重复文字回复。工具只回传拍摄状态和坐姿检测文字，未把摄像头画面交给 Agent，不能据此声称 Agent 已看过照片。
 
-长操作等待超时会返回任务 ID 和未确认状态，应查询原任务，不能换标识重做。通知排队不代表已送达，应查询通知状态。`/approve`、`/deny`、`/answer`、`/new`、`/agent`、`/models` 和通用 `/stop` 不作为 Agent 工具；直接命令和卡片仍可使用。这里接入的是文字自然语言调用，飞书语音消息识别尚未接入。
+长操作等待超时会返回任务 ID 和未确认状态，应查询原任务，不能换标识重做。通知排队不代表已送达，应查询通知状态。`/approve`、`/deny`、`/answer`、`/new`、`/model`（含兼容入口）和通用 `/stop` 不作为 Agent 工具；直接命令和卡片仍可使用。这里接入的是文字自然语言调用，飞书语音消息识别尚未接入。
+
+可以对任意 Agent 说“把报告生成 PDF 发给我”或“把这个目录压缩后发到聊天”。Agent 先把文件保存到 `MR_LI_WORKSPACE`，再用 `teacher_file` 提交 `path`（相对工作目录或目录内绝对路径），可选 `file_name` 设置接收者看到的名字。工具不接受收件人或聊天参数，附件发往原请求的聊天；目录本身不能直接发送，工作目录外路径、指向目录外的符号链接、空文件和超限文件会拒绝。
+
+桥接先制作有大小限制的临时副本，再通过飞书 [IM 文件上传接口](https://open.feishu.cn/document/server-docs/im-v1/file/create) 上传，使用原生 `file` 消息发送附件。需要应用的 `im:resource` 或 `im:resource:upload` 资源上传权限以及现有的发消息权限。`file_delivery=pending` 表示已上传、等待发送，只有 `sent` 表示消息接口已确认发送，不代表用户已阅读。上传后的文件标识会保存到任务结果，发送失败或桥接重启后可重试原消息，不重新上传；相同 `operation_id` 的调用复用原任务。上传中可 `/stop`，中断时结果未确认的操作不会自动重跑。本地路径和 Markdown 文件链接不会被当成附件。`/channel` 会显示文件发送入口，`teacher_query task` 可查询原任务状态。
 
 验证：`cargo test --locked builtin` 覆盖参数边界、请求失效、用户/会话隔离、去重、本机接口认证和查询。`scripts/smoke-builtin.py bin/mr-li` 检查 stdio 握手和真实工具目录，不播放声音或拍摄。
 
@@ -444,6 +474,8 @@ bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢�
 程序自带 `ha-mcp` stdio MCP，工具名为 `ha_devices`、`ha_commands`、`ha_control`。bridge 会向 OpenCode 自动注册 `home_assistant` MCP，每 30 秒检查并恢复连接；其他 ACP Agent 在创建/恢复会话时传入 MCP，TRAE 在 thread 配置中传入。可对 Agent 说“查看家里有哪些设备”“投影仪支持哪些操作”“把客厅灯调到 40%”。名称有歧义时先澄清，不猜实体。切换 Agent 后需创建或恢复会话，才能加载新工具。
 
 MCP 配置仅传入程序路径、`ha-mcp` 子命令和私有 `.env` 路径，令牌由该工具进程读取，不进入模型参数、工具清单或错误响应。环境变量可覆盖 `.env`；给 Agent 自动接入时将 HA 配置保存在该 `.env` 或它引用的令牌文件中。`ha-mcp` 的 stdout 仅输出 JSON-RPC，运行日志走 stderr。
+
+Cline 3.0.74 会忽略 ACP 会话传入的 `mcpServers`（[上游问题 #15716](https://github.com/cline/cline/issues/15716)）。桥接在每次启动 Cline 时额外生成权限为 `600` 的 `.data/agents/cline/mcp-settings.json`，通过官方 `CLINE_MCP_SETTINGS_PATH` 入口加载 HA、平板和李老师内置工具；同时设置 `CLINE_SESSION_BACKEND_MODE=local`，避免复用未继承配置的后台 hub。不修改用户全局 Cline 配置。此文件只包含桥接管理的工具，HA 令牌仍由工具进程读取。升级桥接后重启服务即可，已有会话在恢复时也会加载工具，无需清除聊天记录。
 
 工具通过 HA WebSocket API 读取设备、实体、房间、状态和服务描述，按 HA target、supported_features、属性过滤操作与参数，检查必填参数和简单数值范围；不支持的 selector 约束保守处理，复杂参数最终由 HA 验证。跨集成域的操作需要显式匹配实体域。控制只允许单个实体，参数不能另传 `entity_id`、`device_id`、`area_id`、`label_id` 或 `target` 扩大控制范围。HA 的实体权限由令牌用户决定。
 

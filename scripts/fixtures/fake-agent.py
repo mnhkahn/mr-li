@@ -22,6 +22,10 @@ for line in sys.stdin:
         log.write(json.dumps(r)+'\n')
     m, p = r.get('method'), r.get('params',{})
     if m == 'initialize':
+        if os.environ.get('CLINE_MCP_SETTINGS_PATH'):
+            assert os.environ.get('CLINE_SESSION_BACKEND_MODE') == 'local'
+            with open('cline-settings-path', 'w') as settings:
+                settings.write(os.environ['CLINE_MCP_SETTINGS_PATH'])
         reply(r, {'protocolVersion':1,'agentCapabilities':{'loadSession':True},'authMethods':[{'id':'oauth-personal'}]})
     elif m == 'account/read':
         reply(r, {'account':{'type':'trae','userId':'test'}})

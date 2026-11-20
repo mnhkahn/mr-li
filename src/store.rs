@@ -75,6 +75,16 @@ impl Store {
                 [],
             )?;
         }
+        let model_columns = c
+            .prepare("PRAGMA table_info(model_cards)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !model_columns.iter().any(|s| s == "card") {
+            c.execute(
+                "ALTER TABLE model_cards ADD COLUMN card TEXT NOT NULL DEFAULT '{}'",
+                [],
+            )?;
+        }
         let columns = c
             .prepare("PRAGMA table_info(posture_report_state)")?
             .query_map([], |r| r.get::<_, String>(1))?
@@ -593,6 +603,13 @@ impl Store {
         )?;
         Ok(())
     }
+    pub fn finish_failure(&self, id: &str, text: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "UPDATE jobs SET status=CASE WHEN substr(id,1,8)='builtin:' OR substr(id,1,6)='voice:' THEN 'done' ELSE 'replying' END,result=?2,output_kind=CASE WHEN substr(id,1,6)='voice:' THEN 'voice_error' ELSE 'text' END WHERE id=?1",
+            params![id, text],
+        )?;
+        Ok(())
+    }
     pub fn finish_output(&self, id: &str, kind: &str, value: &serde_json::Value) -> Result<()> {
         self.0.lock().unwrap().execute(
             "UPDATE jobs SET status=CASE WHEN substr(id,1,6)='voice:' THEN 'done' ELSE 'replying' END,result=?2,output_kind=?3 WHERE id=?1",
@@ -652,6 +669,7 @@ impl Store {
         )?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn register_agent_card(&self, token: &str, key: &str) -> Result<()> {
         self.0.lock().unwrap().execute(
             "INSERT INTO agent_cards(token,origin_key) VALUES (?1,?2)",
@@ -764,12 +782,33 @@ impl Store {
         )?;
         Ok(())
     }
+    #[cfg(test)]
     pub fn register_model_card(&self, token: &str, key: &str) -> Result<()> {
         self.0.lock().unwrap().execute(
             "INSERT INTO model_cards(token,origin_key) VALUES (?1,?2)",
             params![token, key],
         )?;
         Ok(())
+    }
+    pub fn register_runtime_card(
+        &self,
+        token: &str,
+        key: &str,
+        card: &serde_json::Value,
+    ) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO model_cards(token,origin_key,card) VALUES (?1,?2,?3)",
+            params![token, key, card.to_string()],
+        )?;
+        Ok(())
+    }
+    pub fn runtime_card(&self, token: &str) -> Result<serde_json::Value> {
+        let card: String = self.0.lock().unwrap().query_row(
+            "SELECT card FROM model_cards WHERE token=?1 AND expires>unixepoch()",
+            [token],
+            |r| r.get(0),
+        )?;
+        Ok(serde_json::from_str(&card)?)
     }
     pub fn model_card(&self, token: &str) -> Result<Option<ModelCard>> {
         Ok(self.0.lock().unwrap().query_row("SELECT origin_key,message_id FROM model_cards WHERE token=?1 AND expires>unixepoch()",
@@ -793,6 +832,22 @@ impl Store {
         let tx = c.transaction()?;
         tx.execute("INSERT INTO selected_models(scope,model) VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET model=excluded.model",params![scope,model])?;
         tx.execute("UPDATE jobs SET status='replying',result=?2,output_kind='model_card_update' WHERE id=?1",params![id,card.to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn switch_runtime_and_finish(
+        &self,
+        id: &str,
+        scope: &str,
+        agent: crate::agent::Kind,
+        model: &str,
+        card: &serde_json::Value,
+    ) -> Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        tx.execute("INSERT INTO selected_agents VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET agent=excluded.agent", params![scope, agent.id()])?;
+        tx.execute("INSERT INTO selected_models(scope,model) VALUES (?1,?2) ON CONFLICT(scope) DO UPDATE SET model=excluded.model", params![crate::models::model_scope(scope, agent), model])?;
+        tx.execute("UPDATE jobs SET status='replying',result=?2,output_kind='model_card_update' WHERE id=?1", params![id, card.to_string()])?;
         tx.commit()?;
         Ok(())
     }
@@ -845,6 +900,47 @@ impl Store {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unified_choices_and_card_snapshot_survive_restart_and_expire() -> anyhow::Result<()> {
+        use super::*;
+        use crate::{agent::Kind, models};
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        std::fs::create_dir(&dir)?;
+        let path = dir.join("test.db");
+        let scope = r#"["workspace","owner","chat"]"#;
+        let card = models::runtime_picker(
+            &models::runtime_models(None, None),
+            "cline:auto",
+            "pair",
+            true,
+        );
+        {
+            let s = Store::open(&path)?;
+            s.register_runtime_card("pair", "key", &card)?;
+            s.attach_model_card("pair", "om_pair")?;
+            s.switch_runtime_and_finish("job", scope, Kind::OpenCode, "opencode/free", &card)?;
+            s.switch_runtime_and_finish("job", scope, Kind::Cline, "cline-free/test", &card)?;
+        }
+        {
+            let s = Store::open(&path)?;
+            assert_eq!(s.agent(scope)?, "cline");
+            assert_eq!(s.model(scope)?.as_deref(), Some("opencode/free"));
+            assert_eq!(
+                s.model(&models::model_scope(scope, Kind::Cline))?
+                    .as_deref(),
+                Some("cline-free/test")
+            );
+            assert_eq!(s.runtime_card("pair")?, card);
+            assert_eq!(s.model_card("pair")?.unwrap().message_id, "om_pair");
+            s.0.lock()
+                .unwrap()
+                .execute("UPDATE model_cards SET expires=0 WHERE token='pair'", [])?;
+            assert!(s.model_card("pair")?.is_none());
+            assert!(s.runtime_card("pair").is_err());
+        }
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
     #[test]
     fn agent_choices_and_sessions_are_durable_and_separate() -> anyhow::Result<()> {
         use super::*;

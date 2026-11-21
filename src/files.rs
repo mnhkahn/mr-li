@@ -17,6 +17,11 @@ pub struct Request {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub image: bool,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 pub fn is_send(text: &str) -> bool {
     text.starts_with(PREFIX)
@@ -33,9 +38,15 @@ pub fn command(path: &str, file_name: Option<&str>) -> Result<String> {
         "{PREFIX}{}",
         serde_json::to_string(&Request {
             path: path.into(),
-            file_name: file_name.map(str::to_owned)
+            file_name: file_name.map(str::to_owned),
+            image: false
         })?
     ))
+}
+pub fn image_command(path: &str, file_name: Option<&str>) -> Result<String> {
+    let mut request = parse(&command(path, file_name)?)?;
+    request.image = true;
+    Ok(format!("{PREFIX}{}", serde_json::to_string(&request)?))
 }
 pub fn parse(text: &str) -> Result<Request> {
     Ok(serde_json::from_str(
@@ -180,6 +191,7 @@ mod tests {
             let request = Request {
                 path: path.into(),
                 file_name: Some("result.txt".into()),
+                image: false,
             };
             assert!(prepare(&cfg, &request).await.is_err(), "accepted {path}");
         }

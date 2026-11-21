@@ -401,6 +401,57 @@ impl Feishu {
             .context("飞书上传未返回媒体标识")?
             .to_owned())
     }
+    pub async fn upload_image(&self, file: &crate::files::Prepared) -> Result<String> {
+        ensure!(file.size < 10 * 1024 * 1024, "图片必须小于10MB");
+        use tokio::io::AsyncReadExt;
+        let mut header = [0u8; 16];
+        let n = tokio::fs::File::open(&file.path)
+            .await?
+            .read(&mut header)
+            .await?;
+        let mime = image_mime(&header[..n])
+            .context("不支持的图片格式，请使用PNG、JPEG、GIF或WebP；其他格式可作为文件发送")?;
+        let part = reqwest::multipart::Part::file(&file.path)
+            .await?
+            .file_name(file.name.clone())
+            .mime_str(mime)?;
+        let response = self
+            .http
+            .post(format!(
+                "{}/open-apis/im/v1/images",
+                self.cfg.feishu_base_url
+            ))
+            .bearer_auth(self.token().await?)
+            .multipart(
+                reqwest::multipart::Form::new()
+                    .text("image_type", "message")
+                    .part("image", part),
+            )
+            .timeout(Duration::from_secs(90))
+            .send()
+            .await
+            .map_err(|_| anyhow::anyhow!("飞书图片上传网络请求失败"))?;
+        ensure!(
+            response.status().is_success(),
+            "飞书图片上传 HTTP {}",
+            response.status().as_u16()
+        );
+        let value: Value = response.json().await.context("飞书图片上传响应格式错误")?;
+        let code = value["code"].as_i64();
+        if matches!(code, Some(99991663 | 99991668)) {
+            self.token.lock().await.0.clear();
+        }
+        ensure!(
+            code == Some(0),
+            "飞书图片上传错误码 {:?}（请确认应用已开通 im:resource 或 im:resource:upload 权限）",
+            code
+        );
+        Ok(value["data"]["image_key"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .context("飞书上传未返回图片标识")?
+            .into())
+    }
     /// Generic files use the IM resource API, followed by a native file message.
     pub async fn upload_file(&self, file: &crate::files::Prepared) -> Result<String> {
         let part = reqwest::multipart::Part::file(&file.path)
@@ -977,6 +1028,36 @@ pub fn parse_job(v: &Value, c: &Config, bot: &str) -> Result<Option<Job>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn outbound_images_reject_unsupported_content_and_oversize_before_upload() -> Result<()> {
+        let feishu = Feishu::new(Arc::new(Config::fixture()))?;
+        let path =
+            std::env::temp_dir().join(format!("mr-li-invalid-image-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, b"this is not a PNG").await?;
+        let mut file = crate::files::Prepared {
+            path,
+            name: "looks-like.png".into(),
+            size: 17,
+        };
+        assert!(
+            feishu
+                .upload_image(&file)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("不支持的图片格式")
+        );
+        file.size = 10 * 1024 * 1024;
+        assert!(
+            feishu
+                .upload_image(&file)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("小于10MB")
+        );
+        Ok(())
+    }
     #[tokio::test]
     async fn group_messages_create_top_level_text_images_videos_and_cards() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

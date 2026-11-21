@@ -268,10 +268,20 @@ impl Bridge {
         );
         let request = crate::files::parse(&j.text)?;
         let file = crate::files::prepare(&self.cfg, &request).await?;
-        let key = self.feishu.upload_file(&file).await?;
-        self.store.finish_output(&j.id, "file_attachment", &json!({
-            "msg_type":"file", "content":{"file_key":key}, "file_name":file.name, "size":file.size
-        }))?;
+        let (kind, content) = if request.image {
+            let key = self.feishu.upload_image(&file).await?;
+            ("image", json!({"image_key":key}))
+        } else {
+            let key = self.feishu.upload_file(&file).await?;
+            ("file", json!({"file_key":key}))
+        };
+        self.store.finish_output(
+            &j.id,
+            "file_attachment",
+            &json!({
+                "msg_type":kind, "content":content, "file_name":file.name, "size":file.size
+            }),
+        )?;
         Ok(())
     }
     async fn record_posture(
@@ -327,7 +337,7 @@ impl Bridge {
         };
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
-            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求。用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
+            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求。用户要求发送图片时先保存到工作目录，再调用teacher_image发送原生图片；用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
         let prompt = if crate::voice::is_job(j) {
@@ -405,7 +415,7 @@ impl Bridge {
                         "飞书"
                     }
                 );
-                text.push_str("\n文件发送：已接入飞书附件，可发送工作目录内非空且不超过30MB的文件");
+                text.push_str("\n文件发送：teacher_file 发送工作目录内非空且不超过30MB的附件；teacher_image 发送小于10MB的PNG/JPEG/GIF/WebP原生图片");
                 if let Some(tablet) = &self.tablet {
                     let devices = tablet.devices_status()?;
                     if devices.is_empty() {
@@ -1556,9 +1566,28 @@ mod tests {
     #[tokio::test]
     async fn file_upload_and_durable_native_delivery_survive_retry_and_restart()
     -> anyhow::Result<()> {
+        attachment_delivery(false).await
+    }
+    #[tokio::test]
+    async fn image_upload_and_durable_native_delivery_survive_retry_and_restart()
+    -> anyhow::Result<()> {
+        attachment_delivery(true).await
+    }
+    async fn attachment_delivery(image: bool) -> anyhow::Result<()> {
         use super::*;
         use axum::{Json, Router, extract::Multipart, routing::post};
         use std::sync::Mutex;
+        let data: &'static [u8] = if image {
+            b"\x89PNG\r\n\x1a\ntest image"
+        } else {
+            b"%PDF-1.4 test report"
+        };
+        let kind = if image { "image" } else { "file" };
+        let name = if image {
+            "图片 终稿.jpg"
+        } else {
+            "中文报告 终稿.pdf"
+        };
         let uploads = Arc::new(Mutex::new(0));
         let sends = Arc::new(Mutex::new(Vec::<Value>::new()));
         let count = uploads.clone();
@@ -1571,22 +1600,31 @@ mod tests {
                 }),
             )
             .route(
-                "/open-apis/im/v1/files",
+                if image { "/open-apis/im/v1/images" } else { "/open-apis/im/v1/files" },
                 post(move |mut multipart: Multipart| {
                     let count = count.clone();
                     async move {
                         let mut fields = std::collections::HashMap::new();
                         while let Some(field) = multipart.next_field().await.unwrap() {
+                            if field.name() == Some("image") {
+                                assert_eq!(field.file_name(), Some(name));
+                                assert_eq!(field.content_type(), Some("image/png"));
+                            }
                             fields.insert(
                                 field.name().unwrap().to_owned(),
                                 field.bytes().await.unwrap().to_vec(),
                             );
                         }
-                        assert_eq!(fields["file_type"], b"stream");
-                        assert_eq!(fields["file_name"], "中文报告 终稿.pdf".as_bytes());
-                        assert_eq!(fields["file"], b"%PDF-1.4 test report");
+                        if image {
+                            assert_eq!(fields["image_type"], b"message");
+                            assert_eq!(fields["image"], data);
+                        } else {
+                            assert_eq!(fields["file_type"], b"stream");
+                            assert_eq!(fields["file_name"], name.as_bytes());
+                            assert_eq!(fields["file"], data);
+                        }
                         *count.lock().unwrap() += 1;
-                        Json(json!({"code":0,"data":{"file_key":"file_report"}}))
+                        Json(json!({"code":0,"data":{"file_key":"file_report","image_key":"img_report"}}))
                     }
                 }),
             )
@@ -1596,11 +1634,11 @@ mod tests {
                     let sent = sent.clone();
                     async move {
                         assert_eq!(body["receive_id"], "oc_chat");
-                        assert_eq!(body["msg_type"], "file");
+                        assert_eq!(body["msg_type"], kind);
                         assert_eq!(
                             serde_json::from_str::<Value>(body["content"].as_str().unwrap())
                                 .unwrap(),
-                            json!({"file_key":"file_report"})
+                            if image { json!({"image_key":"img_report"}) } else { json!({"file_key":"file_report"}) }
                         );
                         let mut sent = sent.lock().unwrap();
                         sent.push(body);
@@ -1629,7 +1667,7 @@ mod tests {
         cfg.feishu_base_url = format!("http://{address}");
         std::fs::create_dir_all(&cfg.workspace)?;
         std::fs::create_dir_all(&cfg.data_dir)?;
-        std::fs::write(cfg.workspace.join("report.pdf"), b"%PDF-1.4 test report")?;
+        std::fs::write(cfg.workspace.join("report.pdf"), data)?;
         let cfg = Arc::new(cfg);
         let db = cfg.data_dir.join("jobs.sqlite3");
         let store = Arc::new(Store::open(&db)?);
@@ -1644,7 +1682,11 @@ mod tests {
             id: "builtin:file-test".into(),
             key: json!([cfg.workspace, "ou_owner", "oc_chat", "root"]).to_string(),
             message_id: "om_source".into(),
-            text: crate::files::command("report.pdf", Some("中文报告 终稿.pdf"))?,
+            text: if image {
+                crate::files::image_command("report.pdf", Some(name))?
+            } else {
+                crate::files::command("report.pdf", Some(name))?
+            },
             result: String::new(),
             sent: 0,
         };

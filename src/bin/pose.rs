@@ -74,6 +74,8 @@ struct Report {
     head_clearance_ratio: Option<f32>,
     head_tilt_relative_shoulders_deg: Option<f32>,
     assessment: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reminder_reason: Option<&'static str>,
     note: String,
 }
 fn dot(img: &mut RgbImage, x: i32, y: i32, r: i32, color: Rgb<u8>) {
@@ -199,10 +201,10 @@ fn assess_back_view(
         .map(|(h, s)| (h - s + 90.).rem_euclid(180.) - 90.);
     // Fixed rear camera: user-labelled low-head ~0.31, upright ~0.54.
     // A wide uncertain band prevents claiming borderline frames are upright.
-    let (assessment, reason) = if clearance < 0.42 {
-        ("needs_reminder", "疑似低头过多，请抬头、坐正")
-    } else if tilt.is_some_and(|t| t.abs() >= 18.) {
-        ("needs_reminder", "疑似歪头，请把头摆正")
+    let (assessment, reason) = if let Some(reminder) =
+        head_reminder(clearance < 0.42, tilt.is_some_and(|t| t.abs() >= 18.))
+    {
+        reminder
     } else if clearance >= 0.46 {
         (
             "no_obvious_issue",
@@ -219,6 +221,14 @@ fn assess_back_view(
             "{reason}。头肩高度比 {clearance:.2}；试验阈值 <0.42 提醒，0.42–0.46 待确认。固定背面机位规则，已用一张低头和一张坐直样本校准，准确率仍需验证。"
         ),
     )
+}
+fn head_reminder(low: bool, tilted: bool) -> Option<(&'static str, &'static str)> {
+    match (low, tilted) {
+        (true, true) => Some(("head_low_and_tilted", "疑似低头和歪头，请抬头，把头摆正")),
+        (true, false) => Some(("head_low", "疑似低头过多，请抬头坐正")),
+        (false, true) => Some(("head_tilted", "疑似歪头，请把头摆正")),
+        (false, false) => None,
+    }
 }
 fn assess_head_neck(p: &[Point]) -> Option<(&'static str, String)> {
     if [5, 6, 17, 18]
@@ -256,10 +266,8 @@ fn assess_head_neck(p: &[Point]) -> Option<(&'static str, String)> {
         return None;
     }
     let tilt = (dy * hy + dx * hx).atan2(dy * hx - dx * hy).to_degrees();
-    let (result, reason) = if height < 0.82 {
-        ("needs_reminder", "疑似低头过多，请抬头坐正")
-    } else if tilt.abs() >= 18. {
-        ("needs_reminder", "疑似歪头，请把头摆正")
+    let (result, reason) = if let Some(reminder) = head_reminder(height < 0.82, tilt.abs() >= 18.) {
+        reminder
     } else if height >= 0.95 {
         ("no_obvious_issue", "本次未触发提醒")
     } else {
@@ -475,6 +483,10 @@ fn main() -> Result<()> {
         measurement = "head_neck";
     }
     let count = points.len();
+    let (assessment, reminder_reason) = match assessment {
+        "head_low" | "head_tilted" | "head_low_and_tilted" => ("needs_reminder", Some(assessment)),
+        _ => (assessment, None),
+    };
     let report = Report {
         model,
         image_size: [image.width(), image.height()],
@@ -494,6 +506,7 @@ fn main() -> Result<()> {
         head_clearance_ratio: clearance,
         head_tilt_relative_shoulders_deg: relative_tilt,
         assessment,
+        reminder_reason,
         note: format!("{explanation} 关键点：{high}/{count} 个点分数 ≥ 0.5。"),
     };
     if let Some(parent) = prefix.parent() {
@@ -540,7 +553,7 @@ fn main() -> Result<()> {
             &mut painted,
             ((p[3].x + p[4].x) / 2., (p[3].y + p[4].y) / 2.),
             ((p[5].x + p[6].x) / 2., (p[5].y + p[6].y) / 2.),
-            if assessment == "needs_reminder" {
+            if report.reminder_reason.is_some() {
                 Rgb([255, 70, 70])
             } else {
                 cyan
@@ -664,14 +677,14 @@ mod tests {
             }
             points
         };
-        assert_eq!(assess_back_view(&make(30.), 300).2, "needs_reminder");
+        assert_eq!(assess_back_view(&make(30.), 300).2, "head_low");
         assert_eq!(assess_back_view(&make(44.), 300).2, "observe");
         assert_eq!(assess_back_view(&make(70.), 300).2, "no_obvious_issue");
         // User-labelled examples (ratios from original, unannotated camera frames).
-        assert_eq!(assess_back_view(&make(30.8174), 300).2, "needs_reminder");
+        assert_eq!(assess_back_view(&make(30.8174), 300).2, "head_low");
         assert_eq!(assess_back_view(&make(54.), 300).2, "no_obvious_issue");
         // Parent-labelled 18:42 must remind; 18:48 must not remind (RTMPose-M readings).
-        assert_eq!(assess_back_view(&make(40.897_49), 300).2, "needs_reminder");
+        assert_eq!(assess_back_view(&make(40.897_49), 300).2, "head_low");
         assert_eq!(
             assess_back_view(&make(47.206584), 300).2,
             "no_obvious_issue"
@@ -689,14 +702,17 @@ mod tests {
         points = make(70.);
         points[4].y += 20.;
         points[3].y -= 20.;
-        assert_eq!(assess_back_view(&points, 300).2, "needs_reminder");
+        assert_eq!(assess_back_view(&points, 300).2, "head_tilted");
+        points[3].y += 40.;
+        points[4].y += 40.;
+        assert_eq!(assess_back_view(&points, 300).2, "head_low_and_tilted");
         // Translation and scale do not change the fixed-camera head/shoulder ratio.
         let mut scaled = make(30.);
         for p in &mut scaled {
             p.x = p.x * 2. + 25.;
             p.y = p.y * 2. + 50.;
         }
-        assert_eq!(assess_back_view(&scaled, 600).2, "needs_reminder");
+        assert_eq!(assess_back_view(&scaled, 600).2, "head_low");
     }
     #[test]
     fn head_neck_fallback_requires_confident_points_and_valid_collar_geometry() {
@@ -723,8 +739,13 @@ mod tests {
             p
         };
         assert_eq!(assess_head_neck(&make(100.)).unwrap().0, "no_obvious_issue");
-        assert_eq!(assess_head_neck(&make(75.)).unwrap().0, "needs_reminder");
+        assert_eq!(assess_head_neck(&make(75.)).unwrap().0, "head_low");
         assert_eq!(assess_head_neck(&make(90.)).unwrap().0, "observe");
+        let mut p = make(100.);
+        p[17].x += 30.;
+        assert_eq!(assess_head_neck(&p).unwrap().0, "head_tilted");
+        p[17].y += 25.;
+        assert_eq!(assess_head_neck(&p).unwrap().0, "head_low_and_tilted");
         let mut p = make(100.);
         p[18].score = 0.59;
         assert!(assess_head_neck(&p).is_none());

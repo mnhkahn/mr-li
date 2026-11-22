@@ -107,8 +107,10 @@ pub(super) fn paint(img: &mut RgbImage, report: &Report) -> Result<()> {
     } else {
         margin
     };
-    let state = match report.assessment {
-        "needs_reminder" => "需要提醒：疑似低头或歪头",
+    let state = match report.reminder_reason.unwrap_or(report.assessment) {
+        "head_low" => "需要提醒：疑似低头",
+        "head_tilted" => "需要提醒：疑似歪头",
+        "head_low_and_tilted" => "需要提醒：疑似低头和歪头",
         "no_obvious_issue" => "本次未触发提醒",
         "observe" => "临界待观察，暂不提醒",
         "away" => "离座或非坐姿，本次不评",

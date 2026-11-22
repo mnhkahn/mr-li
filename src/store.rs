@@ -40,6 +40,19 @@ pub struct Reminder {
     pub text: String,
     pub status: String,
 }
+fn posture_label(code: i64) -> &'static str {
+    match code {
+        code if code == Assessment::UnspecifiedReminder as i64 => "需提醒，原因未记录",
+        code if code == Assessment::NoObviousIssue as i64 => "未触发提醒",
+        code if code == Assessment::Away as i64 => "离座/非坐姿画面",
+        code if code == Assessment::Observe as i64 => "临界待观察",
+        code if code == Assessment::HeadLow as i64 => "疑似低头",
+        code if code == Assessment::HeadTilted as i64 => "疑似歪头",
+        code if code == Assessment::HeadLowAndTilted as i64 => "疑似低头和歪头",
+        _ => "无法判断",
+    }
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
@@ -594,20 +607,15 @@ impl Store {
             [&j.key],
             |r| r.get(0),
         )?;
-        let code = match assessment {
-            Assessment::NeedsReminder => 0,
-            Assessment::NoObviousIssue => 1,
-            Assessment::Unknown => 2,
-            Assessment::Away => 3,
-            Assessment::Observe => 4,
-        };
         let fresh = if enabled {
-            tx.execute("INSERT OR IGNORE INTO posture_samples(job_id,scope,recorded_at,assessment,speech_failed) VALUES (?1,?2,unixepoch(),?3,?4)",params![j.id,scope,code,speech_error.is_some()])?>0
+            tx.execute("INSERT OR IGNORE INTO posture_samples(job_id,scope,recorded_at,assessment,speech_failed) VALUES (?1,?2,unixepoch(),?3,?4)",params![j.id,scope,assessment as i64,speech_error.is_some()])?>0
         } else {
             false
         };
         if fresh {
-            tx.execute("UPDATE posture_report_state SET bad=bad+?2,clear=clear+?3,unknown=unknown+?4,speech_failures=speech_failures+?5,last_speech_error=CASE WHEN ?5 THEN ?6 ELSE last_speech_error END,last_assessment=?7,away=away+?8,observe=observe+?9 WHERE scope=?1",params![scope,assessment==Assessment::NeedsReminder,assessment==Assessment::NoObviousIssue,assessment==Assessment::Unknown,speech_error.is_some(),speech_error.unwrap_or(""),match assessment {Assessment::NeedsReminder=>0,Assessment::NoObviousIssue=>1,Assessment::Unknown=>2,Assessment::Away=>3,Assessment::Observe=>4},assessment==Assessment::Away,assessment==Assessment::Observe])?;
+            let needs_reminder =
+                assessment == Assessment::UnspecifiedReminder || assessment.speech().is_some();
+            tx.execute("UPDATE posture_report_state SET bad=bad+?2,clear=clear+?3,unknown=unknown+?4,speech_failures=speech_failures+?5,last_speech_error=CASE WHEN ?5 THEN ?6 ELSE last_speech_error END,last_assessment=?7,away=away+?8,observe=observe+?9 WHERE scope=?1",params![scope,needs_reminder,assessment==Assessment::NoObviousIssue,assessment==Assessment::Unknown,speech_error.is_some(),speech_error.unwrap_or(""),assessment as i64,assessment==Assessment::Away,assessment==Assessment::Observe])?;
             tx.execute("UPDATE posture_watch SET last_note=?2,last_at=unixepoch(),next_due=CASE WHEN next_due<unixepoch() THEN unixepoch()+interval_seconds ELSE next_due END WHERE origin_key=?1 AND enabled=1",params![j.key,note])?;
         }
         tx.execute(
@@ -653,19 +661,21 @@ impl Store {
         )) = row
         {
             let total = bad + clear + unknown + away + observe;
+            let (low, tilted, both): (u64, u64, u64) = tx.query_row(
+                "SELECT count(*) FILTER (WHERE assessment=?2), count(*) FILTER (WHERE assessment=?3),
+                        count(*) FILTER (WHERE assessment=?4) FROM posture_samples WHERE scope=?1",
+                params![scope, Assessment::HeadLow as i64, Assessment::HeadTilted as i64, Assessment::HeadLowAndTilted as i64],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            let unspecified = bad.saturating_sub(low + tilted + both);
+            let unspecified_note = if unspecified == 0 {
+                String::new()
+            } else {
+                format!("；需提醒但原因未记录 {unspecified} 次")
+            };
+            let latest = posture_label(last_assessment);
             let mut note = format!(
-                "坐姿汇总（过去约 {minutes} 分钟）\n检查 {total} 次：疑似低头或歪头 {bad} 次；未触发提醒 {clear} 次；离座/非坐姿画面 {away} 次；临界待观察 {observe} 次；无法判断 {unknown} 次。\n这些是间隔采样次数，不代表持续时长。\n最近结果：{}",
-                if total == 0 {
-                    "尚未完成采样"
-                } else {
-                    match last_assessment {
-                        0 => "疑似低头或歪头，请抬头坐正",
-                        1 => "未触发低头或歪头提醒",
-                        3 => "未检测到学习位内可判断的坐姿目标",
-                        4 => "已识别头肩指标，当前处于临界待观察区间",
-                        _ => "无法判断坐姿",
-                    }
-                }
+                "坐姿汇总（过去约 {minutes} 分钟）\n检查 {total} 次：仅低头 {low} 次；仅歪头 {tilted} 次；同时低头和歪头 {both} 次{unspecified_note}；未触发提醒 {clear} 次；离座/非坐姿画面 {away} 次；临界待观察 {observe} 次；无法判断 {unknown} 次。\n这些是间隔采样次数，不代表持续时长。\n最近结果：{latest}"
             );
             let mut details = {
                 let mut q=tx.prepare("SELECT strftime('%H:%M',recorded_at,'unixepoch','+8 hours'),assessment,speech_failed FROM posture_samples WHERE scope=?1 ORDER BY recorded_at DESC,rowid DESC LIMIT 60")?;
@@ -688,13 +698,7 @@ impl Store {
                     ));
                 }
                 for (time, assessment, speech_failed) in details {
-                    let label = match assessment {
-                        0 => "疑似低头或歪头",
-                        1 => "未触发提醒",
-                        3 => "离座/非坐姿画面",
-                        4 => "临界待观察",
-                        _ => "无法判断",
-                    };
+                    let label = posture_label(assessment);
                     note.push_str(&format!(
                         "\n{time} · {label}{}",
                         if speech_failed {
@@ -1300,7 +1304,10 @@ mod tests {
         s.start_posture_watch_at(&j, 60, active_time())?;
         s.set_homework_state(HomeworkState::ActiveSince(active_time()), active_time())?;
         for assessment in [
-            Assessment::NeedsReminder,
+            Assessment::UnspecifiedReminder,
+            Assessment::HeadLow,
+            Assessment::HeadTilted,
+            Assessment::HeadLowAndTilted,
             Assessment::NoObviousIssue,
             Assessment::Unknown,
             Assessment::Away,
@@ -1323,12 +1330,21 @@ mod tests {
         let reports = s.jobs("replying")?;
         assert_eq!(reports.len(), 1);
         assert_eq!(s.output_kind(&reports[0].id)?, "posture_report");
-        assert!(reports[0].result.contains("检查 5 次"));
+        assert!(reports[0].result.contains("检查 8 次"));
         assert!(reports[0].result.contains("无法判断 1 次"));
-        assert!(reports[0].result.contains("播报失败 5 次"));
+        assert!(reports[0].result.contains("播报失败 8 次"));
         assert!(reports[0].result.contains("每分钟记录（北京时间）"));
-        assert_eq!(reports[0].result.matches(" · ").count(), 5);
+        assert_eq!(reports[0].result.matches(" · ").count(), 8);
         assert!(reports[0].result.contains(" · 未触发提醒"));
+        assert!(
+            reports[0]
+                .result
+                .contains("仅低头 1 次；仅歪头 1 次；同时低头和歪头 1 次")
+        );
+        assert!(reports[0].result.contains("需提醒但原因未记录 1 次"));
+        assert!(reports[0].result.contains(" · 疑似低头（"));
+        assert!(reports[0].result.contains(" · 疑似歪头（"));
+        assert!(reports[0].result.contains(" · 疑似低头和歪头（"));
         assert!(reports[0].result.contains(" · 无法判断"));
         assert!(reports[0].result.contains("离座/非坐姿画面 1 次"));
         assert!(reports[0].result.contains("临界待观察 1 次"));

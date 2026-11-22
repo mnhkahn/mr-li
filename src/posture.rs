@@ -231,17 +231,31 @@ pub struct Observation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i64)]
 pub enum Assessment {
-    NeedsReminder,
-    NoObviousIssue,
-    Unknown,
-    Away,
-    Observe,
+    UnspecifiedReminder = 0,
+    NoObviousIssue = 1,
+    Unknown = 2,
+    Away = 3,
+    Observe = 4,
+    HeadLow = 5,
+    HeadTilted = 6,
+    HeadLowAndTilted = 7,
 }
 impl Assessment {
     pub fn from_report(value: &Value) -> Self {
-        match value.as_str() {
-            Some("needs_reminder") => Self::NeedsReminder,
+        match value["assessment"].as_str() {
+            Some("needs_reminder") => match value["reminder_reason"].as_str() {
+                Some("head_low") => Self::HeadLow,
+                Some("head_tilted") => Self::HeadTilted,
+                Some("head_low_and_tilted") => Self::HeadLowAndTilted,
+                // Older workers reported the cause only in the note.
+                _ => match value["note"].as_str().unwrap_or_default() {
+                    note if note.starts_with("疑似低头过多") => Self::HeadLow,
+                    note if note.starts_with("疑似歪头，") => Self::HeadTilted,
+                    _ => Self::UnspecifiedReminder,
+                },
+            },
             Some("no_obvious_issue") => Self::NoObviousIssue,
             Some("away") => Self::Away,
             Some("observe") => Self::Observe,
@@ -250,9 +264,12 @@ impl Assessment {
     }
     pub fn speech(self) -> Option<&'static str> {
         match self {
-            Self::NeedsReminder => Some("坐姿提醒，头有些低或者歪了，请抬头，把头摆正，坐直一点。"),
-            Self::NoObviousIssue => None,
-            Self::Unknown | Self::Away | Self::Observe => None,
+            Self::HeadLow => Some("坐姿提醒，你低头了，请抬头。"),
+            Self::HeadTilted => Some("坐姿提醒，你的头歪了，请把头摆正。"),
+            Self::HeadLowAndTilted => {
+                Some("坐姿提醒，你低头了，请抬头。你的头也歪了，请把头摆正。")
+            }
+            _ => None,
         }
     }
 }
@@ -325,7 +342,7 @@ pub async fn analyze(cfg: &Config, image: &Path) -> Result<Observation> {
     Ok(Observation {
         image: prefix.with_extension("png"),
         note,
-        assessment: Assessment::from_report(&report["assessment"]),
+        assessment: Assessment::from_report(&report),
     })
 }
 
@@ -453,18 +470,46 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn reminder_uses_the_reported_cause() {
+        for (reason, expected) in [
+            ("head_low", "坐姿提醒，你低头了，请抬头。"),
+            ("head_tilted", "坐姿提醒，你的头歪了，请把头摆正。"),
+            (
+                "head_low_and_tilted",
+                "坐姿提醒，你低头了，请抬头。你的头也歪了，请把头摆正。",
+            ),
+        ] {
+            let report = serde_json::json!({
+                "assessment": "needs_reminder",
+                "reminder_reason": reason,
+            });
+            assert_eq!(Assessment::from_report(&report).speech(), Some(expected));
+        }
+        let legacy =
+            serde_json::json!({"assessment": "needs_reminder", "note": "疑似歪头，请把头摆正"});
+        assert_eq!(Assessment::from_report(&legacy), Assessment::HeadTilted);
+        let unspecified = serde_json::json!({
+            "assessment": "needs_reminder",
+            "note": "疑似低头或歪头",
+        });
+        assert_eq!(Assessment::from_report(&unspecified).speech(), None);
+    }
+
+    #[test]
     fn missing_or_new_assessment_never_speaks_as_normal() {
         for value in [
             Value::Null,
             Value::String("future_model_value".into()),
             Value::Bool(true),
         ] {
-            assert_eq!(Assessment::from_report(&value), Assessment::Unknown);
+            assert_eq!(
+                Assessment::from_report(&serde_json::json!({"assessment": value})),
+                Assessment::Unknown
+            );
         }
         assert_eq!(Assessment::Unknown.speech(), None);
         assert_eq!(Assessment::Away.speech(), None);
         assert_eq!(Assessment::Observe.speech(), None);
-        assert!(Assessment::NeedsReminder.speech().is_some());
         assert_eq!(Assessment::NoObviousIssue.speech(), None);
     }
 }

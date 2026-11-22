@@ -347,7 +347,25 @@ impl Bridge {
         }
         Ok(())
     }
+    async fn music_command(&self, args: &str) -> Result<String> {
+        crate::music::command(
+            args,
+            &self.cfg.music_storefront,
+            &self.cfg.music_media_dir,
+            &self.cfg.data_dir,
+        )
+        .await
+    }
     async fn execute(&self, j: &Job) -> Result<()> {
+        if crate::voice::is_job(j)
+            && let Some(args) = crate::music::voice_command(&j.text)
+        {
+            let result = match self.music_command(&args).await {
+                Ok(result) => result,
+                Err(e) => format!("音乐播放失败：{e}"),
+            };
+            return self.store.finish(&j.id, &result);
+        }
         // Freeze the choice when execution starts; later card clicks affect queued work only.
         let kind = self.selected_agent(&j.key)?;
         let model = self.selected_model(&j.key)?;
@@ -374,7 +392,7 @@ impl Bridge {
         };
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
-            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；用户要求追踪写作业的人或调整学习摄像头构图时使用 teacher_reframe；需要用户补充信息或做选择时，用 teacher_ask_user_question 播报问题并等待一次语音回答；以返回的 answer 为准。代理使用 teacher_proxy，切换必须来自用户要求。播放、暂停、切歌、查询播放状态、搜歌或列出资料库歌曲时使用 teacher_music。用户要求发送图片时先保存到工作目录，再调用teacher_image发送原生图片；用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
+            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；用户要求追踪写作业的人或调整学习摄像头构图时使用 teacher_reframe；需要用户补充信息或做选择时，用 teacher_ask_user_question 播报问题并等待一次语音回答；以返回的 answer 为准。代理使用 teacher_proxy，切换必须来自用户要求。播放、暂停、切歌、查询播放状态、搜歌或列出资料库歌曲时使用 teacher_music。用户请你唱歌或随便放一首时用 random；按歌手播放一首时用 artist 并传歌手名。用户明确点了一首歌时用 play 并传歌曲名，本地资料库支持直接点播。用户要求发送图片时先保存到工作目录，再调用teacher_image发送原生图片；用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
         let voice = crate::voice::is_job(j);
@@ -444,7 +462,7 @@ impl Bridge {
         match cmd {
             "/help" => Ok(HELP.into()),
             "/proxy" => crate::proxy::command(args).await,
-            "/music" => crate::music::command(args, &self.cfg.music_storefront).await,
+            "/music" => self.music_command(args).await,
             "/ha" => {
                 if args.is_empty() {
                     return Ok("/ha devices [名称/房间/类型]\n/ha commands <实体ID或设备ID>\n/ha control <实体ID> <domain.service> [JSON参数]".into());

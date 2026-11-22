@@ -1,0 +1,25 @@
+name: Deploy mr-li on Mac mini
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: mr-li-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.repository.private && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, macOS, X64, mr-li-deploy]
+    steps:
+      - name: Build and deploy the latest mr-li main
+        shell: bash
+        env:
+          MR_LI_DEPLOY_ROOT: ${{ vars.MR_LI_DEPLOY_ROOT }}
+        run: |
+          : "${MR_LI_DEPLOY_ROOT:?Set MR_LI_DEPLOY_ROOT in Actions variables}"
+          umask 077
+          cd -- "$MR_LI_DEPLOY_ROOT"
+          python3 scripts/auto-deploy.py once --github-only 2>&1 | tee -a logs/auto-deploy.log

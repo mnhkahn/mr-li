@@ -121,6 +121,21 @@ class DeploymentTests(unittest.TestCase):
             remote.assert_not_called()
         self.assertFalse((self.state / 'incoming').exists())
 
+    def test_runner_checks_github_with_local_package_pending(self):
+        auto.write_json(self.state / 'config.json', {'domain': 'test/501'})
+        incoming = self.state / 'incoming'
+        self.package.rename(incoming)
+        with patch.object(auto, 'remote_package', return_value=None) as remote:
+            auto.once(self.root, github_only=True)
+            remote.assert_called_once()
+        self.assertTrue(incoming.is_dir())
+
+    def test_local_only_tick_does_not_check_github(self):
+        auto.write_json(self.state / 'config.json', {'domain': 'test/501'})
+        with patch.object(auto, 'remote_package') as remote:
+            auto.once(self.root, local_only=True)
+            remote.assert_not_called()
+
     def test_parallel_tick_skipped(self):
         with (self.state / 'lock').open('a') as lock:
             auto.fcntl.flock(lock, auto.fcntl.LOCK_EX | auto.fcntl.LOCK_NB)
@@ -161,6 +176,7 @@ class DeploymentTests(unittest.TestCase):
 
         def fake_build(args, **kwargs):
             if str(args[0]) == '/bin/bash':
+                self.assertEqual((self.root / '.data/utterances').read_text().strip(), auto.START_MESSAGE)
                 self.assertEqual(kwargs['cwd'], remote)
                 self.assertEqual(auto.output(['git', '-C', remote, 'rev-parse', 'HEAD']), revision)
                 auto.shutil.copytree(self.package, built)
@@ -172,6 +188,17 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(auto.remote_package(self.root, config), built)
         self.assertEqual(auto.validate(built)['revision'], revision)
         self.assertEqual(self.old_binary.read_text(), 'old executable')
+
+    def test_start_announcement_failure_still_attempts_build(self):
+        _, config = self.prepare_remote(self.value['revision'])
+        (self.source / 'scripts').mkdir()
+        (self.source / 'scripts/build-release.sh').write_text('exit 1\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'failing build')
+        with patch.object(auto, 'speak', side_effect=OSError('speaker unavailable')) as speak:
+            with self.assertRaisesRegex(subprocess.CalledProcessError, 'build-release.sh'):
+                auto.remote_package(self.root, config)
+            speak.assert_called_once_with(self.root, auto.START_MESSAGE, timeout=60)
 
     def test_github_behind_local_does_not_downgrade(self):
         (self.source / 'file').write_text('two')

@@ -3,6 +3,7 @@ use std::{env, path::PathBuf, time::Duration};
 #[derive(Clone)]
 pub struct Config {
     pub music_storefront: String,
+    pub music_media_dir: String,
     pub home_assistant: Option<crate::home_assistant::Settings>,
     pub tablet_listen: String,
     pub tablet_public_url: String,
@@ -111,6 +112,7 @@ impl Config {
             );
         }
         Ok(Self {
+            music_media_dir: get(crate::music::MEDIA_DIR_KEY, ""),
             music_storefront: get(
                 crate::music::STOREFRONT_KEY,
                 crate::music::DEFAULT_STOREFRONT,
@@ -214,6 +216,7 @@ impl Config {
             voice: crate::voice::Settings::from_settings(|_, d| d.into()),
             home_assistant: None,
             music_storefront: crate::music::DEFAULT_STOREFRONT.into(),
+            music_media_dir: String::new(),
             tablet_listen: "127.0.0.1:8787".into(),
             tablet_public_url: String::new(),
             app_id: "app".into(),

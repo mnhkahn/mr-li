@@ -16,6 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {'bin', 'scripts', 'resource', 'models', 'README.md', '.env.example', 'opencode.example.json'}
 MANIFEST = 'release.json'
+START_MESSAGE = '开始升级。'
 SKIP_MESSAGE = '程序内容与当前版本相同，本次已跳过升级。'
 
 
@@ -138,6 +139,11 @@ def upgrade_message(root, value, previous):
     return '升级成功。本次更新：' + notes[:240].rstrip('；。 ') + '。'
 
 
+def speak(root, text, *, timeout=200):
+    env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
+    run([root / 'scripts/run.sh', 'speak', text], cwd=root, env=env, timeout=timeout)
+
+
 def announce_upgrade(root, value, previous, *, skipped=False):
     # Run after recording either a healthy upgrade or an unchanged package.
     # A speaker failure must neither roll back nor cause another deployment.
@@ -147,8 +153,7 @@ def announce_upgrade(root, value, previous, *, skipped=False):
     try:
         status['text'] = SKIP_MESSAGE if skipped else upgrade_message(root, value, previous)
         write_json(record, status)
-        env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
-        run([root / 'scripts/run.sh', 'speak', status['text']], cwd=root, env=env, timeout=200)
+        speak(root, status['text'])
         status['status'] = 'completed'
         write_json(record, status)
         label = 'Skipped deployment' if skipped else 'Upgrade'
@@ -235,6 +240,10 @@ def remote_package(root, config):
     build_env['PATH'] = str(Path.home() / '.cargo/bin') + os.pathsep + os.environ.get('PATH', '')
     if config.get('pose'):
         build_env['MR_LI_BUILD_POSE'] = '1'
+    try:
+        speak(root, START_MESSAGE, timeout=60)
+    except (subprocess.SubprocessError, OSError) as error:
+        print('Start announcement failed: ' + str(error), flush=True)
     run(['/bin/bash', source / 'scripts/build-release.sh'], cwd=source, env=build_env)
     platform = output(['uname', '-s']) + '-' + output(['uname', '-m'])
     package = source / 'dist' / ('mr-li-' + platform)
@@ -242,12 +251,13 @@ def remote_package(root, config):
     return package
 
 
-def once(root, package=None):
+def once(root, package=None, *, github_only=False, local_only=False):
     state = root / '.data/auto-deploy'
     state.mkdir(parents=True, exist_ok=True)
     with (state / 'lock').open('a') as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            mode = fcntl.LOCK_EX if github_only else fcntl.LOCK_EX | fcntl.LOCK_NB
+            fcntl.flock(lock, mode)
         except BlockingIOError:
             print('Deployment already running; skipped.', flush=True)
             return
@@ -258,13 +268,14 @@ def once(root, package=None):
             deploy(root, package.resolve(), config['domain'], data_dir)
             return
         # Locally supplied packages take priority; rename incoming only after copying finishes.
-        if incoming.exists():
+        if not github_only and incoming.exists():
             deploy(root, incoming, config['domain'], data_dir)
             shutil.rmtree(incoming)
             return
-        package = remote_package(root, config)
-        if package:
-            deploy(root, package, config['domain'], data_dir)
+        if not local_only:
+            package = remote_package(root, config)
+            if package:
+                deploy(root, package, config['domain'], data_dir)
 
 
 def install(root, args):
@@ -286,11 +297,15 @@ def install(root, args):
     lines = [line for line in current.stdout.splitlines() if '# MR-LI AUTO-DEPLOY' not in line]
     import shlex
     # Cron treats percent specially even inside shell quotes.
-    command = ' '.join(shlex.quote(str(x)) for x in [sys.executable, root / 'scripts/auto-deploy.py', 'once', '--root', root])
+    args_for_check = [sys.executable, root / 'scripts/auto-deploy.py', 'once', '--root', root]
+    if args.runner:
+        args_for_check.append('--local-only')
+    command = ' '.join(shlex.quote(str(x)) for x in args_for_check)
     log = shlex.quote(str(root / 'logs/auto-deploy.log'))
     lines.append(('* * * * * ' + command + ' >> ' + log + ' 2>&1 # MR-LI AUTO-DEPLOY').replace('%', r'\%'))
     run(['/usr/bin/crontab', '-'], input='\n'.join(lines) + '\n', text=True)
-    print('Installed: GitHub/local package check every minute; ' + str(state / 'config.json'))
+    check = 'local package' if args.runner else 'GitHub/local package'
+    print('Installed: ' + check + ' check every minute; ' + str(state / 'config.json'))
 
 
 def main():
@@ -305,6 +320,10 @@ def main():
     parser.add_argument('--domain', help='launchd domain, e.g. user/501, gui/501, system')
     parser.add_argument('--pose', action='store_true', help='also build optional pose binary')
     parser.add_argument('--data-dir', type=Path, help='actual MR_LI_DATA_DIR, if customized')
+    parser.add_argument('--runner', action='store_true', help='install cron for local packages only')
+    source_mode = parser.add_mutually_exclusive_group()
+    source_mode.add_argument('--github-only', action='store_true', help='wait for the lock and check GitHub only')
+    source_mode.add_argument('--local-only', action='store_true', help='check for a local package only')
     args = parser.parse_args()
     root = args.root.resolve()
     if args.action == 'manifest':
@@ -314,7 +333,7 @@ def main():
     elif args.action == 'install':
         install(root, args)
     elif args.action == 'once':
-        once(root, args.package)
+        once(root, args.package, github_only=args.github_only, local_only=args.local_only)
     else:
         state = root / '.data/auto-deploy'
         for name in ('config.json', 'installed.json'):

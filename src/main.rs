@@ -40,8 +40,10 @@ async fn main() -> Result<()> {
     }
     if mode == "music" {
         let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
-        let storefront = music::local_storefront();
-        println!("{}", music::command(&args, &storefront).await?);
+        let storefront = music::local_setting(music::STOREFRONT_KEY, music::DEFAULT_STOREFRONT);
+        let media_dir = music::local_setting(music::MEDIA_DIR_KEY, "");
+        let data_dir = music::local_setting("MR_LI_DATA_DIR", ".data");
+        println!("{}", music::command(&args, &storefront, &media_dir, std::path::Path::new(&data_dir)).await?);
         return Ok(());
     }
     if mode == "reply-check" {

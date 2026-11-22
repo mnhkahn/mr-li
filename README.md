@@ -130,7 +130,16 @@ python3 scripts/auto-deploy.py status
 
 配置与版本记录在 `.data/auto-deploy/`，日志在 `logs/auto-deploy.log`。安装任务保留并备份原 crontab；停用时在 `crontab -e` 删除标有 `# MR-LI AUTO-DEPLOY` 的一行。验证脚本：`python3 scripts/test-auto-deploy.py`。
 
-每次实际升级且健康检查通过后，使用现有 `/speak` 的音色和喇叭播报“升级成功”及本次提交的简短说明，最多列出三项更新。GitHub 升级读取两次部署之间的提交标题；本机包携带最近的提交说明，也可在构建时设置 `MR_LI_RELEASE_NOTES='本次更新内容'`，说明未提交的现场改动。处理新提交或新本机包时，若内容相同跳过部署，会播报“程序内容与当前版本相同，本次已跳过升级。”，不重启服务；每分钟检查未发现新提交时保持静音。失败或回滚时不播报成功。播报失败只记录日志，不回滚已成功的升级，也不自动重播；最近结果保存在 `.data/auto-deploy/last-announcement.json`。
+每次确认 GitHub 有可升级的新提交后，先使用现有 `/speak` 的音色和喇叭播报“开始升级”，随后开始测试和编译。播报失败会写入日志，构建继续。每次实际升级且健康检查通过后，播报“升级成功”及本次提交的简短说明，最多列出三项更新。GitHub 升级读取两次部署之间的提交标题；本机包携带最近的提交说明，也可在构建时设置 `MR_LI_RELEASE_NOTES='本次更新内容'`。新提交或本机包内容相同时，播报“程序内容与当前版本相同，本次已跳过升级。”，不重启服务。同一 Git 提交保持静音。失败或回滚时不播报成功。升级结果的播报状态保存在 `.data/auto-deploy/last-announcement.json`。
+
+### 用 GitHub Actions 通知 Mac mini
+
+`main` 推送时，公开仓库的工作流会请求私有仓库排一个部署任务。Mac mini 上的自托管 Runner 通过出站 HTTPS 领到任务后，调用现有部署脚本。脚本仍从 `mr-li` 的 `main` 获取最新版本，并在 Mac mini 上完成构建和部署。
+
+1. 准备一个专用私有仓库，默认分支设为 `main`。把 [部署工作流模板](scripts/deploy-mr-li.workflow.yml) 保存为该仓库的 `.github/workflows/deploy-mr-li.yml`，设置 Actions 变量 `MR_LI_DEPLOY_ROOT` 为 Mac mini 服务目录的绝对路径。
+2. 在 Mac mini 上用服务账号注册该私有仓库的 Intel macOS Runner，加标签 `mr-li-deploy`，按 [GitHub 指南](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners) 持久运行。从私有仓库手动触发一次，确认 Runner 可以执行 `once --github-only`。首次迁移可先让旧 cron 部署包含该选项的版本。
+3. 在公开仓库设置 Actions 变量 `MR_LI_DEPLOY_REPO`（`所有者/私有仓库名`）和密钥 `MR_LI_DEPLOY_TOKEN`。使用仅授权该私有仓库、拥有 `Actions: write` 权限的细粒度令牌。公开仓库的 **Notify Mac mini deployment** 工作流也支持在 `main` 上手动运行，便于验证转发或补跑。
+4. 确认端到端触发后，在 Mac mini 以原安装参数重新运行 `python3 scripts/auto-deploy.py install --runner`，保留原先的 `--domain`、`--data-dir`、`--pose` 等设置。此模式的 cron 只查本地 `incoming` 包。Runner 任务等到部署锁空闲后才读取 GitHub，Actions 页面和本机 `logs/auto-deploy.log` 都可查看执行结果。
 
 ## Mac mini 首次部署
 
@@ -314,6 +323,7 @@ sudo ./scripts/service.sh uninstall system
 | 命令 | 用途 |
 |---|---|
 | `/music play`、`/music pause` | 开始或恢复播放、暂停 |
+| `/music artist <歌手>`、`/music random` | 从资料库点播该歌手的一首歌，或随机播一首。语音可说「播放一首周杰伦的歌」或「给我唱首歌」 |
 | `/music next`、`/music prev` | 下一首、上一首 |
 | `/music status` | 查看 Music.app 的播放状态 |
 | `/music list [页码]`、`/music find <关键词>` | 查看 Music.app 资料库，每页 15 首，结果附歌曲 ID |
@@ -321,7 +331,9 @@ sudo ./scripts/service.sh uninstall system
 | `/music search <关键词>` | 用 Apple 公开搜索接口按地区搜歌，最多返回 8 首 |
 | `/music open <Apple Music 歌曲链接>` | 让 Mac mini 的音乐 App 打开歌曲页，可在页面点击播放 |
 
-Apple Music 订阅曲目通过 Mac mini 的音乐 App 播放，使用 App 中已登录的 Apple 账户。播放和资料库操作需要 macOS 桌面会话及“自动化”权限。使用后台开机模式时，如遇 AppleEvent 超时，可在桌面会话运行本地命令检查授权。上面的登录型 LaunchAgent 会在桌面会话运行桥接。在线搜索无需登录和开发者密钥，默认搜索香港区，使用 `MR_LI_MUSIC_STOREFRONT` 可指定其他地区（如 `TW` 或 `US`）。公开接口的结果取决于地区和 Apple 提供的索引。订阅歌曲加入资料库后可按 ID 点播。飞书与语音 Agent 也可通过 `teacher_music` 使用这些操作。
+配置 `MR_LI_MUSIC_MEDIA_DIR` 为本地音乐根目录（例如 iTunes 的 `iTunes Media/Music`）后，使用系统 `afplay` 播放本地文件，适用于锁屏和没有显示器的 Mac mini。按歌手点歌从根目录下的歌手目录匹配，`/music play 晴天` 可按歌曲名点播。在线搜索仍返回 Apple 的目录链接。仅在线可用或需要 DRM 解密的歌曲无法走本地播放。
+
+使用音乐 App 模式时，Apple Music 订阅曲目通过 Mac mini 的音乐 App 播放，使用 App 中已登录的 Apple 账户。播放和资料库操作需要 macOS 桌面会话及“自动化”权限。使用后台开机模式时，如遇 AppleEvent 超时，可在桌面会话运行本地命令检查授权。上面的登录型 LaunchAgent 会在桌面会话运行桥接。在线搜索无需登录和开发者密钥，默认搜索香港区，使用 `MR_LI_MUSIC_STOREFRONT` 可指定其他地区（如 `TW` 或 `US`）。公开接口的结果取决于地区和 Apple 提供的索引。订阅歌曲加入资料库后可按 ID 点播。飞书与语音 Agent 也可通过 `teacher_music` 使用这些操作。
 
 ## Homebridge 摄像头
 

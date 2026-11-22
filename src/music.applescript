@@ -1,3 +1,6 @@
+use framework "Foundation"
+use scripting additions
+
 on run argv
     set operation to item 1 of argv
     set parameter to item 2 of argv
@@ -40,25 +43,47 @@ on run argv
                 return output
             end if
 
-            if operation is "play" then
+            set expectedID to ""
+            if operation is in {"artist", "random"} then
+                if not (exists library playlist 1) then error "音乐资料库尚未就绪。"
+                set librarySongs to library playlist 1
+                if operation is "artist" then
+                    set songRows to search librarySongs for parameter only artists
+                    if (count songRows) is 0 then
+                        set traditionalName to my traditional(parameter)
+                        if traditionalName is not parameter then set songRows to search librarySongs for traditionalName only artists
+                    end if
+                    if (count songRows) is 0 then error "资料库里没有找到 " & parameter & " 的歌曲。"
+                    set selectedSong to some item of songRows
+                else
+                    set songCount to count tracks of librarySongs
+                    if songCount is 0 then error "音乐资料库里还没有歌曲。"
+                    set selectedSong to track (random number from 1 to songCount) of librarySongs
+                end if
+                set expectedID to persistent ID of selectedSong
+                play selectedSong once true
+            else if operation is "play" then
                 if parameter is "" then
                     play
                 else
                     set selectedSong to first track of library playlist 1 whose persistent ID is parameter
+                    set expectedID to parameter
                     play selectedSong
                 end if
+            end if
+            if operation is in {"play", "artist", "random"} then
                 repeat 12 times
                     if player state is playing then
-                        if parameter is "" then exit repeat
+                        if expectedID is "" then exit repeat
                         try
-                            if persistent ID of current track is parameter then exit repeat
+                            if persistent ID of current track is expectedID then exit repeat
                         end try
                     end if
                     delay 0.25
                 end repeat
                 if player state is not playing then error "音乐尚未开始播放。请检查资料库、账号或音乐 App 当前提示。"
-                if parameter is not "" then
-                    if persistent ID of current track is not parameter then error "音乐 App 尚未切换到指定歌曲。"
+                if expectedID is not "" then
+                    if persistent ID of current track is not expectedID then error "音乐 App 尚未切换到指定歌曲。"
                 end if
             else if operation is "pause" then
                 pause
@@ -90,6 +115,11 @@ on run argv
         end tell
     end timeout
 end run
+
+on traditional(artistName)
+    set nameString to current application's NSString's stringWithString:artistName
+    return (nameString's stringByApplyingTransform:"Simplified-Traditional" |reverse|:false) as text
+end traditional
 
 on trackLabel(songRow)
     tell application id "com.apple.Music" to set {titleText, artistText} to {name of songRow, artist of songRow}

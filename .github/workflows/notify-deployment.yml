@@ -1,0 +1,32 @@
+name: Notify Mac mini deployment
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  notify:
+    if: >-
+      github.repository == 'mnhkahn/mr-li' &&
+      github.ref == 'refs/heads/main' &&
+      !github.event.deleted &&
+      vars.MR_LI_DEPLOY_REPO != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Queue deployment in the private repository
+        shell: bash
+        env:
+          DEPLOY_REPO: ${{ vars.MR_LI_DEPLOY_REPO }}
+          DEPLOY_TOKEN: ${{ secrets.MR_LI_DEPLOY_TOKEN }}
+        run: |
+          [[ "$DEPLOY_REPO" =~ ^[a-zA-Z0-9-]+/[a-zA-Z0-9_.-]+$ ]]
+          : "${DEPLOY_TOKEN:?Set MR_LI_DEPLOY_TOKEN in Actions secrets}"
+          curl --fail --silent --show-error --max-time 20 --retry 2 \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $DEPLOY_TOKEN" \
+            --header 'Content-Type: application/json' \
+            --data '{"ref":"main"}' \
+            "https://api.github.com/repos/$DEPLOY_REPO/actions/workflows/deploy-mr-li.yml/dispatches"

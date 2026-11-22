@@ -274,6 +274,7 @@ sudo ./scripts/service.sh uninstall system
 | `/reminder del <ID>` | 删除提醒，取消尚未送达的消息 |
 | `/speak <文字>` | Mac mini 本地合成语音，通过配置的喇叭播放，最多 500 字 |
 | `/speak stop` | 停止本会话当前语音并取消待播报文字 |
+| `/voice [status\|tingting\|clone]` | 查看或切换 Mac mini 全局播报音色 |
 | `/posture` | 本地姿态模型试验：抓图、回传关键点图片、背面判断和分数说明，不调用 OpenCode |
 | `/posture start [秒数]` | 启用平板作业计时联动，默认每 60 秒，支持 30–3600 秒；仅低头或歪头时在 Mac mini 语音播报，飞书每 10 分钟汇总并附坐姿检测图、平板照片和当前屏幕截图 |
 | `/posture status`、`/posture stop` | 查询最近采样结果、停止定时试验 |
@@ -289,7 +290,11 @@ sudo ./scripts/service.sh uninstall system
 
 群聊中，文字指令需要 @李老师。模型选择在你当前聊天的所有话题中生效；`/stop`、权限回复等会话操作请在发起任务的同一话题发送。卡片点选无需再 @机器人，卡片 30 分钟有效，转发后不可操作。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片或过程工具日志展示；支持接收图片，以及通过 Agent 工具发送文件和图片。
 
-`/speak` 不受坐姿监测时段限制。未配置克隆程序时使用系统本地 TTS；当前 Mac mini 部署使用本地 ZipVoice 克隆，未缓存文字也能离线合成。文字经标准输入交给配置的语音程序，不会作为 shell 命令或命令行选项执行；使用 `MR_LI_SPEAK_VOICE` 和 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的声音与输出设备。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
+`/speak` 不受坐姿监测时段限制。文字经标准输入交给配置的语音程序，不会作为 shell 命令或命令行选项执行。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
+
+`/voice` 或 `/voice status` 显示当前音色。`/voice tingting` 使用系统 Ting-Ting，`/voice clone` 使用已安装的本地 ZipVoice 克隆音色。命令对 Mac mini 的所有播报生效，正在执行的播报继续使用原音色。选择保存到数据目录的 `speech-voice`，下次播报时读取，重启后继续生效。`MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和 `MR_LI_POSTURE_VOICE` 提供初始配置；手动播报仍使用配置的 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的输出设备。
+
+模型需要补充信息时，可在绑定麦克风的会话调用 **Ask User Question**（`teacher_ask_user_question`）。Mac mini 先播报问题，再录一次回答。用 ESP32-S3 时，灯变绿后直接回答，无需再次说唤醒词，单次最多约 8 秒。回答由本地 ASR 转写，作为工具结果返回原任务；静音或设备不可用会返回错误。
 
 `/skills`、`/mcp` 直接读取 OpenCode 当前工作目录的真实接口；`/tasks`、`/task` 只读本会话的 SQLite 记录。旧小李的记忆、历史会话切换及模型余额查询尚未迁移。
 
@@ -336,7 +341,7 @@ sudo ./scripts/service.sh uninstall system
 
 `.env` 中 `MR_LI_POSE_MODEL` 指向 `rtmpose-m-halpe26.onnx`，`MR_LI_POSE_DETECTOR` 指向 `yolox-tiny-person.onnx`。`MR_LI_POSE_ROI` 可为空，在整图查找；也可填归一化 `x,y,width,height` 限制候选人的上半身中心区域，不裁掉人体。Mac mini 当前学习区为 `0.10,0.30,0.65,0.70`，排除右侧床边其他人，同时覆盖之前两个机位里的书桌位置。机位大幅改变后需要重新核对学习区。
 
-语音配置为 `MR_LI_POSTURE_SPEECH`（默认 true）、`MR_LI_POSTURE_VOICE`（默认 Ting-Ting）、`MR_LI_POSTURE_AUDIO_DEVICE`（默认 Built-in Output），未配置 `MR_LI_SPEECH_PROGRAM` 时使用 macOS 自带 `/usr/bin/say`；当前部署的提醒与手动播报共用本地克隆程序，不修改系统音量。
+语音配置为 `MR_LI_POSTURE_SPEECH`（默认 true）、`MR_LI_POSTURE_VOICE`（默认 Ting-Ting）、`MR_LI_POSTURE_AUDIO_DEVICE`（默认 Built-in Output）。提醒与手动播报共用 `/voice` 的音色选择。
 
 离线试验：
 
@@ -431,7 +436,7 @@ Mac mini 通过 HTTPS 入口接收 GitHub App 的 `workflow_run` Webhook。GitHu
 
 ### 全局克隆音色
 
-`MR_LI_SPEECH_PROGRAM` 默认 `/usr/bin/say`。当前 Mac mini 设置为部署目录的 `scripts/local-voice.sh`，手动 `/speak`、每日新闻、坐姿提醒和麦克风对话共用本地 ZipVoice-Distill INT8 中文/英文克隆模型。ASR/TTS 不访问 HF 或硅基流动，不消耗这些服务的额度；Agent 推理仍由聊天当前设置决定。文字通过标准输入接收，不作为 shell 命令执行。
+`MR_LI_SPEECH_PROGRAM` 默认 `/usr/bin/say`。`/voice clone` 使用部署目录的 `scripts/local-voice.sh`，手动 `/speak`、每日新闻、坐姿提醒和麦克风对话共用本地 ZipVoice-Distill INT8 中文/英文克隆模型。ASR/TTS 不访问 HF 或硅基流动，不消耗这些服务的额度；Agent 推理仍由聊天当前设置决定。文字通过标准输入接收，不作为 shell 命令执行。
 
 沿用原 `.data/voice-clone/reference.wav` 的说话人，原文件不改动。本地模型使用从该录音截取的有效语音及匹配文字：去除开头约2.5秒空白，保留弱起音，再补0.2秒尾静音。参考音频、转写、模型、配置、兼容运行库和缓存保存在私有 `.data/local-tts/`，不提交仓库。更换合成模型会影响韵律和音质，克隆的是同一参考说话人，不能保证与 Qwen 的输出完全一致。
 

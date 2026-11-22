@@ -67,6 +67,7 @@ pub async fn maintain(cfg: &Config, oc: &OpenCode) {
 pub fn tools() -> Value {
     let mut tools = json!([
         {"name":"teacher_speak","description":"通过 Mac mini 喇叭说话，或停止当前会话语音。沿用现有音色；text 最多500字。超时先查任务，不要重复播报。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["say","stop"]},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["action"]}},
+        {"name":"teacher_ask_user_question","description":"Ask User Question：用喇叭问用户一个简短问题，播完后打开绑定的麦克风录制一次回答。工具结果 answer 是用户回答的本地转写。只在确实需要用户补充或选择时调用。直接传完整问题，不要先另行播报。","inputSchema":{"type":"object","properties":{"question":{"type":"string","minLength":1,"maxLength":100}},"required":["question"]}},
         {"name":"teacher_camera","description":"摄像头拍照或录制1–30秒视频，结果直接发到发起请求的飞书聊天。返回状态不代表你已看过画面，不得编造画面内容。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["photo","video"]},"seconds":{"type":"integer","minimum":1,"maximum":30}},"required":["action"]}},
         {"name":"teacher_reframe","description":"用户要求调整学习摄像头构图或追踪写作业的人时调用。本地识别唯一人体，上下左右逐步移动云台，直至进入画面中心区域或达到单次调整上限。无人或多人时停止。返回文字结果。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"teacher_file","description":"将Agent工作目录内已有的普通文件作为附件发送到当前飞书聊天，支持PDF、Word、表格、压缩包等。先生成并保存文件，再传相对工作目录的路径或目录内绝对路径；可用file_name设置接收者看到的文件名。单文件非空且不超过30MB，目录需先压缩。上传完成不代表已发送，应检查file_delivery或用teacher_query查询原任务；重试沿用operation_id。","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"file_name":{"type":"string","minLength":1,"maxLength":200}},"required":["path"]}},
@@ -288,7 +289,12 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
     validate(name, args)?;
     let token = argument(args, "request_token")?;
     let parent = origin(bridge, token)?;
-    let text = command(bridge, name, args).await?;
+    let asking = name == "teacher_ask_user_question";
+    let text = if asking {
+        crate::voice::question_command(&parent, argument(args, "question")?)?
+    } else {
+        command(bridge, name, args).await?
+    };
     if name == "teacher_query"
         || (name == "teacher_proxy" && !matches!(args["action"].as_str(), Some("set" | "auto")))
     {
@@ -319,6 +325,7 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
                 ![
                     "操作失败：",
                     "播报失败：",
+                    "提问失败：",
                     "摄像头操作失败：",
                     "文件发送失败：",
                     "任务失败："
@@ -360,6 +367,12 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
                 "来源任务已结束，操作已取消。",
             ]
             .contains(&text);
+            if asking && !cancelled {
+                let answer: Value = serde_json::from_str(text).context("提问没有取得回答")?;
+                return Ok(
+                    json!({"task_id":j.id,"execution":"completed","answer":answer["answer"]}),
+                );
+            }
             return Ok(
                 json!({"task_id":j.id,"execution":if cancelled {"cancelled"} else {"completed"},"text":text}),
             );
@@ -631,6 +644,42 @@ mod tests {
         Ok(())
     }
     #[tokio::test]
+    async fn ask_user_question_returns_the_answer_to_the_same_operation() -> Result<()> {
+        let f = Fixture::new()?;
+        let args =
+            json!({"request_token":f.token,"operation_id":"question-1","question":"几点出发？"});
+        let bridge = f.bridge.clone();
+        let request = args.clone();
+        let pending =
+            tokio::spawn(async move { call(&bridge, "teacher_ask_user_question", &request).await });
+        let child = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Some(child) = f.bridge.store.jobs("queued")?.into_iter().next() {
+                    break Ok::<_, anyhow::Error>(child);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        assert!(crate::voice::is_question(&child));
+        assert_eq!(child.key, f.parent.key);
+        f.bridge.store.finish(
+            &child.id,
+            &json!({"answer":"/stop 是我要说的话"}).to_string(),
+        )?;
+        let result = pending.await??;
+        assert_eq!(result["answer"], "/stop 是我要说的话");
+        assert_eq!(result["execution"], "completed");
+        assert_eq!(
+            call(&f.bridge, "teacher_ask_user_question", &args).await?,
+            result
+        );
+        assert!(f.bridge.store.jobs("queued")?.is_empty());
+        assert!(f.bridge.store.jobs("replying")?.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn queries_are_scoped_and_expired_or_unlisted_origins_are_rejected() -> Result<()> {
         let f = Fixture::new()?;
         let other = Job {
@@ -776,7 +825,7 @@ mod tests {
         ] {
             assert!(command(&f.bridge, "teacher_proxy", &args).await.is_err());
         }
-        assert_eq!(tools().as_array().unwrap().len(), 9);
+        assert_eq!(tools().as_array().unwrap().len(), 10);
         assert!(!tools().to_string().contains("teacher_approve"));
         let config = mcp_acp(&f.bridge.cfg)?;
         assert!(!config.to_string().contains(&f.bridge.cfg.app_secret));

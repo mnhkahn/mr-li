@@ -98,7 +98,8 @@ def load_models(root, sherpa, recognizer=None):
     return spotter, recognizer
 
 
-def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify_ready=False):
+def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify_ready=False,
+            answer=False):
     config = sherpa.VadModelConfig()
     config.silero_vad.model = str(root / "silero_vad.onnx")
     config.silero_vad.min_silence_duration = 0.8
@@ -107,7 +108,7 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify
     config.sample_rate = RATE
     vad = sherpa.VoiceActivityDetector(config, buffer_size_in_seconds=60)
     window = config.silero_vad.window_size
-    stream = spotter.create_stream()
+    stream = None if answer else spotter.create_stream()
     active = listening
     deadline = time.monotonic() + 15 if active else None
     history = deque(maxlen=int(35 * RATE / window))
@@ -125,6 +126,8 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify
         while True:
             samples, overflow = mic.read(window)
             if overflow:
+                if answer:
+                    raise RuntimeError("回答录音丢帧，请重新回答")
                 now = time.monotonic()
                 overflows.append(now)
                 if len(overflows) == overflows.maxlen and now - overflows[0] < 10:
@@ -167,11 +170,15 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify
                 result = recognizer.create_stream()
                 result.accept_waveform(RATE, audio)
                 recognizer.decode_stream(result)
-                text = strip_wake(result.result.text)
+                text = result.result.text.strip() if answer else strip_wake(result.result.text)
                 if text:
                     return {"event": "text", "text": text}
+                if answer:
+                    return {"event": "capture_end"}
                 return {"event": "wake"}
             if deadline is not None and time.monotonic() > deadline:
+                if answer:
+                    return {"event": "capture_end"}
                 # No speech in the follow-up window: return to wake-word detection.
                 active = False
                 deadline = None
@@ -179,7 +186,7 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify
                 print("等待唤醒词：你好，李老师", file=sys.stderr, flush=True)
 
 
-def esp32_audio(config_path, recognizer, np, check):
+def esp32_audio(config_path, recognizer, np, check, answer=False):
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *args, **kwargs):
             return None
@@ -216,10 +223,59 @@ def esp32_audio(config_path, recognizer, np, check):
             raise RuntimeError(f"ESP32 语音初始化失败：{state['error']}")
         return state
 
+    def recording_text(wake):
+        with request_device("/api/voice/recording.wav") as response:
+            if response.status == 204 or response.headers.get("X-Mr-Li-Wake") != f"{wake[0]}-{wake[1]}":
+                return None
+            data = response.read(256_045)
+        if len(data) > 256_044:
+            raise ValueError("ESP32 录音超过长度限制")
+        with wave.open(io.BytesIO(data)) as wav:
+            if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, RATE):
+                raise ValueError("ESP32 录音格式不正确")
+            expected = wav.getnframes()
+            pcm = np.frombuffer(wav.readframes(expected), dtype="<i2")
+        if len(pcm) != expected:
+            raise ValueError("ESP32 录音不完整")
+        stream = recognizer.create_stream()
+        stream.accept_waveform(RATE, pcm.astype(np.float32) / 32768)
+        recognizer.decode_stream(stream)
+        text = stream.result.text.strip()
+        return text if any(character.isalnum() for character in text) else ""
+
     state = status()
     if check:
         print(f"PASS: ESP32 唤醒词“{state['wake_word']}”，状态 {state['state']}")
         return
+    if answer:
+        if state.get("on_demand_capture") is not True:
+            raise RuntimeError("ESP32 固件需升级后才能直接录制回答")
+        emit("ready", wake_word=state["wake_word"])
+        if not answer_requested():
+            return
+        boot_id = state["boot_id"]
+        try:
+            with request_device("/api/voice/listen", {"boot_id": boot_id, "wake": 0}) as response:
+                capture_id = json.load(response)["capture"]
+        except urllib.error.HTTPError as error:
+            if error.code == 409:
+                raise RuntimeError("ESP32 麦克风正在录音或设备已重启") from error
+            raise
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            state = status()
+            if state["boot_id"] != boot_id:
+                raise RuntimeError("ESP32 在录音期间重启")
+            if state["capture_finished"] == capture_id:
+                text = recording_text((boot_id, capture_id))
+                if text:
+                    emit("text", text=text)
+                else:
+                    emit("capture_end")
+                return
+            time.sleep(0.2)
+        raise RuntimeError("ESP32 回答录音超时")
+
     emit("ready", wake_word=state["wake_word"])
     announced = (state["boot_id"], 0)
     last = announced
@@ -247,28 +303,14 @@ def esp32_audio(config_path, recognizer, np, check):
                 emit("capture_end")
             wake = (state["boot_id"], state["recording_wake"])
             if wake[1] and wake == announced and wake != last:
-                with request_device("/api/voice/recording.wav") as response:
-                    if response.status != 204 and response.headers.get("X-Mr-Li-Wake") == f"{wake[0]}-{wake[1]}":
-                        data = response.read(256_045)
-                        if len(data) > 256_044:
-                            raise ValueError("ESP32 录音超过长度限制")
-                        with wave.open(io.BytesIO(data)) as wav:
-                            if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, RATE):
-                                raise ValueError("ESP32 录音格式不正确")
-                            expected = wav.getnframes()
-                            pcm = np.frombuffer(wav.readframes(expected), dtype="<i2")
-                        if len(pcm) != expected:
-                            raise ValueError("ESP32 录音不完整")
-                        last = wake
-                        stream = recognizer.create_stream()
-                        stream.accept_waveform(RATE, pcm.astype(np.float32) / 32768)
-                        recognizer.decode_stream(stream)
-                        text = stream.result.text.strip()
-                        if any(character.isalnum() for character in text):
-                            capturing = False
-                            emit("text", text=text)
-                            if not sys.stdin.readline(4096):
-                                return
+                text = recording_text(wake)
+                if text is not None:
+                    last = wake
+                if text:
+                    capturing = False
+                    emit("text", text=text)
+                    if not sys.stdin.readline(4096):
+                        return
             if capturing and state["state"] == "listening" and not state["pending_wake"]:
                 capturing = False
                 emit("capture_end")
@@ -281,12 +323,19 @@ def esp32_audio(config_path, recognizer, np, check):
         time.sleep(0.4)
 
 
+def answer_requested():
+    line = sys.stdin.readline(4096)
+    return bool(line) and json.loads(line).get("listen") is True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", type=Path, required=True)
     parser.add_argument("--device", default="")
     parser.add_argument("--esp32-config", type=Path, help="ESP32 局域网连接配置")
-    parser.add_argument("--check", action="store_true", help="检查模型和输入设备，不开启录音")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true", help="检查模型和输入设备，不开启录音")
+    mode.add_argument("--capture-answer", action="store_true", help="收到指令后录制一次回答")
     backend = parser.add_mutually_exclusive_group()
     backend.add_argument("--local-asr", dest="local_asr", action="store_true", default=True, help="使用本地SenseVoice（默认，不消耗在线额度）")
     backend.add_argument("--cloud-asr", dest="local_asr", action="store_false", help="显式使用xiaoli的在线ASR接口")
@@ -298,12 +347,22 @@ def main():
     if args.esp32_config:
         if not args.local_asr:
             raise ValueError("ESP32 输入使用本地 ASR")
-        esp32_audio(args.esp32_config, local_recognizer(args.models, sherpa), np, args.check)
+        esp32_audio(args.esp32_config, local_recognizer(args.models, sherpa), np, args.check,
+                    answer=args.capture_answer)
         return
     prefer_bundled_portaudio()
     import sounddevice as sd
 
     device = int(args.device) if args.device.isdigit() else (args.device or None)
+    if args.capture_answer:
+        sd.check_input_settings(device=device, channels=1, dtype="float32", samplerate=RATE)
+        if not (args.models / "silero_vad.onnx").is_file():
+            raise FileNotFoundError("缺少语音活动检测模型 silero_vad.onnx")
+        recognizer = local_recognizer(args.models, sherpa)
+        emit("ready")
+        if answer_requested():
+            emit(**capture(sd, sherpa, np, args.models, device, None, recognizer, True, answer=True))
+        return
     if args.check:
         print(sd.query_devices())
         sd.check_input_settings(device=device, channels=1, dtype="float32", samplerate=RATE)
@@ -336,5 +395,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     except Exception as error:
+        if PROTOCOL is not None and "--capture-answer" in sys.argv:
+            emit("capture_error", message=str(error)[:400])
         print(f"语音输入失败：{error}", file=sys.stderr)
         sys.exit(1)

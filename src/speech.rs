@@ -1,8 +1,147 @@
 //! Manual text-to-speech on the deployment Mac. Text is stdin, never shell code or options.
 use crate::config::Config;
 use anyhow::{Context, Result, ensure};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    fs,
+    io::{ErrorKind, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    process::Stdio,
+    time::Duration,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const SYSTEM_PROGRAM: &str = "/usr/bin/say";
+const CLONE_SCRIPT: &str = "local-voice.sh";
+
+#[derive(Clone, Copy)]
+enum Voice {
+    TingTing,
+    Clone,
+}
+
+impl Voice {
+    fn key(self) -> &'static str {
+        match self {
+            Self::TingTing => "tingting",
+            Self::Clone => "clone",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::TingTing => "系统 Ting-Ting",
+            Self::Clone => "本地克隆音色",
+        }
+    }
+
+    fn program(self, cfg: &Config) -> &Path {
+        match self {
+            Self::TingTing => Path::new(SYSTEM_PROGRAM),
+            Self::Clone if Path::new(&cfg.speech_program).ends_with(CLONE_SCRIPT) => {
+                Path::new(&cfg.speech_program)
+            }
+            Self::Clone => Path::new("scripts/local-voice.sh"),
+        }
+    }
+}
+
+fn selection_path(cfg: &Config) -> PathBuf {
+    cfg.data_dir.join("speech-voice")
+}
+
+fn selection(cfg: &Config) -> Result<Option<Voice>> {
+    match fs::read_to_string(selection_path(cfg)) {
+        Ok(value) => match value.trim() {
+            "tingting" => Ok(Some(Voice::TingTing)),
+            "clone" => Ok(Some(Voice::Clone)),
+            _ => anyhow::bail!("语音设置无效，可用 /voice tingting 或 /voice clone 重新选择"),
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).context("无法读取语音设置"),
+    }
+}
+
+fn executable(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn select(cfg: &Config, voice: Voice) -> Result<()> {
+    let program = voice.program(cfg);
+    match voice {
+        Voice::TingTing => ensure!(executable(program), "系统语音程序不可用"),
+        Voice::Clone => {
+            let root = program
+                .parent()
+                .and_then(Path::parent)
+                .context("克隆脚本路径无效")?;
+            let assets = root.join(".data/local-tts");
+            ensure!(
+                executable(program)
+                    && executable(&root.join(".data/voice/venv/bin/python"))
+                    && executable(&assets.join("bin/mr-li-local-voice"))
+                    && [
+                        "config.json",
+                        "reference.wav",
+                        "reference.txt",
+                        "models/encoder.int8.onnx",
+                        "models/decoder.int8.onnx",
+                        "vocos_24khz.onnx",
+                    ]
+                    .iter()
+                    .all(|file| assets.join(file).is_file()),
+                "本地克隆音色需先安装脚本、运行环境和模型"
+            );
+        }
+    }
+
+    fs::create_dir_all(&cfg.data_dir).context("无法创建语音设置目录")?;
+    let temp = cfg
+        .data_dir
+        .join(format!(".speech-voice-{}", uuid::Uuid::new_v4()));
+    let result = (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        writeln!(file, "{}", voice.key())?;
+        file.sync_all()?;
+        fs::rename(&temp, selection_path(cfg))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result.context("无法保存语音设置")
+}
+
+pub fn voice_command(cfg: &Config, args: &str) -> Result<String> {
+    const USAGE: &str = "/voice tingting 切换到系统 Ting-Ting\n/voice clone 切换到本地克隆音色";
+    let voice = match args {
+        "" | "status" => {
+            let current = match selection(cfg)? {
+                Some(voice) => voice.label().to_owned(),
+                None if cfg.speech_program == SYSTEM_PROGRAM => {
+                    format!("系统语音（{}）", cfg.speak_voice)
+                }
+                None if Path::new(&cfg.speech_program).ends_with(CLONE_SCRIPT) => {
+                    Voice::Clone.label().to_owned()
+                }
+                None => "部署配置中的语音".to_owned(),
+            };
+            return Ok(format!("Mac mini 当前语音：{current}\n{USAGE}"));
+        }
+        "tingting" => Voice::TingTing,
+        "clone" => Voice::Clone,
+        _ => anyhow::bail!("用法：/voice [status|tingting|clone]"),
+    };
+    select(cfg, voice)?;
+    Ok(format!(
+        "Mac mini 已切换到{}，从下一条播报起生效。",
+        voice.label()
+    ))
+}
 
 // Keep the tail (where workers print their final error) while draining the pipe so
 // verbose dependencies cannot block the child or consume unbounded memory.
@@ -53,50 +192,87 @@ pub fn text(text: &str) -> Option<&str> {
     (command == "/speak" && !args.is_empty() && args != "stop").then_some(args)
 }
 pub async fn speak(cfg: &Config, text: &str) -> Result<()> {
-    play(
-        Path::new(&cfg.speech_program),
-        cfg,
-        text,
-        Duration::from_secs(180),
-    )
-    .await
+    speak_shared(cfg, text, Duration::from_secs(180)).await
 }
 pub async fn speak_progress(cfg: &Config, text: &str) -> Result<()> {
-    play(
-        Path::new(&cfg.speech_program),
-        cfg,
-        text,
-        Duration::from_secs(20),
-    )
-    .await
+    speak_shared(cfg, text, Duration::from_secs(20)).await
 }
 pub async fn speak_posture(cfg: &Config, text: &str) -> Result<()> {
     let mut cfg = cfg.clone();
     cfg.speak_voice = cfg.posture_voice.clone();
     cfg.speak_audio_device = cfg.posture_audio_device.clone();
-    play(
-        Path::new(&cfg.speech_program),
-        &cfg,
+    speak_shared(&cfg, text, Duration::from_secs(20)).await
+}
+
+async fn audio_lock(cfg: &Config, exclusive: bool) -> Result<fs::File> {
+    fs::create_dir_all(&cfg.data_dir)?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(cfg.data_dir.join("voice-answer.lock"))?;
+    loop {
+        let result = if exclusive {
+            fs2::FileExt::try_lock_exclusive(&lock)
+        } else {
+            fs2::FileExt::try_lock_shared(&lock)
+        };
+        match result {
+            Ok(()) => return Ok(lock),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error).context("无法锁定语音设备"),
+        }
+    }
+}
+
+async fn speak_shared(cfg: &Config, text: &str, timeout: Duration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let _lock = tokio::time::timeout_at(deadline, audio_lock(cfg, false))
+        .await
+        .context("喇叭正在等待语音回答")??;
+    speak_with_selection(
+        cfg,
         text,
-        Duration::from_secs(20),
+        deadline.saturating_duration_since(tokio::time::Instant::now()),
     )
     .await
 }
-async fn play(program: &Path, cfg: &Config, text: &str, timeout: Duration) -> Result<()> {
+
+pub async fn ask_aloud(cfg: &Config, question: &str) -> Result<fs::File> {
+    let lock = tokio::time::timeout(Duration::from_secs(20), audio_lock(cfg, true))
+        .await
+        .context("喇叭忙，无法播报问题")??;
+    speak_with_selection(cfg, &format!("请回答。{question}"), Duration::from_secs(95)).await?;
+    // Keep ordinary broadcasts quiet until the caller finishes recording.
+    Ok(lock)
+}
+
+async fn speak_with_selection(cfg: &Config, text: &str, timeout: Duration) -> Result<()> {
+    let (program, voice) = match selection(cfg)? {
+        Some(Voice::TingTing) => (Voice::TingTing.program(cfg), "Ting-Ting"),
+        Some(voice) => (voice.program(cfg), cfg.speak_voice.as_str()),
+        None => (Path::new(&cfg.speech_program), cfg.speak_voice.as_str()),
+    };
+    play(program, voice, cfg, text, timeout).await
+}
+async fn play(
+    program: &Path,
+    voice: &str,
+    cfg: &Config,
+    text: &str,
+    timeout: Duration,
+) -> Result<()> {
     ensure!(!text.trim().is_empty(), "用法：/speak 要播报的文字");
     ensure!(
         text.chars().count() <= 500 && !text.contains('\0'),
         "播报文字最多 500 字，不能包含空字符"
     );
     let mut child = tokio::process::Command::new(program)
-        .args([
-            "-v",
-            &cfg.speak_voice,
-            "-a",
-            &cfg.speak_audio_device,
-            "-r",
-            "180",
-        ])
+        .args(["-v", voice, "-a", &cfg.speak_audio_device, "-r", "180"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -150,6 +326,7 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
         let error = play(
             &program,
+            "Ting-Ting",
             &Config::fixture(),
             "测试",
             Duration::from_secs(10),
@@ -192,7 +369,14 @@ mod tests {
             "-v ? ; $(touch '{}')\n你好，李老师。",
             dir.join("SHOULD_NOT_EXIST").display()
         );
-        play(&program, &cfg, &text, Duration::from_secs(10)).await?;
+        play(
+            &program,
+            &cfg.speak_voice,
+            &cfg,
+            &text,
+            Duration::from_secs(10),
+        )
+        .await?;
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, text);
         assert_eq!(
             std::fs::read_to_string(dir.join("args"))?,
@@ -220,6 +404,7 @@ mod tests {
         )?;
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
         let mut cfg = Config::fixture();
+        cfg.data_dir = dir.join("data");
         cfg.speech_program = program.to_string_lossy().into_owned();
         speak(&cfg, "新闻内容").await?;
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, "新闻内容");
@@ -229,6 +414,52 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, "坐直一点");
         assert!(std::fs::read_to_string(dir.join("args"))?.contains("posture-output"));
         std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn voice_selection_persists_and_applies_to_later_playback() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("mr-li-voice-mode-{}", uuid::Uuid::new_v4()));
+        let mut cfg = Config::fixture();
+        cfg.data_dir = dir.join("data");
+        let program = dir.join("scripts/local-voice.sh");
+        cfg.speech_program = program.display().to_string();
+        assert!(voice_command(&cfg, "status")?.contains("本地克隆音色"));
+        assert!(voice_command(&cfg, "clone").is_err());
+        assert!(selection(&cfg)?.is_none());
+        assert!(voice_command(&cfg, "clone /bin/sh").is_err());
+
+        for relative in [
+            "scripts/local-voice.sh",
+            ".data/voice/venv/bin/python",
+            ".data/local-tts/bin/mr-li-local-voice",
+            ".data/local-tts/config.json",
+            ".data/local-tts/reference.wav",
+            ".data/local-tts/reference.txt",
+            ".data/local-tts/models/encoder.int8.onnx",
+            ".data/local-tts/models/decoder.int8.onnx",
+            ".data/local-tts/vocos_24khz.onnx",
+        ] {
+            let path = dir.join(relative);
+            fs::create_dir_all(path.parent().unwrap())?;
+            fs::write(&path, "#!/bin/sh\ncat >/dev/null\n")?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
+        }
+        fs::write(
+            &program,
+            format!("#!/bin/sh\ncat > '{}'\n", dir.join("spoken").display()),
+        )?;
+        assert!(voice_command(&cfg, "clone")?.contains("已切换到本地克隆音色"));
+        let reloaded = cfg.clone();
+        assert!(matches!(selection(&reloaded)?, Some(Voice::Clone)));
+        speak_progress(&reloaded, "继续处理").await?;
+        assert_eq!(fs::read_to_string(dir.join("spoken"))?, "继续处理");
+
+        if executable(Path::new(SYSTEM_PROGRAM)) {
+            assert!(voice_command(&cfg, "tingting")?.contains("已切换到系统 Ting-Ting"));
+            assert!(voice_command(&reloaded, "")?.contains("当前语音：系统 Ting-Ting"));
+            assert!(program.is_file());
+        }
+        fs::remove_dir_all(dir)?;
         Ok(())
     }
     #[tokio::test]
@@ -246,7 +477,14 @@ mod tests {
         )?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         let task = tokio::spawn(async move {
-            play(&path, &Config::fixture(), "测试", Duration::from_secs(60)).await
+            play(
+                &path,
+                "Ting-Ting",
+                &Config::fixture(),
+                "测试",
+                Duration::from_secs(60),
+            )
+            .await
         });
         let pid = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -285,6 +523,7 @@ mod tests {
         assert!(
             play(
                 Path::new("/nonexistent"),
+                "Ting-Ting",
                 &cfg,
                 &"字".repeat(501),
                 Duration::from_millis(20)
@@ -296,7 +535,7 @@ mod tests {
         std::fs::write(&path, "#!/bin/sh\nexec /bin/sleep 30\n")?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         let started = std::time::Instant::now();
-        let result = play(&path, &cfg, "测试", Duration::from_millis(50)).await;
+        let result = play(&path, "Ting-Ting", &cfg, "测试", Duration::from_millis(50)).await;
         assert!(result.unwrap_err().to_string().contains("已停止"));
         assert!(started.elapsed() < Duration::from_secs(2));
         std::fs::remove_file(path)?;

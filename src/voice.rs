@@ -5,7 +5,7 @@ use crate::{
     store::{Job, Store},
 };
 use anyhow::{Context, Result, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashSet, process::Stdio, sync::Arc, time::Duration};
 use tokio::io::{
@@ -37,6 +37,67 @@ impl Settings {
 }
 pub fn is_job(j: &Job) -> bool {
     j.id.starts_with("voice:")
+}
+
+const QUESTION_PREFIX: &str = "/_ask-user-question ";
+
+#[derive(Serialize, Deserialize)]
+struct Question {
+    parent: String,
+    text: String,
+}
+
+pub fn question_command(parent: &Job, text: &str) -> Result<String> {
+    Ok(format!(
+        "{QUESTION_PREFIX}{}",
+        serde_json::to_string(&Question {
+            parent: parent.id.clone(),
+            text: text.trim().into(),
+        })?
+    ))
+}
+
+pub fn is_question(job: &Job) -> bool {
+    job.id.starts_with("builtin:") && job.text.starts_with(QUESTION_PREFIX)
+}
+
+pub async fn ask(cfg: &Config, store: &Store, job: &Job) -> Result<String> {
+    ensure!(is_question(job), "无效的内置提问");
+    let question: Question = serde_json::from_str(
+        job.text
+            .strip_prefix(QUESTION_PREFIX)
+            .context("缺少提问内容")?,
+    )?;
+    let origin = bind(cfg, store.voice_origins()?)?;
+    ensure!(
+        models::scope(&origin.key)? == models::scope(&job.key)?,
+        "这个会话未绑定此麦克风，无法采集回答"
+    );
+    let parent_active = || -> Result<bool> {
+        Ok(store
+            .command_task(&job.key, &question.parent)?
+            .is_some_and(|task| task["status"] == "running"))
+    };
+    ensure!(parent_active()?, "来源任务已结束");
+
+    // A local voice turn pauses its input helper while the Agent executes. For
+    // other tasks only use the local microphone if no voice frontend owns it.
+    let _local_lock = if cfg.voice.esp32_config.is_empty() && !question.parent.starts_with("voice:")
+    {
+        Some(frontend_lock(cfg)?)
+    } else {
+        None
+    };
+    tokio::select! {
+        biased;
+        result = async {
+            loop {
+                ensure!(parent_active()?, "来源任务已结束");
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        } => result,
+        result = capture_answer(cfg, &question.text) => result,
+    }
 }
 
 fn bind(cfg: &Config, origins: Vec<Job>) -> Result<Job> {
@@ -117,6 +178,7 @@ enum Event {
     Wake,
     Text { text: String },
     CaptureEnd,
+    CaptureError { message: String },
 }
 
 const PROGRESS_OPEN: &str = "<voice-progress>";
@@ -214,6 +276,50 @@ async fn listen(input: &mut (impl AsyncWrite + Unpin), enabled: bool) -> Result<
     Ok(())
 }
 
+fn helper(cfg: &Config) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(&cfg.voice.python);
+    command.args([&cfg.voice.helper, "--models", &cfg.voice.models]);
+    if !cfg.voice.esp32_config.is_empty() {
+        command.args(["--esp32-config", &cfg.voice.esp32_config]);
+    } else if !cfg.voice.device.is_empty() {
+        command.args(["--device", &cfg.voice.device]);
+    }
+    command
+}
+
+async fn capture_answer(cfg: &Config, question: &str) -> Result<String> {
+    let mut child = helper(cfg)
+        .arg("--capture-answer")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .context("无法启动麦克风，请检查语音输入环境")?;
+    let mut input = child.stdin.take().context("麦克风进程没有 stdin")?;
+    let mut output = BufReader::new(child.stdout.take().context("麦克风进程没有 stdout")?);
+    let mut line = Vec::new();
+    match tokio::time::timeout(Duration::from_secs(25), read_event(&mut output, &mut line))
+        .await
+        .context("麦克风准备超时")??
+    {
+        Event::Ready { .. } => {}
+        Event::CaptureError { message } => anyhow::bail!("{message}"),
+        _ => anyhow::bail!("麦克风返回了意外的准备状态"),
+    }
+    let _quiet = speech::ask_aloud(cfg, question).await?;
+    listen(&mut input, true).await?;
+    match tokio::time::timeout(Duration::from_secs(40), read_event(&mut output, &mut line))
+        .await
+        .context("等待麦克风回答超时")??
+    {
+        Event::Text { text } if !text.trim().is_empty() => Ok(text),
+        Event::Text { .. } | Event::CaptureEnd => anyhow::bail!("没听到清楚的回答"),
+        Event::CaptureError { message } => anyhow::bail!("{message}"),
+        _ => anyhow::bail!("麦克风返回了意外的回答状态"),
+    }
+}
+
 fn goodbye(text: &str) -> bool {
     matches!(
         text.trim_matches(|c: char| c.is_whitespace() || "，。！？,.!?".contains(c)),
@@ -276,6 +382,7 @@ async fn esp32_dialogue(
                 listen(input, true).await?;
             }
             Event::CaptureEnd => capturing = false,
+            Event::CaptureError { message } => anyhow::bail!("{message}"),
             Event::Text { text } => {
                 println!("你：{text}");
                 capturing = false;
@@ -319,7 +426,7 @@ pub async fn maintain(cfg: Arc<Config>) {
     }
 }
 
-pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
+fn frontend_lock(cfg: &Config) -> Result<std::fs::File> {
     std::fs::create_dir_all(&cfg.data_dir)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -327,13 +434,12 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
         .write(true)
         .open(cfg.data_dir.join("voice.lock"))?;
     fs2::FileExt::try_lock_exclusive(&lock).context("已有麦克风语音进程")?;
-    let mut command = tokio::process::Command::new(&cfg.voice.python);
-    command.args([&cfg.voice.helper, "--models", &cfg.voice.models]);
-    if !cfg.voice.esp32_config.is_empty() {
-        command.args(["--esp32-config", &cfg.voice.esp32_config]);
-    } else if !cfg.voice.device.is_empty() {
-        command.args(["--device", &cfg.voice.device]);
-    }
+    Ok(lock)
+}
+
+pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
+    let _lock = frontend_lock(&cfg)?;
+    let mut command = helper(&cfg);
     if check {
         let status = command
             .arg("--check")
@@ -369,6 +475,7 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
                     continue;
                 }
                 Event::CaptureEnd => continue,
+                Event::CaptureError { message } => anyhow::bail!("{message}"),
                 Event::Wake => {
                     speech::speak_posture(&cfg, "我在，请说。").await?;
                     true
@@ -412,6 +519,58 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[tokio::test]
+    async fn question_opens_microphone_after_playback_for_the_bound_running_task() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mr-li-question-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let spoken = dir.join("spoken");
+        let mic = dir.join("mic.sh");
+        let speaker = dir.join("speak.sh");
+        std::fs::write(
+            &speaker,
+            format!("#!/bin/sh\ncat > '{}'\n", spoken.display()),
+        )?;
+        std::fs::set_permissions(&speaker, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::write(
+            &mic,
+            format!(
+                "#!/bin/sh\nset -eu\nprintf '%s\\n' '{{\"event\":\"ready\"}}'\nread -r command\n[ \"$command\" = '{{\"listen\":true}}' ]\n[ -s '{}' ]\nprintf '%s\\n' '{{\"event\":\"text\",\"text\":\"九点\"}}'\n",
+                spoken.display()
+            ),
+        )?;
+        let mut cfg = Config::fixture();
+        cfg.data_dir = dir.clone();
+        cfg.speech_program = speaker.to_string_lossy().into_owned();
+        cfg.voice.python = "/bin/sh".into();
+        cfg.voice.helper = mic.to_string_lossy().into_owned();
+        let store = Store::open(std::path::Path::new(":memory:"))?;
+        let parent = Job {
+            id: "original".into(),
+            key: json!([cfg.workspace, "ou_owner", "oc_chat", "thread"]).to_string(),
+            message_id: "om_test".into(),
+            text: "请问我几点出发".into(),
+            result: String::new(),
+            sent: 0,
+        };
+        store.insert(&parent)?;
+        store.save_incoming(&parent.id, &json!({}))?;
+        store.status(&parent.id, "running")?;
+        let child = Job {
+            id: "builtin:question".into(),
+            text: question_command(&parent, "几点出发？")?,
+            ..parent.clone()
+        };
+        assert_eq!(ask(&cfg, &store, &child).await?, "九点");
+        assert_eq!(std::fs::read_to_string(&spoken)?, "请回答。几点出发？");
+        std::fs::remove_file(&spoken)?;
+        store.finish(&parent.id, "finished")?;
+        assert!(ask(&cfg, &store, &child).await.is_err());
+        assert!(!spoken.exists());
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn esp32_accepts_a_second_wake_while_previous_agent_is_still_running() -> Result<()> {

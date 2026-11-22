@@ -20,6 +20,8 @@ S3-CAM 的 INMP441 麦克风沿用 GPIO1（WS）、GPIO2（SCK）、GPIO42（SD�
 读取该段音频，本地 ASR 转成文本。录音约 30 秒过期，每轮都需要重新唤醒。
 板载灯蓝色表示已识别唤醒词、正在等主机提示，绿色表示正在录音，结束后熄灭。
 
+模型也可以通过内置工具 `teacher_ask_user_question` 提问。主机说完问题后，请等灯变绿就直接回答，无需再次唤醒。此路径需要支持 `on_demand_capture` 的固件。主机使用认证的 `POST /api/voice/listen`，带当前 `boot_id` 和 `wake: 0`。固件返回本次 `capture` 编号，主机只读取编号相符的录音。
+
 主要调用链：`Home Assistant → 家庭 Wi-Fi / HTTP → ESP32 → 蓝牙 → 极米`。
 
 可选调用链：`MCP 客户端 → Mac 上的 mcp_bridge.py → USB → ESP32 → 蓝牙 → 极米`。

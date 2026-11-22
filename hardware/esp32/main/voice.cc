@@ -8,6 +8,8 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <driver/i2s_std.h>
 #include <esp_timer.h>
@@ -41,6 +43,9 @@ std::atomic<const char*> failure{""};
 std::atomic<const char*> indicator{"unavailable"};
 unsigned boot_id = 0;
 std::atomic<unsigned> wakes{0}, pending_wake{0}, mic_peak{0}, read_errors{0};
+std::atomic<unsigned> capture_finished{0};
+std::mutex capture_mutex;
+unsigned requested_capture = 0, next_capture = 0;
 std::mutex recording_mutex;
 std::shared_ptr<Recording> recording;
 
@@ -164,6 +169,16 @@ std::shared_ptr<Recording> Capture(AudioChannel& mic, vad_handle_t vad, unsigned
     return clip;
 }
 
+void Record(AudioChannel& mic, vad_handle_t vad, WakeIndicator& led, unsigned id) {
+    led.Set("green", 18, 0);
+    auto clip = Capture(mic, vad, id);
+    {
+        std::lock_guard lock(recording_mutex);
+        recording = std::move(clip);
+    }
+    led.Set("off", 0, 0);
+}
+
 void Listen() {
     AudioChannel mic;
     mic.Open();
@@ -196,8 +211,19 @@ void Listen() {
     WakeIndicator led;
     mic.Enable(true);
     for (;;) {
-        phase = "listening";
+        unsigned capture;
+        {
+            std::lock_guard lock(capture_mutex);
+            capture = std::exchange(requested_capture, 0);
+            phase = capture ? "recording" : "listening";
+        }
         RecentRecording(); // Drop expired utterances even if nobody connects.
+        if (capture) {
+            iface->clean(detector.get());
+            Record(mic, vad.get(), led, capture);
+            capture_finished = capture;
+            continue;
+        }
         if (!Read(mic, raw.data(), pcm.data(), samples)) continue;
         const auto detection = iface->detect(detector.get(), pcm.data());
         if (detection == ESP_MN_STATE_DETECTING) continue;
@@ -205,13 +231,19 @@ void Listen() {
         const bool matched = result && result->num > 0 && result->command_id[0] == kWakeCommand;
         iface->clean(detector.get());
         if (!matched) continue;
-        const unsigned wake = ++wakes;
+        unsigned wake;
+        {
+            std::lock_guard lock(capture_mutex);
+            if (requested_capture) continue;
+            ++wakes;
+            wake = ++next_capture;
+            phase = "awaiting_host";
+            pending_wake = wake;
+        }
         {
             std::lock_guard lock(recording_mutex);
             recording.reset();
         }
-        phase = "awaiting_host";
-        pending_wake = wake;
         led.Set("blue", 0, 18);
         const int64_t deadline = esp_timer_get_time() + 15'000'000;
         while (pending_wake.load() == wake && esp_timer_get_time() < deadline) {
@@ -222,14 +254,10 @@ void Listen() {
         unsigned expected = wake;
         const bool accepted = !pending_wake.compare_exchange_strong(expected, 0);
         if (accepted) {
-            led.Set("green", 18, 0);
-            auto clip = Capture(mic, vad.get(), wake);
-            if (clip) {
-                std::lock_guard lock(recording_mutex);
-                recording = std::move(clip);
-            }
+            Record(mic, vad.get(), led, wake);
+        } else {
+            led.Set("off", 0, 0);
         }
-        led.Set("off", 0, 0);
     }
 }
 
@@ -259,6 +287,16 @@ cJSON* HandleVoiceCommand(const std::string& method, const cJSON* params, bool l
     if (method == "voice.listen") {
         const auto boot = cJSON_GetObjectItemCaseSensitive(params, "boot_id");
         const auto wake = cJSON_GetObjectItemCaseSensitive(params, "wake");
+        if (cJSON_IsNumber(boot) && boot->valuedouble == boot_id &&
+            cJSON_IsNumber(wake) && wake->valuedouble == 0) {
+            std::lock_guard lock(capture_mutex);
+            if (requested_capture || std::string_view(phase.load()) != "listening")
+                throw std::runtime_error("Microphone busy");
+            requested_capture = ++next_capture;
+            auto result = cJSON_CreateObject();
+            cJSON_AddNumberToObject(result, "capture", requested_capture);
+            return result;
+        }
         unsigned pending = pending_wake.load();
         if (!cJSON_IsNumber(boot) || boot->valuedouble != boot_id ||
             !cJSON_IsNumber(wake) || !pending || wake->valuedouble != pending ||
@@ -278,6 +316,8 @@ cJSON* HandleVoiceCommand(const std::string& method, const cJSON* params, bool l
     cJSON_AddNumberToObject(result, "wake_count", wakes.load());
     cJSON_AddNumberToObject(result, "boot_id", boot_id);
     cJSON_AddNumberToObject(result, "pending_wake", pending_wake.load());
+    cJSON_AddBoolToObject(result, "on_demand_capture", true);
+    cJSON_AddNumberToObject(result, "capture_finished", capture_finished.load());
     if (local_diagnostics) {
         cJSON_AddNumberToObject(result, "mic_peak", mic_peak.load());
         cJSON_AddNumberToObject(result, "read_errors", read_errors.load());

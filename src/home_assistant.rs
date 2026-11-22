@@ -530,7 +530,10 @@ fn is_xgimi_remote(id: &Value, registry: &Value) -> bool {
 
 fn is_xgimi_confirm_alias(command: &Value) -> bool {
     command.as_str().is_some_and(|key| {
-        key != "ok" && (key.eq_ignore_ascii_case("ok") || key.eq_ignore_ascii_case("play"))
+        key != "ok"
+            && ["ok", "play", "pause"]
+                .iter()
+                .any(|alias| key.eq_ignore_ascii_case(alias))
     })
 }
 
@@ -954,10 +957,22 @@ mod tests {
             (
                 "remote.projector",
                 json!(["ok"]),
-                json!(["right", "OK"]),
-                json!(["right", "ok"]),
+                json!(["right", "OK", "Pause", "pause"]),
+                json!(["right", "ok", "ok", "ok"]),
+            ),
+            (
+                "remote.projector",
+                json!(["ok"]),
+                json!("Pause"),
+                json!("ok"),
             ),
             ("remote.other", json!("Play"), json!("Play"), json!("Play")),
+            (
+                "remote.other",
+                json!("Play"),
+                json!("Pause"),
+                json!("Pause"),
+            ),
         ] {
             let commands = client
                 .run("ha_commands", json!({"entity_id":entity}))

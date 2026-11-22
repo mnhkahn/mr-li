@@ -18,6 +18,40 @@ spec.loader.exec_module(voice)
 
 
 class CaptureTest(unittest.TestCase):
+    def test_esp32_question_does_not_trigger_before_prompt_finishes_or_use_an_old_clip(self):
+        ready = dict(state="listening", wake_word="小李", boot_id=7, on_demand_capture=True,
+                     capture_finished=3, recording_wake=3)
+        finished = dict(ready, capture_finished=4, recording_wake=0)
+        requests = []
+        states = iter((ready, ready, finished))
+
+        def open_device(request, **_):
+            path = request.full_url.rsplit("/", 1)[1]
+            requests.append((path, request.data))
+            if path == "status":
+                return io.BytesIO(json.dumps(next(states)).encode())
+            if path == "listen":
+                return io.BytesIO(b'{"capture":4}')
+            self.assertEqual(path, "recording.wav")
+            response = io.BytesIO()
+            response.status = 200
+            response.headers = {"X-Mr-Li-Wake": "7-3"}
+            return response
+
+        def confirm_listen():
+            self.assertEqual([path for path, _ in requests], ["status"])
+            return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "esp32.json"
+            config.write_text(json.dumps({"base_url": "http://192.0.2.1", "api_token": "fixture"}))
+            with patch.object(voice.urllib.request, "build_opener", return_value=NS(open=open_device)), \
+                 patch.object(voice, "emit") as emit, patch.object(voice.time, "sleep"), \
+                 patch.object(voice, "answer_requested", side_effect=confirm_listen):
+                voice.esp32_audio(config, None, None, check=False, answer=True)
+        self.assertEqual(json.loads(requests[1][1]), {"boot_id": 7, "wake": 0})
+        self.assertEqual([call.args for call in emit.call_args_list], [("ready",), ("capture_end",)])
+
     def test_esp32_fetches_only_audio_from_a_new_acknowledged_wake(self):
         ready = dict(state="listening", wake_word="小李", boot_id=7, wake_count=4,
                      pending_wake=0, recording_wake=4)

@@ -13,42 +13,123 @@ pub fn now_epoch() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
-pub fn schedule_bounds_at(epoch: u64) -> (u64, u64) {
-    let day = (epoch + 8 * 3600) / 86400 * 86400;
-    (day + 9 * 3600, day + 13 * 3600 + 30 * 60) // 17:00 and 21:30 Asia/Shanghai, expressed as UTC epoch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HomeworkState {
+    #[default]
+    Unavailable,
+    Idle,
+    Confirming,
+    ActiveSince(u64),
 }
-pub fn schedule_active_at(epoch: u64) -> bool {
-    let (start, end) = schedule_bounds_at(epoch);
-    epoch >= start && epoch < end
+
+impl HomeworkState {
+    pub fn started(self) -> Option<u64> {
+        match self {
+            Self::ActiveSince(start) => Some(start),
+            _ => None,
+        }
+    }
 }
-pub fn schedule_active() -> bool {
-    schedule_active_at(now_epoch())
+
+#[derive(serde::Deserialize)]
+struct HomeworkTimer {
+    timer_running: bool,
+    current_task_id: String,
+    elapsed_seconds: Option<u64>,
 }
-pub fn next_start_at(epoch: u64) -> u64 {
-    let (start, _) = schedule_bounds_at(epoch);
-    if epoch < start { start } else { start + 86400 }
+
+impl HomeworkTimer {
+    fn advances_from(&self, previous: &Self) -> bool {
+        self.timer_running
+            && previous.timer_running
+            && self.current_task_id == previous.current_task_id
+            && self
+                .elapsed_seconds
+                .zip(previous.elapsed_seconds)
+                .is_some_and(|(current, before)| current > before)
+    }
 }
-pub fn next_report_at(epoch: u64) -> u64 {
-    if schedule_active_at(epoch) {
-        let (_, end) = schedule_bounds_at(epoch);
-        (epoch + 600).min(end)
+
+async fn homework_timer(cfg: &Config) -> Result<HomeworkTimer> {
+    let mut command = tokio::process::Command::new(&cfg.homework_cli);
+    command
+        .args(["--no-analytics", "device", "homework-status"])
+        .env("CYEAM_CLI_NO_UPDATE_NOTIFIER", "1")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(18), command.output()).await??;
+    ensure!(output.status.success(), "作业平板状态查询失败");
+    #[derive(serde::Deserialize)]
+    struct Response {
+        ok: bool,
+        data: HomeworkTimer,
+    }
+    let response: Response = serde_json::from_slice(&output.stdout)?;
+    ensure!(response.ok, "作业平板状态查询失败");
+    let timer = response.data;
+    ensure!(
+        !timer.timer_running
+            || (!timer.current_task_id.is_empty() && timer.elapsed_seconds.is_some()),
+        "作业平板未返回完整计时状态"
+    );
+    Ok(timer)
+}
+
+// The tablet persists its last snapshot. A ticking elapsed counter confirms
+// that a reported running task is current even after a reconnect or app exit.
+fn observe_timer(
+    state: HomeworkState,
+    previous: Option<&HomeworkTimer>,
+    timer: Option<&HomeworkTimer>,
+    now: u64,
+) -> (HomeworkState, Duration) {
+    let normal = Duration::from_secs(30);
+    let Some(timer) = timer else {
+        return (HomeworkState::Unavailable, normal);
+    };
+    if !timer.timer_running {
+        return (HomeworkState::Idle, normal);
+    }
+    if previous.is_some_and(|p| timer.advances_from(p)) {
+        return (
+            HomeworkState::ActiveSince(state.started().unwrap_or(now)),
+            normal,
+        );
+    }
+    let delay = if previous.is_some_and(|p| {
+        p.timer_running
+            && p.current_task_id == timer.current_task_id
+            && p.elapsed_seconds == timer.elapsed_seconds
+    }) {
+        normal
     } else {
-        next_start_at(epoch) + 600
-    }
+        Duration::from_secs(3)
+    };
+    (HomeworkState::Confirming, delay)
 }
-pub fn remaining_window() -> Duration {
-    let now = std::time::SystemTime::now();
-    let epoch = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    if !schedule_active_at(epoch) {
-        return Duration::ZERO;
+
+pub async fn follow_homework(cfg: &Config, store: &crate::store::Store) -> Result<()> {
+    let mut previous: Option<HomeworkTimer> = None;
+    let mut state = HomeworkState::Unavailable;
+    let mut last_reported = None;
+    loop {
+        let timer = if store.has_posture_watch()? {
+            homework_timer(cfg).await.ok()
+        } else {
+            None
+        };
+        let now = now_epoch();
+        let (next, delay) = observe_timer(state, previous.as_ref(), timer.as_ref(), now);
+        store.set_homework_state(next, now)?;
+        if last_reported != Some(next) {
+            tracing::info!(homework = ?next, "坐姿联动作业状态");
+            last_reported = Some(next);
+        }
+        state = next;
+        previous = timer;
+        tokio::time::sleep(delay).await;
     }
-    let (_, end) = schedule_bounds_at(epoch);
-    (std::time::UNIX_EPOCH + Duration::from_secs(end))
-        .duration_since(now)
-        .unwrap_or_default()
 }
 
 fn archive_path(cfg: &Config, job_id: &str, epoch: u64) -> Result<PathBuf> {
@@ -178,7 +259,7 @@ impl Assessment {
 
 /// System speech runs on the Mac mini; cancellation also stops the speech child.
 pub async fn speak(cfg: &Config, assessment: Assessment) -> Result<()> {
-    if !cfg.posture_speech || !schedule_active() {
+    if !cfg.posture_speech {
         return Ok(());
     }
     let Some(text) = assessment.speech() else {
@@ -250,24 +331,40 @@ pub async fn analyze(cfg: &Config, image: &Path) -> Result<Observation> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     #[test]
-    fn daily_schedule_obeys_beijing_boundaries() {
-        // 2026-11-15 17:00 Asia/Shanghai.
-        let start = 1794733200;
-        let end = start + 4 * 3600 + 30 * 60;
-        assert!(!super::schedule_active_at(start - 1));
-        assert!(super::schedule_active_at(start));
-        assert!(super::schedule_active_at(end - 1));
-        assert!(!super::schedule_active_at(end));
-        assert!(!super::schedule_active_at(start + 86400 - 1));
-        assert!(super::schedule_active_at(start + 86400));
-        assert_eq!(super::next_start_at(start - 1), start);
-        assert_eq!(super::next_start_at(end), start + 86400);
-        assert_eq!(super::next_report_at(end - 20), end);
-        assert_eq!(super::next_report_at(end), start + 86400 + 600);
+    fn homework_timer_requires_progress_and_stops_when_idle_or_stale() {
+        let snapshot = |elapsed, timer_running| HomeworkTimer {
+            timer_running,
+            current_task_id: "task".into(),
+            elapsed_seconds: Some(elapsed),
+        };
+        let first = snapshot(12, true);
+        let running = snapshot(15, true);
+        let idle = snapshot(15, false);
+        assert_eq!(
+            observe_timer(HomeworkState::Unavailable, None, Some(&first), 100),
+            (HomeworkState::Confirming, Duration::from_secs(3))
+        );
+        let active = HomeworkState::ActiveSince(103);
+        assert_eq!(
+            observe_timer(HomeworkState::Confirming, Some(&first), Some(&running), 103).0,
+            active
+        );
+        assert_eq!(
+            observe_timer(active, Some(&running), Some(&idle), 110).0,
+            HomeworkState::Idle
+        );
+        assert_eq!(
+            observe_timer(active, Some(&running), Some(&running), 110).0,
+            HomeworkState::Confirming
+        );
+        assert_eq!(
+            observe_timer(active, Some(&running), None, 110).0,
+            HomeworkState::Unavailable
+        );
     }
 
-    use super::*;
     #[test]
     fn archives_use_beijing_capture_dates_without_overwrite_or_stop_cleanup() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;

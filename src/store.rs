@@ -1,4 +1,4 @@
-use crate::posture::Assessment;
+use crate::posture::{Assessment, HomeworkState};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::{path::Path, sync::Mutex};
@@ -11,7 +11,7 @@ pub struct Job {
     pub result: String,
     pub sent: usize,
 }
-pub struct Store(Mutex<Connection>);
+pub struct Store(Mutex<Connection>, Mutex<HomeworkState>);
 pub struct ModelCard {
     pub origin_key: String,
     pub message_id: String,
@@ -95,7 +95,7 @@ impl Store {
             }
         }
         c.execute("UPDATE jobs SET output_kind='posture_report' WHERE id LIKE 'posture-report:%' AND status='replying' AND sent=0 AND output_kind='text'",[])?;
-        Ok(Self(Mutex::new(c)))
+        Ok(Self(Mutex::new(c), Mutex::default()))
     }
     pub fn save_reply_card(&self, token: &str, key: &str, spec: &serde_json::Value) -> Result<()> {
         self.0.lock().unwrap().execute(
@@ -329,13 +329,34 @@ impl Store {
             "UPDATE posture_watch SET next_due=?2 WHERE scope=?1",
             params![scope, now],
         )?;
-        tx.execute("INSERT INTO posture_report_state(scope,started,next_due) VALUES (?1,?2,?3) ON CONFLICT(scope) DO UPDATE SET started=excluded.started,next_due=excluded.next_due,bad=0,clear=0,unknown=0,away=0,observe=0,speech_failures=0,last_speech_error='',last_assessment=2",params![scope,now,crate::posture::next_report_at(now)])?;
+        tx.execute("INSERT INTO posture_report_state(scope,started,next_due) VALUES (?1,?2,?3) ON CONFLICT(scope) DO UPDATE SET started=excluded.started,next_due=excluded.next_due,bad=0,clear=0,unknown=0,away=0,observe=0,speech_failures=0,last_speech_error='',last_assessment=2",params![scope,now,now + 600])?;
         tx.execute("DELETE FROM posture_samples WHERE scope=?1", [scope])?;
         tx.commit()?;
         Ok(())
     }
+    pub fn has_posture_watch(&self) -> Result<bool> {
+        Ok(self.0.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM posture_watch WHERE enabled=1)",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn set_homework_state(&self, state: HomeworkState, now: u64) -> Result<()> {
+        let mut current = self.1.lock().unwrap();
+        if current.started().is_none() && state.started().is_some() {
+            self.0.lock().unwrap().execute(
+                "UPDATE posture_watch SET next_due=?1 WHERE enabled=1",
+                [now],
+            )?;
+        }
+        *current = state;
+        Ok(())
+    }
+    pub fn homework_active(&self) -> bool {
+        self.1.lock().unwrap().started().is_some()
+    }
     pub fn posture_enabled(&self, key: &str) -> Result<bool> {
-        if !crate::posture::schedule_active() {
+        if !self.homework_active() {
             return Ok(false);
         }
         Ok(self.0.lock().unwrap().query_row(
@@ -363,23 +384,27 @@ impl Store {
         Ok(())
     }
     pub fn posture_watch_status(&self, scope: &str) -> Result<String> {
+        let homework = *self.1.lock().unwrap();
         let c = self.0.lock().unwrap();
         let row=c.query_row("SELECT enabled,interval_seconds,last_note,last_at FROM posture_watch WHERE scope=?1",[scope],|r|Ok((r.get::<_,bool>(0)?,r.get::<_,u64>(1)?,r.get::<_,String>(2)?,r.get::<_,u64>(3)?))).optional()?;
         let Some((enabled, interval, note, at)) = row else {
-            return Ok("尚未启动定时姿态试验。用 /posture 查看单次效果，或 /posture start 启用每日 17:00–21:30 每分钟检查，仅异常播报，飞书每 10 分钟汇总。".into());
+            return Ok("尚未启动定时姿态试验。用 /posture 查看单次效果，或 /posture start 启用作业计时期间的每分钟检查，仅异常播报，飞书每 10 分钟汇总。".into());
         };
         let age = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs()
             .saturating_sub(at);
         Ok(format!(
-            "定时坐姿检查：{}；每日北京时间 17:00–21:30，每 {interval} 秒检查，仅低头/歪头播报，飞书每 10 分钟汇总\n最近检查：{}\n{}",
+            "定时坐姿检查：{}；每 {interval} 秒检查，仅低头/歪头播报，飞书每 10 分钟汇总\n最近检查：{}\n{}",
             if !enabled {
-                "已停用每日计划"
-            } else if crate::posture::schedule_active() {
-                "运行中"
+                "作业联动已停用"
             } else {
-                "计划已启用，等待下次 17:00"
+                match homework {
+                    HomeworkState::ActiveSince(_) => "作业计时中，正在检测",
+                    HomeworkState::Idle => "作业联动已启用，等待开始计时",
+                    HomeworkState::Confirming => "正在确认平板计时",
+                    HomeworkState::Unavailable => "等待可用的平板作业状态",
+                }
             },
             if at == 0 {
                 "尚未检查".into()
@@ -397,15 +422,14 @@ impl Store {
         self.queue_due_posture_at(crate::posture::now_epoch())
     }
     fn queue_due_posture_at(&self, now: u64) -> Result<()> {
-        if !crate::posture::schedule_active_at(now) {
+        let Some(start) = self.1.lock().unwrap().started() else {
             self.0.lock().unwrap().execute("UPDATE jobs SET status='done' WHERE id LIKE 'posture-sample:%' AND status='queued'",[])?;
             return Ok(());
-        }
+        };
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction()?;
-        // Start a new day's reporting window without counting the overnight pause.
-        let (start, _) = crate::posture::schedule_bounds_at(now);
-        tx.execute("UPDATE posture_report_state SET started=?1,next_due=?2 WHERE started<?3 AND bad+clear+unknown+away+observe=0",params![now,crate::posture::next_report_at(now),start])?;
+        // Exclude time between homework sessions from the next report.
+        tx.execute("UPDATE posture_report_state SET started=?1,next_due=?2 WHERE started<?3 AND bad+clear+unknown+away+observe=0",params![now,now + 600,start])?;
         // One camera job at a time, with no backlog when capture is slow or offline.
         let pending: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM jobs WHERE id LIKE 'posture-sample:%' AND status!='done')",
@@ -473,16 +497,25 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+    pub fn posture_capture_id(&self, origin: &str) -> Result<String> {
+        let scope = crate::models::scope(origin)?;
+        let started: u64 = self.0.lock().unwrap().query_row(
+            "SELECT started FROM posture_report_state WHERE scope=?1",
+            [&scope],
+            |r| r.get(0),
+        )?;
+        Ok(format!("{scope}:{started}"))
+    }
     /// Queue one durable summary per enabled scope every ten minutes, including unknowns.
     /// Capture and speech failure never prevent this independent timer from reporting.
     pub fn queue_due_posture_reports(&self) -> Result<()> {
         self.queue_due_posture_reports_at(crate::posture::now_epoch())
     }
     fn queue_due_posture_reports_at(&self, now: u64) -> Result<()> {
-        let active = crate::posture::schedule_active_at(now);
+        let active = self.homework_active();
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction()?;
-        let row=tx.query_row("SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,r.speech_failures,r.last_speech_error,max(1,((CASE WHEN ?2 THEN ?1 ELSE min(?1,max(w.last_at,r.started)) END)-r.started+59)/60) FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND (r.next_due<=?1 OR NOT ?2) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done') ORDER BY r.next_due LIMIT 1",params![now,active],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?))).optional()?;
+        let row=tx.query_row("SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,r.speech_failures,r.last_speech_error,max(1,((CASE WHEN ?2 THEN ?1 ELSE min(?1,max(w.last_at,r.started)) END)-r.started+59)/60),r.started FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND (r.next_due<=?1 OR NOT ?2) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done') ORDER BY r.next_due LIMIT 1",params![now,active],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?,r.get::<_,u64>(12)?))).optional()?;
         if let Some((
             scope,
             key,
@@ -496,6 +529,7 @@ impl Store {
             speech_failures,
             speech_error,
             minutes,
+            started,
         )) = row
         {
             let total = bad + clear + unknown + away + observe;
@@ -556,8 +590,8 @@ impl Store {
                     "\n语音播报失败 {speech_failures} 次，最近原因：{speech_error}"
                 ));
             }
-            tx.execute("INSERT INTO jobs(id,key,message_id,text,status,result,output_kind) VALUES (?1,?2,?3,'/posture report','replying',?4,'posture_report')",params![format!("posture-report:{}",uuid::Uuid::new_v4().simple()),key,message,note])?;
-            tx.execute("UPDATE posture_report_state SET started=?2,next_due=?3,bad=0,clear=0,unknown=0,away=0,observe=0,speech_failures=0,last_speech_error='' WHERE scope=?1",params![scope,now,crate::posture::next_report_at(now)])?;
+            tx.execute("INSERT INTO jobs(id,key,message_id,text,status,result,output_kind) VALUES (?1,?2,?3,'/posture report','replying',?4,'posture_report')",params![format!("posture-report:{}",uuid::Uuid::new_v4().simple()),key,message,serde_json::json!({"note":note,"capture_tablet":active,"capture_id":format!("{scope}:{started}")}).to_string()])?;
+            tx.execute("UPDATE posture_report_state SET started=?2,next_due=?3,bad=0,clear=0,unknown=0,away=0,observe=0,speech_failures=0,last_speech_error='' WHERE scope=?1",params![scope,now,now + 600])?;
             tx.execute("DELETE FROM posture_samples WHERE scope=?1", [scope])?;
         }
         tx.commit()?;
@@ -1031,60 +1065,48 @@ mod tests {
     }
     fn active_time() -> u64 {
         static TIME: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        *TIME.get_or_init(|| {
-            let now = crate::posture::now_epoch();
-            if crate::posture::schedule_active_at(now) {
-                now
-            } else {
-                crate::posture::next_start_at(now)
-            }
-        })
+        *TIME.get_or_init(crate::posture::now_epoch)
     }
     #[test]
-    fn daily_watch_stops_at_close_and_resumes_without_empty_night_reports() -> Result<()> {
+    fn homework_watch_starts_stops_flushes_and_resumes() -> Result<()> {
         let s = Store::open(Path::new(":memory:"))?;
         let j = Job {
-            id: "daily-start".into(),
+            id: "start".into(),
             key: serde_json::json!(["workspace", "owner", "chat", "thread"]).to_string(),
             message_id: "om_start".into(),
             text: "/posture start".into(),
             result: String::new(),
             sent: 0,
         };
-        // Keep the simulated next day ahead of the wall-clock timestamp used
-        // when finish_posture_sample updates next_due.
-        let (start, _) = crate::posture::schedule_bounds_at(active_time());
-        let end = start + 16200;
+        let start = active_time();
         s.start_posture_watch_at(&j, 60, start - 60)?;
         s.queue_due_posture_at(start - 1)?;
         assert!(s.jobs("queued")?.is_empty());
+        s.set_homework_state(HomeworkState::ActiveSince(start), start)?;
         s.queue_due_posture_at(start)?;
         let sample = s.jobs("queued")?.remove(0);
         s.finish_posture_sample(&sample, "无法判断，静音")?;
-        s.queue_due_posture_reports_at(start + 599)?;
+        s.queue_due_posture_reports_at(start + 10)?;
         assert!(s.jobs("replying")?.is_empty());
-        s.queue_due_posture_reports_at(end)?;
+        s.set_homework_state(HomeworkState::Idle, start + 11)?;
+        s.queue_due_posture_reports_at(start + 11)?;
         let report = s.jobs("replying")?.remove(0);
         assert!(report.result.contains("检查 1 次"));
+        let report_payload: serde_json::Value = serde_json::from_str(&report.result)?;
+        let capture_id = format!("{}:{start}", crate::models::scope(&j.key)?);
+        assert_eq!(report_payload["capture_id"], capture_id);
+        assert_eq!(report_payload["capture_tablet"], false);
         s.status(&report.id, "done")?;
-        s.queue_due_posture_at(end)?;
-        s.queue_due_posture_reports_at(end + 3600)?;
-        s.queue_due_posture_at(start + 86400 - 1)?;
+        s.queue_due_posture_at(start + 12)?;
+        s.queue_due_posture_reports_at(start + 12)?;
         assert!(s.jobs("queued")?.is_empty());
         assert!(s.jobs("replying")?.is_empty());
-        s.queue_due_posture_at(start + 86400)?;
+        s.set_homework_state(HomeworkState::ActiveSince(start + 13), start + 13)?;
+        s.queue_due_posture_at(start + 13)?;
         assert_eq!(s.jobs("queued")?.len(), 1);
-        let c = s.0.lock().unwrap();
-        assert_eq!(
-            c.query_row("SELECT enabled FROM posture_watch", [], |r| r
-                .get::<_, i64>(0))?,
-            1
-        );
-        assert_eq!(
-            c.query_row("SELECT next_due FROM posture_report_state", [], |r| r
-                .get::<_, u64>(0))?,
-            start + 86400 + 600
-        );
+        s.set_homework_state(HomeworkState::Unavailable, start + 14)?;
+        s.queue_due_posture_at(start + 14)?;
+        assert!(s.jobs("queued")?.is_empty());
         Ok(())
     }
     #[test]
@@ -1099,6 +1121,7 @@ mod tests {
             sent: 0,
         };
         s.start_posture_watch_at(&j, 30, active_time())?;
+        s.set_homework_state(HomeworkState::ActiveSince(active_time()), active_time())?;
         s.queue_due_posture_at(active_time())?;
         let samples = s.jobs("queued")?;
         assert_eq!(samples.len(), 1);
@@ -1134,6 +1157,7 @@ mod tests {
             sent: 0,
         };
         s.start_posture_watch_at(&j, 60, active_time())?;
+        s.set_homework_state(HomeworkState::ActiveSince(active_time()), active_time())?;
         for assessment in [
             Assessment::NeedsReminder,
             Assessment::NoObviousIssue,
@@ -1225,6 +1249,7 @@ mod tests {
         };
         let s = Store::open(&path)?;
         s.start_posture_watch_at(&j, 60, active_time())?;
+        s.set_homework_state(HomeworkState::ActiveSince(active_time()), active_time())?;
         s.queue_due_posture_at(active_time())?;
         let a = s.jobs("queued")?.remove(0);
         s.0.lock()

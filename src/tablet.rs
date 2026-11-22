@@ -196,21 +196,159 @@ impl Gateway {
         std::fs::rename(temp, path)?;
         Ok(())
     }
+    fn cloud_report_dir(&self, id: &str) -> PathBuf {
+        self.capture_path(id).with_extension("images")
+    }
+
+    pub fn validate_cloud_report_image(&self, id: &str, path: &Path) -> Result<()> {
+        let dir = self.cloud_report_dir(id);
+        let expected = std::fs::canonicalize(&dir)?;
+        let actual = std::fs::canonicalize(path)?;
+        ensure!(
+            path.parent() == Some(dir.as_path())
+                && actual.parent() == Some(expected.as_path())
+                && matches!(
+                    path.file_name().and_then(|p| p.to_str()),
+                    Some("photo.jpg" | "screenshot.jpg")
+                )
+                && !std::fs::symlink_metadata(path)?.is_symlink(),
+            "平板汇总图片路径不匹配"
+        );
+        Ok(())
+    }
+
+    async fn cloud_report_image(
+        &self,
+        id: &str,
+        operation: &str,
+        device: Option<&str>,
+    ) -> Result<Value> {
+        let path = self.cloud_report_dir(id).join(format!("{operation}.jpg"));
+        let mut command = tokio::process::Command::new(&self.cfg.homework_cli);
+        command
+            .args(["--no-analytics", "device", operation, "--out"])
+            .arg(&path)
+            .arg("--idempotency-key")
+            .arg(
+                uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    format!("{id}:{operation}").as_bytes(),
+                )
+                .to_string(),
+            )
+            .env("CYEAM_CLI_NO_UPDATE_NOTIFIER", "1")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if let Some(device) = device {
+            command.args(["--device", device]);
+        }
+        let output = tokio::time::timeout(Duration::from_secs(65), command.output())
+            .await
+            .context("平板网关采集超时")??;
+        let value: Value = serde_json::from_slice(&output.stdout).context("平板网关响应无效")?;
+        if !output.status.success() || value["ok"] != true {
+            if value["error"]["code"] == "SCREEN_CAPTURE_UNAVAILABLE" {
+                bail!("平板截屏不可用，请检查截屏权限和屏幕状态");
+            }
+            bail!("平板网关采集失败");
+        }
+        self.validate_cloud_report_image(id, &path)?;
+        let returned_device = value["data"]["device_id"]
+            .as_str()
+            .context("平板网关未返回设备")?;
+        ensure!(
+            device.is_none_or(|expected| returned_device == expected),
+            "平板设备已变更"
+        );
+        Ok(json!({
+            "name": if operation == "photo" { "image" } else { operation },
+            "path": path,
+            "device": returned_device,
+            "captured_at": now(),
+        }))
+    }
+
+    fn start_cloud_report(
+        self: &Arc<Self>,
+        id: &str,
+        path: PathBuf,
+        mut capture: Value,
+    ) -> Result<Value> {
+        private_dir(&self.cloud_report_dir(id))?;
+        capture["source"] = json!("cloud");
+        self.save_capture(&path, &capture)?;
+        let gateway = self.clone();
+        let id = id.to_owned();
+        let mut result = capture.clone();
+        tokio::spawn(async move {
+            let mut images = Vec::new();
+            let mut device = None;
+            for operation in ["screenshot", "photo"] {
+                match gateway
+                    .cloud_report_image(&id, operation, device.as_deref())
+                    .await
+                {
+                    Ok(image) => {
+                        device = image["device"].as_str().map(str::to_owned);
+                        images.push(image);
+                    }
+                    Err(error) => result[format!("{operation}_error")] = json!(error.to_string()),
+                }
+            }
+            let _lock = gateway.capture_mu.lock().unwrap();
+            if images.is_empty() {
+                result["status"] = json!("failed");
+                result["error"] = json!(format!(
+                    "平板照片未取得：{}；平板截屏未取得：{}",
+                    result["photo_error"].as_str().unwrap_or("未知错误"),
+                    result["screenshot_error"].as_str().unwrap_or("未知错误"),
+                ));
+            } else {
+                result["status"] = json!("ready");
+            }
+            result["images"] = json!(images);
+            if let Err(error) = gateway.save_capture(&path, &result) {
+                tracing::warn!(%error, "保存平板汇总采集结果失败");
+            }
+        });
+        Ok(capture)
+    }
+
+    fn read_capture(&self, path: &Path) -> Result<Option<Value>> {
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let mut capture: Value = serde_json::from_slice(&bytes)?;
+        if capture["status"] == "pending"
+            && (capture["instance"] != self.instance
+                || now() - capture["started"].as_i64().unwrap_or(0) > 160)
+        {
+            capture["status"] = json!("failed");
+            capture["error"] = json!("平板采集超时或被服务重启中断，本次不重新拍摄");
+            self.save_capture(path, &capture)?;
+        }
+        Ok(Some(capture))
+    }
+
+    pub fn existing_report_capture(&self, id: &str) -> Result<Option<Value>> {
+        let _lock = self.capture_mu.lock().unwrap();
+        self.read_capture(&self.capture_path(id))
+    }
+
     /// Persist admission before dispatch. Retries/restarts must never repeat a shutter action.
     pub fn report_capture(self: &Arc<Self>, id: &str) -> Result<Value> {
         let _lock = self.capture_mu.lock().unwrap();
         let path = self.capture_path(id);
-        if path.exists() {
-            let mut capture: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-            if capture["status"] == "pending"
-                && (capture["instance"] != self.instance
-                    || now() - capture["started"].as_i64().unwrap_or(0) > 160)
-            {
-                capture["status"] = json!("failed");
-                capture["error"] = json!("平板采集超时或被服务重启中断，本次不重新拍摄");
-                self.save_capture(&path, &capture)?;
-            }
+        if let Some(capture) = self.read_capture(&path)? {
             return Ok(capture);
+        }
+        if self.cfg.tablet_public_url.is_empty() {
+            let pending =
+                json!({"status":"pending","started":now(),"instance":self.instance,"images":[]});
+            return self.start_cloud_report(id, path, pending);
         }
         let candidates: Vec<String> = self
             .peers
@@ -1350,6 +1488,64 @@ mod tests {
         assert!(!notice_delivered(&text_content("通知已收到")));
         assert!(!notice_delivered(&json!({"isError":true,"delivered":true})));
     }
+    #[tokio::test]
+    async fn cloud_report_preserves_photo_when_screenshot_is_unavailable() -> Result<()> {
+        let sandbox = Sandbox::new();
+        std::fs::create_dir_all(&sandbox.0)?;
+        let cli = sandbox.0.join("cyeam");
+        std::fs::write(
+            &cli,
+            r#"#!/bin/sh
+printf '%s\n' "$3" >> "$(dirname "$0")/calls"
+if [ "$3" = screenshot ]; then
+    printf '%s\n' '{"ok":false,"error":{"code":"SCREEN_CAPTURE_UNAVAILABLE"}}'
+    exit 1
+fi
+printf '\377\330\377' > "$5"
+printf '%s\n' '{"ok":true,"data":{"device_id":"test-tablet"}}'
+"#,
+        )?;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))?;
+        let mut cfg = sandbox.config();
+        cfg.tablet_public_url.clear();
+        cfg.homework_cli = cli.to_string_lossy().into_owned();
+        let g = Gateway::open(Arc::new(cfg.clone()))?;
+        assert!(g.existing_report_capture("report")?.is_none());
+        assert_eq!(g.report_capture("report")?["status"], "pending");
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let capture = g.report_capture("report")?;
+                if capture["status"] != "pending" {
+                    break Ok::<_, anyhow::Error>(capture);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        assert_eq!(result["status"], "ready");
+        assert_eq!(result["images"].as_array().unwrap().len(), 1);
+        assert_eq!(result["images"][0]["name"], "image");
+        assert!(
+            result["screenshot_error"]
+                .as_str()
+                .unwrap()
+                .contains("截屏不可用")
+        );
+        let photo = Path::new(result["images"][0]["path"].as_str().unwrap());
+        g.validate_cloud_report_image("report", photo)?;
+        assert!(
+            g.validate_cloud_report_image("another-report", photo)
+                .is_err()
+        );
+        let restarted = Gateway::open(Arc::new(cfg))?;
+        assert_eq!(restarted.existing_report_capture("report")?, Some(result));
+        assert_eq!(
+            std::fs::read_to_string(sandbox.0.join("calls"))?,
+            "screenshot\nphoto\n"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn report_capture_collects_two_images_once_and_survives_restart() -> Result<()> {
         let sandbox = Sandbox::new();

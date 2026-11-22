@@ -308,6 +308,16 @@ impl Bridge {
         };
         self.store
             .finish_posture_observation(j, &note, assessment, error.as_deref())?;
+        if self.cfg.tablet_public_url.is_empty()
+            && self.store.posture_enabled(&j.key)?
+            && let Some(tablet) = &self.tablet
+            && let Err(error) = self
+                .store
+                .posture_capture_id(&j.key)
+                .and_then(|id| tablet.report_capture(&id))
+        {
+            tracing::warn!(%error, "无法启动平板汇总采集");
+        }
         Ok(())
     }
     async fn execute(&self, j: &Job) -> Result<()> {
@@ -508,11 +518,11 @@ impl Bridge {
                         ensure!(self.cfg.pose_model.is_file() && self.cfg.pose_detector.as_ref().is_none_or(|p|p.is_file()) && std::path::Path::new(&self.cfg.pose_bin).is_file(),"请先安装人体检测/姿态模型和程序");
                         let seconds=words.get(1).map(|s|s.parse::<u64>()).transpose()?.unwrap_or(60);
                         self.store.start_posture_watch(j,seconds)?;
-                        Ok(format!("已启用每日北京时间 17:00–21:30 每 {seconds} 秒检查，仅低头或歪头时在 Mac mini 播报，其余静音。21:30 停止检查，次日 17:00 自动恢复；飞书每 10 分钟图文汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
+                        Ok(format!("已启用作业联动。平板作业开始计时后每 {seconds} 秒检查，计时停止后结束。仅低头或歪头时在 Mac mini 播报，飞书每 10 分钟图文汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
                     }
                     ["stop"] => {self.store.stop_posture_watch(&models::scope(&j.key)?)?;crate::posture::clear_frames(&self.cfg,&j.key)?;Ok("已停止此聊天的定时姿态试验。".into())}
                     ["status"] => self.store.posture_watch_status(&models::scope(&j.key)?),
-                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止".into()),
+                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 平板作业计时期间检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止".into()),
                 }
             }
             "/status" => {
@@ -962,19 +972,28 @@ impl Bridge {
             self.store
                 .finish_output(&j.id, "posture_report", &payload)?;
         }
+        let capture_id = payload["capture_id"].as_str().unwrap_or(&j.id).to_owned();
         if payload["tablet_done"] != true {
-            let capture = match &self.tablet {
-                Some(tablet) => tablet.report_capture(&j.id).unwrap_or_else(
-                    |e| json!({"status":"failed","error":format!("平板采集失败：{e}")}),
-                ),
-                None => json!({"status":"failed","error":"平板网关未启用"}),
+            let can_capture = payload["capture_tablet"] != false && self.store.homework_active();
+            let attempted = match &self.tablet {
+                Some(tablet) if can_capture => tablet.report_capture(&capture_id).map(Some),
+                Some(tablet) => tablet.existing_report_capture(&capture_id),
+                None => Ok(None),
             };
+            let capture = attempted
+                .unwrap_or_else(|e| {
+                    Some(json!({"status":"failed","error":format!("平板采集失败：{e}")}))
+                })
+                .unwrap_or_else(
+                    || json!({"status":"failed","error":"本段作业期间未取得平板照片和截屏"}),
+                );
             if capture["status"] == "pending" {
                 return Ok(());
             }
             let mut note = payload["note"].as_str().unwrap_or("").to_owned();
             if capture["status"] == "ready" {
-                let at = capture_time(capture["captured_at"].as_u64().unwrap_or(0));
+                let cloud = capture["source"] == "cloud";
+                let kind = if cloud { "tablet-cloud" } else { "tablet" };
                 let images = capture["images"].as_array().context("平板汇总图片缺失")?;
                 for image in images {
                     let label = match image["name"].as_str() {
@@ -982,7 +1001,16 @@ impl Bridge {
                         Some("screenshot") => "平板当前屏幕截图",
                         _ => continue,
                     };
-                    payload["assets"].as_array_mut().unwrap().push(json!({"kind":"tablet","device":capture["device"],"path":image["path"],"label":format!("{label}（{at}）")}));
+                    let at = capture_time(
+                        image["captured_at"]
+                            .as_u64()
+                            .or_else(|| capture["captured_at"].as_u64())
+                            .unwrap_or(0),
+                    );
+                    payload["assets"].as_array_mut().unwrap().push(json!({"kind":kind,"device":capture["device"],"path":image["path"],"label":format!("{label}（{at}）")}));
+                }
+                if let Some(error) = capture["photo_error"].as_str() {
+                    note.push_str(&format!("\n平板照片未取得：{error}"));
                 }
                 if !images.iter().any(|image| image["name"] == "screenshot") {
                     note.push_str(&format!(
@@ -1019,6 +1047,11 @@ impl Bridge {
                     path == expected || path == expected.with_extension("jpg"),
                     "坐姿汇总图片路径不匹配"
                 );
+            } else if asset["kind"] == "tablet-cloud" {
+                self.tablet
+                    .as_ref()
+                    .context("平板网关未启用")?
+                    .validate_cloud_report_image(&capture_id, &path)?;
             } else {
                 self.tablet
                     .as_ref()
@@ -1057,7 +1090,7 @@ impl Bridge {
                 .finish_output(&j.id, "camera_media", &report_message(note, &images))?;
         }
         for asset in payload["assets"].as_array().unwrap() {
-            if asset["kind"] == "posture"
+            if (asset["kind"] == "posture" || asset["kind"] == "tablet-cloud")
                 && let Some(path) = asset["path"].as_str()
             {
                 let _ = std::fs::remove_file(path);
@@ -1379,10 +1412,9 @@ impl Bridge {
                 }
                 seen.clear();
             }
-            if !crate::posture::schedule_active()
-                && camera_active
-                    .as_ref()
-                    .is_some_and(|(j, _)| j.id.starts_with("posture-sample:"))
+            if let Some((job, _)) = &camera_active
+                && job.id.starts_with("posture-sample:")
+                && !self.store.posture_enabled(&job.key)?
             {
                 let (j, h) = camera_active.take().unwrap();
                 h.abort();
@@ -1428,21 +1460,7 @@ impl Bridge {
                 let job = j.clone();
                 camera_active = Some((
                     j.clone(),
-                    tokio::spawn(async move {
-                        if job.id.starts_with("posture-sample:") {
-                            match tokio::time::timeout(
-                                crate::posture::remaining_window(),
-                                b.capture_camera(&job),
-                            )
-                            .await
-                            {
-                                Ok(result) => result,
-                                Err(_) => b.store.status(&job.id, "done"),
-                            }
-                        } else {
-                            b.capture_camera(&job).await
-                        }
-                    }),
+                    tokio::spawn(async move { b.capture_camera(&job).await }),
                 ));
             }
             if speech_active.is_none()

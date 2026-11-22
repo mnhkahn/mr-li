@@ -15,6 +15,7 @@ pub struct Config {
     pub username: String,
     pub workspace: PathBuf,
     pub data_dir: PathBuf,
+    pub homework_cli: String,
     pub model: Option<String>,
     pub agent: String,
     pub task_timeout: Duration,
@@ -127,6 +128,15 @@ impl Config {
             username: get("OPENCODE_SERVER_USERNAME", "opencode"),
             workspace,
             data_dir: PathBuf::from(get("MR_LI_DATA_DIR", ".data")),
+            homework_cli: env::current_exe()
+                .ok()
+                .map(|path| path.with_file_name("cyeam-homework-status"))
+                .filter(|path| path.is_file())
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_or_else(
+                    || get("MR_LI_HOMEWORK_CLI", "cyeam"),
+                    |path| get("MR_LI_HOMEWORK_CLI", &path),
+                ),
             model,
             agent: get("OPENCODE_AGENT", "build"),
             task_timeout: Duration::from_secs(timeout),
@@ -206,6 +216,7 @@ impl Config {
             username: "opencode".into(),
             workspace: std::env::temp_dir(),
             data_dir: std::env::temp_dir(),
+            homework_cli: "cyeam".into(),
             model: None,
             agent: "build".into(),
             task_timeout: Duration::from_secs(30),

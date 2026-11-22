@@ -116,6 +116,35 @@ enum Event {
     Text { text: String },
 }
 
+const PROGRESS_OPEN: &str = "<voice-progress>";
+const PROGRESS_CLOSE: &str = "</voice-progress>";
+
+pub fn progress_updates(output: &str) -> impl Iterator<Item = &str> {
+    output.split(PROGRESS_OPEN).skip(1).filter_map(|part| {
+        let (text, _) = part.split_once(PROGRESS_CLOSE)?;
+        let text = text.trim();
+        (!text.is_empty() && text.chars().count() <= 32 && !text.chars().any(char::is_control))
+            .then_some(text)
+    })
+}
+
+pub fn final_reply(mut output: &str) -> String {
+    let mut reply = String::new();
+    while let Some((before, rest)) = output.split_once(PROGRESS_OPEN) {
+        let Some((_, after)) = rest.split_once(PROGRESS_CLOSE) else {
+            break;
+        };
+        reply.push_str(before);
+        output = after;
+    }
+    reply.push_str(output);
+    if reply.trim().is_empty() {
+        "本次没有返回最终回复。".into()
+    } else {
+        reply.trim().to_owned()
+    }
+}
+
 async fn converse(cfg: &Config, store: &Store, origin: &Job, text: &str) -> Result<()> {
     let job = enqueue(store, origin, text)?;
     // No timeout retry: side effects may already have happened. /stop remains available in Feishu.
@@ -137,6 +166,11 @@ async fn converse(cfg: &Config, store: &Store, origin: &Job, text: &str) -> Resu
             return Ok(());
         }
         bridge_alive(cfg)?;
+        if let Some(progress) = store.take_voice_progress(&job.id)?
+            && let Err(error) = speech::speak_progress(cfg, &progress).await
+        {
+            tracing::warn!(%error, "中间进度播报失败，继续等最终回复");
+        }
     }
 }
 fn bridge_alive(cfg: &Config) -> Result<()> {
@@ -304,6 +338,7 @@ emit('wake')
 resume(True, '我在，请说。')
 emit('text', text='看看今天的任务')
 resume(True, '已经查到今天的任务。')
+assert '正在查看今天的任务。\n已经查到今天的任务。' in (root / 'spoken').read_text()
 emit('text', text='再查一下明天的任务')
 resume(True, '我听到了，但当前模型限流了，请稍后再试。')
 emit('text', text='结束对话')
@@ -323,7 +358,14 @@ resume(False, '好的，再见。')
                     assert_eq!(j.key, source.key);
                     if completed == 0 {
                         assert_eq!(j.text, "看看今天的任务");
-                        store.finish(&j.id, "已经查到今天的任务。")?;
+                        store.status(&j.id, "running")?;
+                        let transcript = "<voice-progress>正在查看今天的任务。</voice-progress>\n已经查到今天的任务。";
+                        let update = progress_updates(transcript).next().unwrap();
+                        store.set_voice_progress(&j.id, update)?;
+                        while !std::fs::read_to_string(dir.join("spoken"))?.contains(update) {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                        store.finish(&j.id, &final_reply(transcript))?;
                     } else {
                         assert_eq!(j.text, "再查一下明天的任务");
                         store.finish_failure(
@@ -349,12 +391,22 @@ resume(False, '好的，再见。')
         assert_eq!(std::fs::read_to_string(dir.join("passed"))?, "ok");
         let args = std::fs::read_to_string(dir.join("args"))?;
         assert!(args.starts_with("-v\nposture-clone\n-a\nposture-output\n"));
-        assert_eq!(args.matches("configured-clone").count(), 3);
-        assert_eq!(args.matches("configured-output").count(), 3);
+        assert_eq!(args.matches("configured-clone").count(), 4);
+        assert_eq!(args.matches("configured-output").count(), 4);
         assert!(store.jobs("queued")?.is_empty());
         assert!(store.jobs("replying")?.is_empty());
         std::fs::remove_dir_all(dir)?;
         Ok(())
+    }
+    #[test]
+    fn marked_progress_waits_for_complete_text_and_is_removed_from_reply() {
+        assert_eq!(progress_updates("<voice-progress>正在查找").count(), 0);
+        let text = "<voice-progress>正在查找。</voice-progress>\n<voice-progress>已发送请求。</voice-progress>\n已打开腾讯视频。";
+        assert_eq!(
+            progress_updates(text).collect::<Vec<_>>(),
+            ["正在查找。", "已发送请求。"]
+        );
+        assert_eq!(final_reply(text), "已打开腾讯视频。");
     }
     fn origin(cfg: &Config, user: &str, chat: &str) -> Job {
         Job {

@@ -71,7 +71,14 @@ async fn acp_streams_owned_output_reuses_process_and_pins_free_kilo() -> Result<
     let hub = fixture.hub()?;
     for kind in [Kind::Antigravity, Kind::Kilo] {
         let id = hub.create_for(kind, None).await?;
-        assert_eq!(hub.prompt(&id, "hello", None).await?, "hello world");
+        let mut snapshots = Vec::new();
+        let mut observe = |text: &str| snapshots.push(text.to_owned());
+        assert_eq!(
+            hub.prompt_with_progress(&id, "hello", None, &[], Some(&mut observe))
+                .await?,
+            "hello world"
+        );
+        assert_eq!(snapshots, ["hello ", "hello world"]);
         assert_eq!(hub.prompt(&id, "again", None).await?, "hello world");
         hub.abort(&id).await?;
     }

@@ -16,6 +16,7 @@ use tokio::{
 };
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_TEXT: usize = 2 * 1024 * 1024;
+pub(crate) type ProgressObserver<'a> = dyn FnMut(&str) + Send + 'a;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -466,8 +467,26 @@ impl AgentHub {
         selected: Option<&str>,
         files: &[Value],
     ) -> Result<String> {
+        self.prompt_with_progress(id, text, selected, files, None)
+            .await
+    }
+    pub async fn prompt_with_progress(
+        &self,
+        id: &str,
+        text: &str,
+        selected: Option<&str>,
+        files: &[Value],
+        progress: Option<&mut ProgressObserver<'_>>,
+    ) -> Result<String> {
         if split(id)?.0 == Kind::OpenCode {
-            return self.open.prompt_with_files(id, text, selected, files).await;
+            return match progress {
+                Some(observer) => {
+                    self.open
+                        .prompt_with_progress(id, text, selected, files, Some(observer))
+                        .await
+                }
+                None => self.open.prompt_with_files(id, text, selected, files).await,
+            };
         }
         let runtime = self.runtime(id).await?;
         ensure!(
@@ -489,9 +508,11 @@ impl AgentHub {
             ensure!(!*active, "此 Agent 会话已有任务");
             *active = true;
         }
-        let result =
-            tokio::time::timeout(self.cfg.task_timeout, run_prompt(&runtime, id, text, files))
-                .await;
+        let result = tokio::time::timeout(
+            self.cfg.task_timeout,
+            run_prompt(&runtime, id, text, files, progress),
+        )
+        .await;
         *runtime.active.lock().unwrap() = false;
         runtime.forms.lock().unwrap().clear();
         match result {
@@ -688,7 +709,13 @@ fn supervise(command: Command) -> Result<Command> {
     Ok(worker)
 }
 
-async fn run_prompt(runtime: &Runtime, id: &str, text: &str, files: &[Value]) -> Result<String> {
+async fn run_prompt(
+    runtime: &Runtime,
+    id: &str,
+    text: &str,
+    files: &[Value],
+    mut progress: Option<&mut ProgressObserver<'_>>,
+) -> Result<String> {
     let mut events = runtime.rpc.subscribe();
     let mut output = String::new();
     if runtime.kind == Kind::Trae {
@@ -736,6 +763,9 @@ async fn run_prompt(runtime: &Runtime, id: &str, text: &str, files: &[Value]) ->
                         items.values().map(String::len).sum::<usize>() <= MAX_TEXT,
                         "Agent 结果过长"
                     );
+                    if let Some(observer) = progress.as_deref_mut() {
+                        observer(&items[key]);
+                    }
                 }
                 Some("item/completed") if params["item"]["type"] == "agentMessage" => {
                     let key = params["item"]["id"].as_str().context("TRAE 消息 ID 缺失")?;
@@ -745,6 +775,9 @@ async fn run_prompt(runtime: &Runtime, id: &str, text: &str, files: &[Value]) ->
                             order.push(key.into());
                         }
                         items.insert(key.into(), text.into());
+                        if let Some(observer) = progress.as_deref_mut() {
+                            observer(text);
+                        }
                     }
                 }
                 Some("turn/completed") if params["turn"]["id"] == turn => {
@@ -797,7 +830,13 @@ async fn run_prompt(runtime: &Runtime, id: &str, text: &str, files: &[Value]) ->
         tokio::pin!(response);
         let result = loop {
             tokio::select! { biased;
-                event=events.recv()=>consume_acp(runtime,id,event.context("Agent 事件流丢失")?,&mut output).await?,
+                event=events.recv()=>{
+                    let before = output.len();
+                    consume_acp(runtime,id,event.context("Agent 事件流丢失")?,&mut output).await?;
+                    if output.len() != before && let Some(observer) = progress.as_deref_mut() {
+                        observer(&output);
+                    }
+                },
                 response=&mut response=>break response?,
             }
         };

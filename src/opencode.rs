@@ -159,6 +159,17 @@ impl OpenCode {
         selected: Option<&str>,
         files: &[Value],
     ) -> Result<String> {
+        self.prompt_with_progress(id, text, selected, files, None)
+            .await
+    }
+    pub async fn prompt_with_progress(
+        &self,
+        id: &str,
+        text: &str,
+        selected: Option<&str>,
+        files: &[Value],
+        mut progress: Option<&mut crate::agent::ProgressObserver<'_>>,
+    ) -> Result<String> {
         let selected = selected
             .or(self.cfg.model.as_deref())
             .context("请选择模型")?;
@@ -209,6 +220,13 @@ impl OpenCode {
                     self.abort_checked(id).await?;
                 }
                 return result;
+            }
+            if let Some(observer) = progress.as_deref_mut()
+                && let Some(newer) = round_messages(&messages, &message_id, admitted_at)
+            {
+                for message in newer.iter().rev().filter(|m| m["type"] == "assistant") {
+                    observer(&assistant_text(message));
+                }
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -285,34 +303,43 @@ fn upstream_error(error: &Value) -> anyhow::Error {
         )
     }
 }
-fn round_result(messages: &Value, message_id: &str, admitted_at: f64) -> Option<Result<String>> {
+fn round_messages<'a>(
+    messages: &'a Value,
+    message_id: &str,
+    admitted_at: f64,
+) -> Option<&'a [Value]> {
     let all = messages.as_array()?;
-    let newer = if let Some(index) = all.iter().position(|m| m["id"] == message_id) {
-        &all[..index]
+    if let Some(index) = all.iter().position(|m| m["id"] == message_id) {
+        Some(&all[..index])
     } else if all.len() >= 200
         && all
             .iter()
             .all(|m| m["time"]["created"].as_f64().unwrap_or(0.0) >= admitted_at)
     {
-        all.as_slice()
+        Some(all.as_slice())
     } else {
-        return None;
-    };
+        None
+    }
+}
+fn assistant_text(message: &Value) -> String {
+    message["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| part["type"] == "text")
+        .filter_map(|part| part["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+fn round_result(messages: &Value, message_id: &str, admitted_at: f64) -> Option<Result<String>> {
+    let newer = round_messages(messages, message_id, admitted_at)?;
     if let Some(idle) = newer.iter().find(|m| m["type"] == "idle") {
         return Some(match idle["outcome"].as_str() {
             Some("succeeded") => Ok(newer
                 .iter()
                 .filter(|m| m["type"] == "assistant")
-                .find_map(|m| {
-                    let text = m["content"]
-                        .as_array()?
-                        .iter()
-                        .filter(|p| p["type"] == "text")
-                        .filter_map(|p| p["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    if text.is_empty() { None } else { Some(text) }
-                })
+                .map(assistant_text)
+                .find(|text| !text.is_empty())
                 .unwrap_or_else(|| "任务结束，没有文本输出。".into())),
             Some("interrupted") => Ok("任务已停止。".into()),
             _ => Err(upstream_error(&idle["error"])),
@@ -378,6 +405,7 @@ mod tests {
         let addr = listener.local_addr()?;
         let server = std::thread::spawn(move || {
             let mut message = String::new();
+            let mut saw_progress = false;
             loop {
                 let (mut socket, _) = listener.accept().unwrap();
                 socket
@@ -413,7 +441,8 @@ mod tests {
                 } else {
                     serde_json::from_slice(&bytes[end..end + len]).unwrap()
                 };
-                let done = route.starts_with("GET /api/session/ses_test/message?");
+                let reading = route.starts_with("GET /api/session/ses_test/message?");
+                let done = reading && saw_progress;
                 let response = if route.starts_with("GET /api/model?") {
                     json!({"data":[{"providerID":"opencode","id":"chosen","cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}]}]})
                 } else if route.starts_with("POST /api/session/ses_test/model ") {
@@ -431,6 +460,9 @@ mod tests {
                     json!({"data":{"id":message,"time":{"created":1}}})
                 } else if done {
                     json!({"data":[{"type":"idle","outcome":"succeeded"},{"type":"assistant","content":[{"type":"text","text":"done"}]},{"type":"user","id":message}]})
+                } else if reading {
+                    saw_progress = true;
+                    json!({"data":[{"type":"assistant","content":[{"type":"reasoning","text":"private"},{"type":"text","text":"<voice-progress>正在查找。</voice-progress>"}]},{"type":"user","id":message},{"type":"assistant","content":[{"type":"text","text":"previous turn"}]}]})
                 } else {
                     panic!("Unexpected V2 route: {route}")
                 };
@@ -448,16 +480,20 @@ mod tests {
         let mut cfg = Config::fixture();
         cfg.opencode_url = format!("http://{addr}");
         let oc = OpenCode::new(Arc::new(cfg))?;
+        let mut observed = Vec::new();
+        let mut observer = |text: &str| observed.push(text.to_owned());
         assert_eq!(
-            oc.prompt_with_files(
+            oc.prompt_with_progress(
                 "ses_test",
                 "hello",
                 Some("opencode/chosen"),
-                &[json!({"uri":"data:image/png;base64,dGVzdA==","mime":"image/png"})]
+                &[json!({"uri":"data:image/png;base64,dGVzdA==","mime":"image/png"})],
+                Some(&mut observer),
             )
             .await?,
             "done"
         );
+        assert_eq!(observed, ["<voice-progress>正在查找。</voice-progress>"]);
         server.join().unwrap();
         Ok(())
     }

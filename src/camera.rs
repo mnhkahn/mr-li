@@ -10,6 +10,9 @@ use std::{
 };
 use tokio::process::Command;
 
+mod tracking;
+pub use tracking::reframe;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Capture {
     Photo,
@@ -33,7 +36,10 @@ impl Capture {
     }
 }
 pub fn is_capture(text: &str) -> bool {
-    matches!(text.split_whitespace().next(), Some("/photo" | "/video")) || is_posture_check(text)
+    matches!(
+        text.split_whitespace().next(),
+        Some("/photo" | "/video" | "/reframe")
+    ) || is_posture_check(text)
 }
 pub fn is_posture_check(text: &str) -> bool {
     let words = text.split_whitespace();
@@ -51,11 +57,13 @@ impl Drop for Media {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
-fn stream_url(cfg: &Config, config: &Value) -> Result<String> {
-    let platform = config["platforms"]
+fn platform(config: &Value) -> Result<&Value> {
+    config["platforms"]
         .as_array()
         .and_then(|p| p.iter().find(|p| p["platform"] == "XiaomiGo2rtc"))
-        .context("Homebridge 尚未配置 XiaomiGo2rtc 摄像头插件")?;
+        .context("Homebridge 尚未配置 XiaomiGo2rtc 摄像头插件")
+}
+fn stream_name(cfg: &Config, platform: &Value) -> Result<String> {
     let did = if cfg.camera_did.is_empty() {
         let cameras = platform["cameras"]
             .as_array()
@@ -74,20 +82,30 @@ fn stream_url(cfg: &Config, config: &Value) -> Result<String> {
         !did.is_empty() && did.len() <= 24 && did.bytes().all(|b| b.is_ascii_digit()),
         "摄像头设备 ID 无效"
     );
+    Ok(format!("xiaomi_{did}"))
+}
+fn port(platform: &Value, field: &str, default: u64) -> Result<u64> {
     let port = platform
-        .get("rtspPort")
+        .get(field)
         .map(|v| v.as_u64().unwrap_or(0))
-        .unwrap_or(8554);
+        .unwrap_or(default);
     ensure!(
         (1..=65535).contains(&port),
-        "Homebridge 摄像头 RTSP 端口无效"
+        "Homebridge 摄像头端口 {field} 无效"
     );
-    Ok(format!("rtsp://127.0.0.1:{port}/xiaomi_{did}"))
+    Ok(port)
 }
-async fn ffmpeg(cfg: &Config, args: &[String], seconds: u64) -> Result<()> {
+fn stream_url(cfg: &Config, config: &Value) -> Result<String> {
+    let platform = platform(config)?;
+    let port = port(platform, "rtspPort", 8554)?;
+    Ok(format!(
+        "rtsp://127.0.0.1:{port}/{}",
+        stream_name(cfg, platform)?
+    ))
+}
+fn ffmpeg_command(cfg: &Config) -> Command {
     let mut cmd = Command::new(&cfg.ffmpeg_bin);
     cmd.args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y"])
-        .args(args)
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -104,7 +122,11 @@ async fn ffmpeg(cfg: &Config, args: &[String], seconds: u64) -> Result<()> {
     ] {
         cmd.env_remove(key);
     }
-    let mut child = cmd
+    cmd
+}
+async fn ffmpeg(cfg: &Config, args: &[String], seconds: u64) -> Result<()> {
+    let mut child = ffmpeg_command(cfg)
+        .args(args)
         .spawn()
         .context("无法启动 FFmpeg，请检查 MR_LI_FFMPEG_BIN（macOS 12 需要兼容版本）")?;
     match tokio::time::timeout(Duration::from_secs(seconds), child.wait()).await {
@@ -162,19 +184,20 @@ fn photo_args(input: &str, output: &Path, rtsp: bool) -> Vec<String> {
     args.push(output.to_string_lossy().into_owned());
     args
 }
-pub async fn capture(cfg: &Config, kind: Capture) -> Result<Media> {
+async fn read_config(cfg: &Config) -> Result<Value> {
     let data = tokio::fs::read(&cfg.homebridge_config)
         .await
         .context("无法读取 Homebridge 配置，请检查 MR_LI_HOMEBRIDGE_CONFIG")?;
-    let config: Value = serde_json::from_slice(&data).context("Homebridge 配置不是有效 JSON")?;
-    let input = stream_url(cfg, &config)?;
+    serde_json::from_slice(&data).context("Homebridge 配置不是有效 JSON")
+}
+fn media_dir(cfg: &Config, kind: Capture) -> Result<Media> {
     std::fs::create_dir_all(&cfg.data_dir)?;
     let dir = cfg
         .data_dir
         .join(format!("camera-{}", uuid::Uuid::new_v4().simple()));
     std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
     let video = matches!(kind, Capture::Video(_));
-    let media = Media {
+    Ok(Media {
         path: dir.join(if video { "camera.mp4" } else { "camera.jpg" }),
         cover: video.then(|| dir.join("cover.jpg")),
         duration_ms: if let Capture::Video(s) = kind {
@@ -183,7 +206,12 @@ pub async fn capture(cfg: &Config, kind: Capture) -> Result<Media> {
             0
         },
         dir,
-    };
+    })
+}
+pub async fn capture(cfg: &Config, kind: Capture) -> Result<Media> {
+    let config = read_config(cfg).await?;
+    let input = stream_url(cfg, &config)?;
+    let media = media_dir(cfg, kind)?;
     match kind {
         Capture::Photo => ffmpeg(cfg, &photo_args(&input, &media.path, true), 40).await?,
         Capture::Video(seconds) => {

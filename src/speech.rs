@@ -61,6 +61,15 @@ pub async fn speak(cfg: &Config, text: &str) -> Result<()> {
     )
     .await
 }
+pub async fn speak_progress(cfg: &Config, text: &str) -> Result<()> {
+    play(
+        Path::new(&cfg.speech_program),
+        cfg,
+        text,
+        Duration::from_secs(20),
+    )
+    .await
+}
 pub async fn speak_posture(cfg: &Config, text: &str) -> Result<()> {
     let mut cfg = cfg.clone();
     cfg.speak_voice = cfg.posture_voice.clone();

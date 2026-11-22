@@ -30,6 +30,7 @@ pub struct Config {
     pub homebridge_config: PathBuf,
     pub camera_did: String,
     pub ffmpeg_bin: String,
+    pub posture_auto_frame: bool,
     pub pose_bin: String,
     pub pose_model: PathBuf,
     pub pose_detector: Option<PathBuf>,
@@ -155,6 +156,9 @@ impl Config {
             )),
             camera_did: get("MR_LI_CAMERA_DID", ""),
             ffmpeg_bin: get("MR_LI_FFMPEG_BIN", "ffmpeg"),
+            posture_auto_frame: get("MR_LI_POSTURE_AUTO_FRAME", "true")
+                .parse()
+                .context("MR_LI_POSTURE_AUTO_FRAME 必须是 true 或 false")?,
             pose_bin: get("MR_LI_POSE_BIN", "bin/mr-li-pose"),
             pose_model: PathBuf::from(get(
                 "MR_LI_POSE_MODEL",
@@ -231,6 +235,7 @@ impl Config {
             homebridge_config: std::env::temp_dir().join("mr-li-no-homebridge.json"),
             camera_did: String::new(),
             ffmpeg_bin: "ffmpeg".into(),
+            posture_auto_frame: false,
             pose_bin: "mr-li-pose".into(),
             pose_model: PathBuf::from("rtmpose-m-halpe26.onnx"),
             pose_detector: None,

@@ -50,6 +50,7 @@ impl Store {
           text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', result TEXT NOT NULL DEFAULT '',
           sent INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL DEFAULT (unixepoch()));
           CREATE TABLE IF NOT EXISTS delivery_retry (id TEXT PRIMARY KEY, attempts INTEGER NOT NULL, due INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS voice_progress (job_id TEXT PRIMARY KEY, text TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS selected_agents (scope TEXT PRIMARY KEY, agent TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS agent_sessions (key TEXT NOT NULL,agent TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(key,agent));
           CREATE TABLE IF NOT EXISTS agent_cards (token TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL DEFAULT '',expires INTEGER NOT NULL DEFAULT (unixepoch()+1800));
@@ -302,6 +303,31 @@ impl Store {
     pub fn command_task(&self, key: &str, id: &str) -> Result<Option<serde_json::Value>> {
         Ok(self.0.lock().unwrap().query_row("SELECT id,status,text,created,output_kind,result FROM jobs WHERE key=?1 AND id=?2",params![key,id],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"kind":r.get::<_,String>(4)?,"result":r.get::<_,String>(5)?}))).optional()?)
     }
+    pub fn set_voice_progress(&self, id: &str, text: &str) -> Result<()> {
+        self.0.lock().unwrap().execute(
+            "INSERT INTO voice_progress(job_id,text) VALUES (?1,?2)
+             ON CONFLICT(job_id) DO UPDATE SET text=excluded.text",
+            params![id, text],
+        )?;
+        Ok(())
+    }
+    pub fn take_voice_progress(&self, id: &str) -> Result<Option<String>> {
+        let connection = self.0.lock().unwrap();
+        if !connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM voice_progress WHERE job_id=?1)",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(None);
+        }
+        Ok(connection
+            .query_row(
+                "DELETE FROM voice_progress WHERE job_id=?1 RETURNING text",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
     /// Real incoming messages only; synthetic jobs cannot redirect the microphone binding.
     pub fn voice_origins(&self) -> Result<Vec<Job>> {
         let c = self.0.lock().unwrap();
@@ -438,6 +464,16 @@ impl Store {
     }
     pub fn homework_active(&self) -> bool {
         self.1.lock().unwrap().started().is_some()
+    }
+    pub fn claim_daily_posture_framing(&self, now: u64) -> Result<bool> {
+        // The bridge controls one study camera. Claim the day before any motor command.
+        Ok(self.0.lock().unwrap().execute(
+            "INSERT INTO runtime_meta(key,value)
+             VALUES ('posture_framing_day',date(?1,'unixepoch','+8 hours'))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value
+             WHERE runtime_meta.value < excluded.value",
+            [now],
+        )? == 1)
     }
     pub fn posture_enabled(&self, key: &str) -> Result<bool> {
         if !self.homework_active() {
@@ -1151,6 +1187,27 @@ mod tests {
         static TIME: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
         *TIME.get_or_init(crate::posture::now_epoch)
     }
+    #[test]
+    fn daily_posture_framing_resets_at_beijing_midnight_and_survives_restart() -> Result<()> {
+        let path = std::env::temp_dir().join(format!("mr-li-framing-{}.sqlite3", uuid::Uuid::new_v4()));
+        let midnight = chrono::DateTime::parse_from_rfc3339("2026-11-23T00:00:00+08:00")?
+            .timestamp() as u64;
+        let result = (|| -> Result<()> {
+            let first = Store::open(&path)?;
+            let concurrent = Store::open(&path)?;
+            assert!(first.claim_daily_posture_framing(midnight - 2)?);
+            assert!(!concurrent.claim_daily_posture_framing(midnight - 1)?);
+            drop((first, concurrent));
+            let reopened = Store::open(&path)?;
+            assert!(!reopened.claim_daily_posture_framing(midnight - 1)?);
+            assert!(reopened.claim_daily_posture_framing(midnight)?);
+            assert!(!reopened.claim_daily_posture_framing(midnight + 60)?);
+            Ok(())
+        })();
+        let _ = std::fs::remove_file(path);
+        result
+    }
+
     #[test]
     fn homework_watch_starts_stops_flushes_and_resumes() -> Result<()> {
         let s = Store::open(Path::new(":memory:"))?;

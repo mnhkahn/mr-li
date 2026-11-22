@@ -212,12 +212,8 @@ pub(super) fn infer(
     repeats: usize,
 ) -> Result<Inference> {
     let start = Instant::now();
-    let detector = session(Path::new(detector_path))?;
+    let detector = person_detector(Path::new(detector_path))?;
     let model = session(Path::new(model_path))?;
-    ensure!(
-        matches!(&detector.inputs[0].input_type,ValueType::Tensor{ty:TensorElementType::Float32,dimensions} if dimensions==&[1,3,416,416]),
-        "需要 YOLOX Tiny 416×416 人体检测模型"
-    );
     ensure!(
         matches!(&model.inputs[0].input_type,ValueType::Tensor{ty:TensorElementType::Float32,dimensions} if dimensions.len()==4 && dimensions[1..]==[3,256,192]),
         "需要 RTMPose Halpe26 256×192 模型"
@@ -278,6 +274,29 @@ pub(super) fn infer(
     result.inference_ms = times[times.len() / 2];
     result.detector_ms = det_times[det_times.len() / 2];
     Ok(result)
+}
+
+fn person_detector(path: &Path) -> Result<Session> {
+    let detector = session(path)?;
+    ensure!(
+        matches!(&detector.inputs[0].input_type,ValueType::Tensor{ty:TensorElementType::Float32,dimensions} if dimensions==&[1,3,416,416]),
+        "需要 YOLOX Tiny 416×416 人体检测模型"
+    );
+    Ok(detector)
+}
+
+pub(super) fn locate_people(path: &Path, image: &RgbImage) -> Result<serde_json::Value> {
+    let start = Instant::now();
+    let detector = person_detector(path)?;
+    let model_load_ms = start.elapsed().as_secs_f64() * 1000.;
+    let (boxes, preprocess_ms, inference_ms) = detect(&detector, image)?;
+    Ok(serde_json::json!({
+        "people": boxes,
+        "image_size": [image.width(), image.height()],
+        "model_load_ms": model_load_ms,
+        "preprocess_ms": preprocess_ms,
+        "inference_ms": inference_ms,
+    }))
 }
 
 #[cfg(test)]

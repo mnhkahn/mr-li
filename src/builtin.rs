@@ -68,6 +68,7 @@ pub fn tools() -> Value {
     let mut tools = json!([
         {"name":"teacher_speak","description":"通过 Mac mini 喇叭说话，或停止当前会话语音。沿用现有音色；text 最多500字。超时先查任务，不要重复播报。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["say","stop"]},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["action"]}},
         {"name":"teacher_camera","description":"摄像头拍照或录制1–30秒视频，结果直接发到发起请求的飞书聊天。返回状态不代表你已看过画面，不得编造画面内容。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["photo","video"]},"seconds":{"type":"integer","minimum":1,"maximum":30}},"required":["action"]}},
+        {"name":"teacher_reframe","description":"用户要求调整学习摄像头构图或追踪写作业的人时调用。本地识别唯一人体，上下左右逐步移动云台，直至进入画面中心区域或达到单次调整上限。无人或多人时停止。返回文字结果。","inputSchema":{"type":"object","properties":{},"required":[]}},
         {"name":"teacher_file","description":"将Agent工作目录内已有的普通文件作为附件发送到当前飞书聊天，支持PDF、Word、表格、压缩包等。先生成并保存文件，再传相对工作目录的路径或目录内绝对路径；可用file_name设置接收者看到的文件名。单文件非空且不超过30MB，目录需先压缩。上传完成不代表已发送，应检查file_delivery或用teacher_query查询原任务；重试沿用operation_id。","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"file_name":{"type":"string","minLength":1,"maxLength":200}},"required":["path"]}},
         {"name":"teacher_image","description":"将Agent工作目录内已有的PNG、JPEG、GIF、WebP图片以原生图片消息发送到当前飞书聊天。先生成并保存文件，再传相对工作目录的路径或目录内绝对路径；可用file_name设置接收者看到的文件名。图片必须非空且小于10MB；其他格式请用teacher_file作为附件发送。上传完成不代表已发送，应检查file_delivery或用teacher_query查询原任务；重试沿用operation_id。","inputSchema":{"type":"object","properties":{"path":{"type":"string","minLength":1,"maxLength":4096},"file_name":{"type":"string","minLength":1,"maxLength":200}},"required":["path"]}},
         {"name":"teacher_posture","description":"单次坐姿检测并发送标注图，或开启/停止当前聊天的定时坐姿监测。定时监测跟随平板作业计时，默认每60秒采样、每10分钟汇总；interval_seconds支持30–3600。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["check","start","stop"]},"interval_seconds":{"type":"integer","minimum":30,"maximum":3600}},"required":["action"]}},
@@ -218,6 +219,7 @@ async fn command(bridge: &Bridge, name: &str, args: &Value) -> Result<String> {
             "video" => format!("/video {}", number(args, "seconds", 10, 1, 30)?),
             _ => bail!("未知摄像头操作"),
         },
+        "teacher_reframe" => "/reframe".into(),
         "teacher_posture" => match action {
             "check" => "/posture".into(),
             "start" => format!(
@@ -682,6 +684,7 @@ mod tests {
         let f = Fixture::new()?;
         for (name, extra, expected) in [
             ("teacher_camera", json!({"action":"photo"}), "/photo"),
+            ("teacher_reframe", json!({}), "/reframe"),
             ("teacher_proxy", json!({"action":"status"}), "/proxy status"),
             (
                 "teacher_proxy",
@@ -773,7 +776,7 @@ mod tests {
         ] {
             assert!(command(&f.bridge, "teacher_proxy", &args).await.is_err());
         }
-        assert_eq!(tools().as_array().unwrap().len(), 8);
+        assert_eq!(tools().as_array().unwrap().len(), 9);
         assert!(!tools().to_string().contains("teacher_approve"));
         let config = mcp_acp(&f.bridge.cfg)?;
         assert!(!config.to_string().contains(&f.bridge.cfg.app_secret));

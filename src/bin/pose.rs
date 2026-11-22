@@ -373,7 +373,8 @@ fn infer_movenet(
 }
 fn main() -> Result<()> {
     let mut args = HashMap::new();
-    let mut it = std::env::args().skip(1);
+    let mut it = std::env::args().skip(1).peekable();
+    let detect_only = it.next_if(|arg| arg == "--detect-only").is_some();
     while let Some(k) = it.next() {
         ensure!(
             [
@@ -390,9 +391,7 @@ fn main() -> Result<()> {
         );
         args.insert(k, it.next().context("参数缺少值")?);
     }
-    let model_path = args.get("--model").context("缺少 --model")?;
     let image_path = args.get("--image").context("缺少 --image")?;
-    let prefix = PathBuf::from(args.get("--output").context("缺少 --output")?);
     let repeats: usize = args
         .get("--repeat")
         .map(|s| s.parse())
@@ -419,6 +418,16 @@ fn main() -> Result<()> {
         .with_name("mr-li-pose")
         .with_telemetry(false)
         .commit()?;
+    if detect_only {
+        let detector = args.get("--detector").context("缺少 --detector")?;
+        println!(
+            "{}",
+            rtm::locate_people(std::path::Path::new(detector), &image)?
+        );
+        return Ok(());
+    }
+    let model_path = args.get("--model").context("缺少 --model")?;
+    let prefix = PathBuf::from(args.get("--output").context("缺少 --output")?);
     let inference = if let Some(detector) = args.get("--detector") {
         rtm::infer(
             model_path,

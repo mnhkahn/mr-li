@@ -218,7 +218,31 @@ impl Bridge {
         if !background {
             self.start_processing(j).await;
         }
-        let mut media = camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?;
+        if j.text.split_whitespace().next() == Some("/reframe") {
+            ensure!(j.text.split_whitespace().count() == 1, "用法：/reframe");
+            let (_, note) = camera::reframe(&self.cfg).await?;
+            return self.store.finish(&j.id, &note);
+        }
+        let mut framing_note = None;
+        let posture_check = camera::is_posture_check(&j.text);
+        let mut media = if posture_check
+            && self.cfg.posture_auto_frame
+            && self.store.claim_daily_posture_framing(crate::posture::now_epoch())?
+        {
+            match camera::reframe(&self.cfg).await {
+                Ok((media, note)) => {
+                    framing_note = Some(note);
+                    media
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "作业自动构图失败，继续抓取坐姿照片");
+                    framing_note = Some(format!("云台构图失败：{error}。"));
+                    camera::capture(&self.cfg, camera::Capture::Photo).await?
+                }
+            }
+        } else {
+            camera::capture(&self.cfg, camera::Capture::parse(&j.text)?).await?
+        };
         if background && !self.store.posture_enabled(&j.key)? {
             self.store.status(&j.id, "done")?;
             return Ok(());
@@ -227,11 +251,14 @@ impl Bridge {
             crate::posture::archive_photo(&self.cfg, &j.id, &media.path).context("照片归档失败")?;
         }
         let mut assessment = crate::posture::Assessment::Unknown;
-        let note = if camera::is_posture_check(&j.text) {
+        let note = if posture_check {
             let observation = crate::posture::analyze(&self.cfg, &media.path).await?;
             media.path = observation.image;
             assessment = observation.assessment;
-            Some(observation.note)
+            Some(match framing_note {
+                Some(framing) => format!("{}\n{framing}", observation.note),
+                None => observation.note,
+            })
         } else {
             None
         };
@@ -347,17 +374,37 @@ impl Bridge {
         };
         let token = self.store.builtin_context(&j.id)?;
         let prompt = format!(
-            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；代理使用 teacher_proxy，切换必须来自用户要求。用户要求发送图片时先保存到工作目录，再调用teacher_image发送原生图片；用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
+            "{}\n\n[李老师内置工具上下文]\n本次请求的 request_token 为 {token}。调用 teacher_* 工具时传入它，不向用户展示。不要复用历史 token；它只在本次任务执行期间有效。用户要求说话、拍照录像、坐姿检测、平板通知、代理查询/测速/切换时优先用对应 teacher_* 工具；用户要求追踪写作业的人或调整学习摄像头构图时使用 teacher_reframe；代理使用 teacher_proxy，切换必须来自用户要求。用户要求发送图片时先保存到工作目录，再调用teacher_image发送原生图片；用户要求发送文件时，先将成果保存到工作目录，再调用 teacher_file 发送真实文件；本地路径或Markdown链接不能代替附件。file_delivery=pending只表示已上传等待发送，不得宣称已送达，也不要在最终富回复中重复附上同一文件；用teacher_query查询原任务。同一副作用重试沿用相同 operation_id。工具超时后先查询任务，不要换 operation_id 重做。权限批准、会话重置和 Agent/模型切换仍由用户操作。",
             j.text
         );
-        let prompt = if crate::voice::is_job(j) {
+        let voice = crate::voice::is_job(j);
+        let prompt = if voice {
             format!(
-                "{prompt}\n\n[语音输入] 本次文字来自用户麦克风转写。用适合朗读的简短中文纯文字回复，最多500字，不使用卡片或Markdown。最终回复会自动播报，不要再调用teacher_speak复述回复。"
+                "{prompt}\n\n[语音输入] 本次文字来自用户麦克风转写。用适合朗读的简短中文纯文字回复，最多500字，不使用卡片或Markdown。执行多步任务时，可在工具调用前后用独立的 <voice-progress>简短进度</voice-progress> 报告正在执行的步骤、得到的结果或关键判断的简短摘要。每次最多32字，只报告可告诉用户的内容，不包含内部推理、敏感信息或原始工具输出。进度会即时尝试播报，最终回复单独自动播报，不要重复进度或调用teacher_speak。"
             )
         } else {
             format!("{prompt}\n\n{}", crate::reply::INSTRUCTIONS)
         };
-        let result = if files.is_empty() {
+        let result = if voice {
+            let mut seen = std::collections::HashSet::new();
+            let mut progress = |output: &str| {
+                for update in crate::voice::progress_updates(output) {
+                    if seen.insert(update.to_owned())
+                        && let Err(error) = self.store.set_voice_progress(&j.id, update)
+                    {
+                        tracing::warn!(%error, "保存语音进度失败");
+                    }
+                }
+            };
+            let result = self
+                .agents
+                .prompt_with_progress(&sid, &prompt, Some(&model), &files, Some(&mut progress))
+                .await;
+            if let Err(error) = self.store.take_voice_progress(&j.id) {
+                tracing::warn!(%error, "清理待播语音进度失败");
+            }
+            result.map(|text| crate::voice::final_reply(&text))
+        } else if files.is_empty() {
             self.agents.prompt(&sid, &prompt, Some(&model)).await
         } else {
             self.agents

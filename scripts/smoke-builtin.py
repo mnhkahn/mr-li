@@ -22,11 +22,11 @@ assert r.returncode == 0, r.stderr
 responses = [json.loads(line) for line in r.stdout.splitlines()]
 assert [r['id'] for r in responses] == [1, 2, 3]
 tools = responses[1]['result']['tools']
-assert {t['name'] for t in tools} == {'teacher_speak', 'teacher_camera', 'teacher_posture', 'teacher_notice', 'teacher_query', 'teacher_proxy', 'teacher_file', 'teacher_image'}
+assert {t['name'] for t in tools} == {'teacher_speak', 'teacher_camera', 'teacher_reframe', 'teacher_posture', 'teacher_notice', 'teacher_query', 'teacher_proxy', 'teacher_file', 'teacher_image'}
 for t in tools:
     assert 'request_token' in t['inputSchema']['required']
     assert t['inputSchema']['additionalProperties'] is False
 assert responses[2]['result']['isError'] is True
 message = responses[2]['result']['content'][0]['text']
 assert '上下文已失效' in message, message
-print('PASS: stdio handshake, eight tool schemas, live bridge connection and invalid-context rejection')
+print(f'PASS: stdio handshake, {len(tools)} tool schemas, live bridge connection and invalid-context rejection')

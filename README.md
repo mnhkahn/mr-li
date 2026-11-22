@@ -278,7 +278,7 @@ sudo ./scripts/service.sh uninstall system
 | `/ha devices [筛选]` | 查看智能家居硬件，按设备合并，显示名称、区域和 HA 可用状态。同一张卡片内每 5 行翻页 |
 | `/ha commands <实体或设备ID>` | 查看支持的服务和参数 |
 | `/ha control <实体ID> <domain.service> [JSON参数]` | 执行 HA 操作并显示即时回读 |
-| `/channel` | 通过 Homework CLI 查看已配对平板的连接状态 |
+| `/tablet` | 通过 Homework CLI 查看已配对平板的连接状态 |
 | `/tasks` | 当前用户、聊天、话题最近 10 项任务 |
 | `/task <ID>`、`/task status <ID>` | 查询本会话任务状态和结果摘要，不可查看其他用户或话题 |
 | `/cron`、`/cron list` | 查看早间新闻播报及当前聊天的坐姿监测状态 |

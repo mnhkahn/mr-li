@@ -519,7 +519,7 @@ impl Bridge {
                     .context("任务不存在，或不属于当前会话")?;
                 Ok(commands::task(&task))
             }
-            "/channel" => {
+            "/tablet" | "/channel" => {
                 let Some(tablet) = &self.tablet else {
                     return Ok("作业平板：尚未启用连接功能".into());
                 };
@@ -2092,6 +2092,7 @@ mod tests {
         for (id, text, result, expected) in [
             ("om_help", "/help", None, "interactive"),
             ("om_status", "/status", None, "interactive"),
+            ("om_tablet", "/tablet", None, "text"),
             ("om_channel", "/channel", None, "text"),
             ("om_devices", "/ha devices", None, "interactive"),
             ("om_native", "/ha devices demo_0", None, "interactive"),
@@ -2158,7 +2159,9 @@ mod tests {
             assert_eq!(kind, expected, "{text}");
             match id {
                 "om_help" => assert_eq!(body["body"]["elements"].as_array().unwrap().len(), 5),
-                "om_channel" => assert_eq!(body["text"], "作业平板：尚未启用连接功能"),
+                "om_tablet" | "om_channel" => {
+                    assert_eq!(body["text"], "作业平板：尚未启用连接功能")
+                }
                 "om_devices" => {
                     let table = &body["body"]["elements"][1];
                     assert_eq!(table["tag"], "table");

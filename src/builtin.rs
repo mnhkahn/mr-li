@@ -181,7 +181,8 @@ async fn command(bridge: &Bridge, name: &str, args: &Value) -> Result<String> {
             "cron" => "/cron list".into(),
             "posture" => "/posture status".into(),
             "notices" => "/notify list".into(),
-            kind @ ("tasks" | "status" | "channel" | "inbox" | "memory" | "skills" | "mcp" | "help") => {
+            "channel" => "/tablet".into(),
+            kind @ ("tasks" | "status" | "inbox" | "memory" | "skills" | "mcp" | "help") => {
                 format!("/{kind}")
             }
             _ => bail!("未知查询类型"),

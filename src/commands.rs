@@ -4,14 +4,14 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const HELP: &str = "李老师命令：\n/help 帮助\n/proxy [status|list|countries|set|test|auto] 查询、按国家测速和切换代理\n/model 同时选择 Agent 和免费模型\n/status 当前会话、模型、执行与排队状态\n/skills 查看可用技能\n/mcp 查看外部工具连接状态\n/ha devices [筛选] 查看 HA 设备表格\n/ha commands <实体或设备ID> 查看可用操作\n/ha control <实体ID> <domain.service> [JSON参数] 控制设备\n/music [play|pause|next|prev|search|list|status] Apple Music 播放和搜歌\n/channel 查看消息入口和平板在线状态\n/tasks 当前会话最近 10 项任务\n/task <任务ID> 查看本会话任务详情\n/cron list 查看早间新闻播报和当前聊天的坐姿监测\n/cron run posture 立即检测一次坐姿\n/memory 查看长期记忆\n/inbox [页码] 查看播报收件箱\n/reminder list 查看本聊天的提醒\n/reminder add <时间> <内容> 创建一次性提醒\n/reminder del <ID> 删除提醒\n/baby <内容> 给宝宝发消息，显示在平板作业首页\n/baby list 查看消息送达状态\n/baby cancel <ID> 取消尚未送达的消息\n/notify <内容> 在作业首页显示通知\n/notify list 查看通知和送达状态\n/notify cancel <ID> 取消尚未送达的通知\n/speak <文字> 在 Mac mini 喇叭播报（最多 500 字）\n/speak stop 停止本会话播报并取消待播报文字\n/voice [status|tingting|clone] 查看或切换 Mac mini 播报音色\n/posture 单次坐姿检测\n/posture start [秒数] 平板作业计时期间检查，默认 60 秒；每 10 分钟图文汇总\n/posture status 最近检测结果\n/posture stop 停止定时监测\n/reframe 本地定位人体并调整学习摄像头构图\n/photo 摄像头照片\n/video [秒数] 摄像头录像，默认 10 秒，最长 30 秒\n/new 新会话，旧会话保留\n/stop 停止当前会话任务、语音和定时监测\n/approve <ID> 批准一次权限请求\n/deny <ID> 拒绝权限或提问\n/answer <ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
+pub const HELP: &str = "李老师命令：\n/help 帮助\n/proxy [status|list|countries|set|test|auto] 查询、按国家测速和切换代理\n/model 同时选择 Agent 和免费模型\n/status 当前会话、模型、执行与排队状态\n/skills 查看可用技能\n/mcp 查看外部工具连接状态\n/ha devices [筛选] 查看 HA 硬件列表\n/ha commands <实体或设备ID> 查看可用操作\n/ha control <实体ID> <domain.service> [JSON参数] 控制设备\n/music [play|pause|next|prev|search|list|status] Apple Music 播放和搜歌\n/channel 查看作业平板连接状态\n/tasks 当前会话最近 10 项任务\n/task <任务ID> 查看本会话任务详情\n/cron list 查看早间新闻播报和当前聊天的坐姿监测\n/cron run posture 立即检测一次坐姿\n/memory 查看长期记忆\n/inbox [页码] 查看播报收件箱\n/reminder list 查看本聊天的提醒\n/reminder add <时间> <内容> 创建一次性提醒\n/reminder del <ID> 删除提醒\n/baby <内容> 给宝宝发消息，显示在平板作业首页\n/baby list 查看消息送达状态\n/baby cancel <ID> 取消尚未送达的消息\n/notify <内容> 在作业首页显示通知\n/notify list 查看通知和送达状态\n/notify cancel <ID> 取消尚未送达的通知\n/speak <文字> 在 Mac mini 喇叭播报（最多 500 字）\n/speak stop 停止本会话播报并取消待播报文字\n/voice [status|tingting|clone] 查看或切换 Mac mini 播报音色\n/posture 单次坐姿检测\n/posture start [秒数] 平板作业计时期间检查，默认 60 秒；每 10 分钟图文汇总\n/posture status 最近检测结果\n/posture stop 停止定时监测\n/reframe 本地定位人体并调整学习摄像头构图\n/photo 摄像头照片\n/video [秒数] 摄像头录像，默认 10 秒，最长 30 秒\n/new 新会话，旧会话保留\n/stop 停止当前会话任务、语音和定时监测\n/approve <ID> 批准一次权限请求\n/deny <ID> 拒绝权限或提问\n/answer <ID> <JSON二维数组> 回答提问，例如 [[\"选项A\"],[\"补充说明\"]]\n群聊中请 @李老师。";
 
 pub const HA_DEVICES_USAGE: &str = "/ha devices [筛选]";
 
 pub fn title(command: &str) -> &'static str {
     match command.split_whitespace().next().unwrap_or("") {
         "/status" => "会话状态",
-        "/channel" => "消息入口与平板",
+        "/channel" => "作业平板连接",
         "/proxy" => "网络代理",
         "/music" => "音乐",
         "/skills" => "可用技能",
@@ -91,7 +91,7 @@ pub fn presentation(command: &str, result: &str) -> Option<Reply> {
                 .collect(),
         ));
     }
-    if !result.contains('\n') {
+    if command.trim() == "/channel" || !result.contains('\n') {
         return None;
     }
     if command.trim() == "/status"
@@ -220,8 +220,6 @@ const HA_PAGE_SIZE: usize = 5;
 
 #[derive(Deserialize, Serialize)]
 pub struct HaInventory {
-    devices: usize,
-    standalone: usize,
     rows: Vec<Vec<String>>,
 }
 
@@ -240,26 +238,35 @@ impl HaInventory {
         let total = self.rows.len();
         let pages = self.pages();
         ensure!((1..=pages).contains(&page), "页码超出范围");
-        let summary = if total == 0 {
-            "没有匹配的 HA 设备或实体。".into()
+        // Older cards may still be open when this build goes live.
+        let legacy = self.rows.first().is_some_and(|row| row.len() == 4);
+        let title = if legacy {
+            "Home Assistant 设备"
         } else {
-            format!(
-                "{} 台设备 · {} 个独立实体 · {total} 行",
-                self.devices, self.standalone
-            )
+            "智能家居硬件"
+        };
+        let summary = if total == 0 {
+            "没有匹配的硬件。".into()
+        } else if legacy {
+            format!("{total} 条设备或实体")
+        } else {
+            format!("共 {total} 台硬件")
         };
         let render = |text: String, rows: &[Vec<String>]| {
             let blocks = if rows.is_empty() {
                 vec![]
             } else {
+                let columns = if legacy {
+                    vec!["名称", "区域", "状态", "实体 / 设备 ID"]
+                } else {
+                    vec!["设备", "区域", "HA 状态"]
+                };
                 vec![Block::Table {
-                    columns: ["名称", "区域", "状态", "实体 / 设备 ID"]
-                        .map(str::to_owned)
-                        .to_vec(),
+                    columns: columns.into_iter().map(str::to_owned).collect(),
                     rows: rows.to_vec(),
                 }]
             };
-            let card = card("Home Assistant 设备", text, blocks);
+            let card = card(title, text, blocks);
             crate::reply::render(&card, store, key, "")
         };
         // Use Lark's own pager whenever the entire list fits in one card.
@@ -297,61 +304,24 @@ impl HaInventory {
 }
 
 pub fn ha_devices(value: &Value) -> Result<HaInventory> {
-    let devices = value["devices"].as_array().context("HA 设备清单格式无效")?;
-    let standalone = value["standalone_entities"]
-        .as_array()
-        .context("HA 独立实体清单格式无效")?;
-    let mut entries = Vec::new();
-    for device in devices {
-        let entities = device["entities"]
-            .as_array()
-            .context("HA 实体清单格式无效")?;
-        if entities.is_empty() {
-            entries.push((
-                device["name"].as_str().unwrap_or("未命名设备"),
-                device["area"].as_str().unwrap_or(""),
-                "无实体",
-                device["device_id"].as_str().unwrap_or(""),
-            ));
-        }
-        entries.extend(entities.iter().map(|entity| ha_entity_row(entity, device)));
-    }
-    entries.extend(
-        standalone
-            .iter()
-            .map(|entity| ha_entity_row(entity, &Value::Null)),
-    );
-    entries.sort_by_key(|&(name, area, _, id)| (area, name, id));
-    let rows = entries
-        .into_iter()
-        .map(|(name, area, state, id)| {
-            vec![
-                preview(name, 44),
-                preview(area, 24),
-                preview(state, 28),
-                preview(id, 299),
-            ]
+    let devices = value.as_array().context("HA 硬件清单格式无效")?;
+    let mut rows: Vec<_> = devices
+        .iter()
+        .map(|device| {
+            let name = device["name"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("未命名设备");
+            let area = device["area"]
+                .as_str()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("未分区");
+            let status = device["status"].as_str().unwrap_or("状态未知");
+            vec![preview(name, 44), preview(area, 24), status.to_owned()]
         })
         .collect();
-    Ok(HaInventory {
-        devices: devices.len(),
-        standalone: standalone.len(),
-        rows,
-    })
-}
-
-fn ha_entity_row<'a>(entity: &'a Value, device: &'a Value) -> (&'a str, &'a str, &'a str, &'a str) {
-    let id = entity["entity_id"].as_str().unwrap_or("");
-    (
-        entity["attributes"]["friendly_name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or_else(|| device["name"].as_str())
-            .unwrap_or(id),
-        entity["area"].as_str().unwrap_or(""),
-        entity["state"].as_str().unwrap_or("未知"),
-        id,
-    )
+    rows.sort_by(|a, b| (&a[1], &a[0]).cmp(&(&b[1], &b[0])));
+    Ok(HaInventory { rows })
 }
 
 pub fn skills(value: &Value) -> Result<String> {

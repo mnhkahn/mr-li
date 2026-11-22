@@ -520,35 +520,32 @@ impl Bridge {
                 Ok(commands::task(&task))
             }
             "/channel" => {
-                let mut text = format!(
-                    "消息入口：{}（已配置）",
-                    if self.cfg.feishu_base_url.contains("larksuite.com") {
-                        "Lark 国际版"
-                    } else {
-                        "飞书"
+                let Some(tablet) = &self.tablet else {
+                    return Ok("作业平板：尚未启用连接功能".into());
+                };
+                match tablet.channel_devices().await {
+                    Ok(devices) if devices.is_empty() => Ok("作业平板：尚未配对".into()),
+                    Ok(devices) => Ok(devices
+                        .iter()
+                        .map(|device| {
+                            let name = device["name"]
+                                .as_str()
+                                .filter(|name| !name.trim().is_empty())
+                                .unwrap_or("学习平板");
+                            let status = match device["online"].as_bool() {
+                                Some(true) => "作业应用已连接",
+                                Some(false) => "作业应用未连接",
+                                None => "连接状态未知",
+                            };
+                            format!("{}：{status}", commands::preview(name, 80))
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")),
+                    Err(error) => {
+                        tracing::warn!(%error, "查询作业平板连接状态失败");
+                        Ok("作业平板：暂时查不到连接状态".into())
                     }
-                );
-                text.push_str("\n文件发送：teacher_file 发送工作目录内非空且不超过30MB的附件；teacher_image 发送小于10MB的PNG/JPEG/GIF/WebP原生图片");
-                if let Some(tablet) = &self.tablet {
-                    let devices = tablet.devices_status()?;
-                    if devices.is_empty() {
-                        text.push_str("\n平板：尚未配对");
-                    }
-                    for device in devices {
-                        text.push_str(&format!(
-                            "\n平板：{} · {}",
-                            device["name"].as_str().unwrap_or("学习平板"),
-                            if device["online"] == true {
-                                "在线"
-                            } else {
-                                "离线"
-                            }
-                        ));
-                    }
-                } else {
-                    text.push_str("\n平板网关：未启用");
                 }
-                Ok(text)
             }
             "/cron" => {
                 let words: Vec<_> = args.split_whitespace().collect();
@@ -757,8 +754,9 @@ impl Bridge {
         let cmd = words.next().unwrap_or("");
         let args = j.text[cmd.len()..].trim_start();
         if cmd == "/ha" && args.split_whitespace().next() == Some("devices") {
+            let query = args["devices".len()..].trim();
             let value =
-                crate::home_assistant::command(self.cfg.home_assistant.as_ref(), args).await?;
+                crate::home_assistant::hardware(self.cfg.home_assistant.as_ref(), query).await?;
             let inventory = commands::ha_devices(&value)?;
             let token = uuid::Uuid::new_v4().simple().to_string();
             let output = inventory.render(&self.store, &j.key, &token, 1)?;
@@ -2094,6 +2092,7 @@ mod tests {
         for (id, text, result, expected) in [
             ("om_help", "/help", None, "interactive"),
             ("om_status", "/status", None, "interactive"),
+            ("om_channel", "/channel", None, "text"),
             ("om_devices", "/ha devices", None, "interactive"),
             ("om_native", "/ha devices demo_0", None, "interactive"),
             (
@@ -2159,11 +2158,13 @@ mod tests {
             assert_eq!(kind, expected, "{text}");
             match id {
                 "om_help" => assert_eq!(body["body"]["elements"].as_array().unwrap().len(), 5),
+                "om_channel" => assert_eq!(body["text"], "作业平板：尚未启用连接功能"),
                 "om_devices" => {
                     let table = &body["body"]["elements"][1];
                     assert_eq!(table["tag"], "table");
                     assert_eq!(table["page_size"], 5);
                     assert_eq!(table["rows"].as_array().unwrap().len(), 5);
+                    assert_eq!(table["columns"].as_array().unwrap().len(), 3);
                     assert!(!body.to_string().contains("xxxx"));
                     assert!(!body.to_string().contains("--page"));
                 }
@@ -2218,7 +2219,7 @@ mod tests {
             assert_eq!(sent.len(), before + 1);
             assert_eq!(sent[before].0, "om_reply");
             assert_eq!(sent[before].1, "update");
-            assert!(sent[before].2.to_string().contains("第 2/9 页"));
+            assert!(sent[before].2.to_string().contains("第 2/8 页"));
             sent[before].2.clone()
         };
         assert_ne!(
@@ -2920,7 +2921,7 @@ mod tests {
         job.text = "/memory".into();
         assert!(b.command(&job, None).await?.contains("名字：小李"));
         job.text = "/channel".into();
-        assert!(b.command(&job, None).await?.contains("平板网关：未启用"));
+        assert_eq!(b.command(&job, None).await?, "作业平板：尚未启用连接功能");
         for (id, k) in [
             ("own-speech", key.as_str()),
             ("foreign-speech", "other-conversation"),

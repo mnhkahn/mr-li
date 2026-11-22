@@ -134,15 +134,16 @@ impl Settings {
     }
     pub async fn run(&self, name: &str, args: Value) -> Result<Value> {
         let control = name == "ha_control";
-        let mut result = tokio::time::timeout(Duration::from_secs(25), self.execute(name, args))
-            .await
-            .map_err(|_| {
-                anyhow::anyhow!(if control {
-                    "HA 控制超时，执行结果可能未知；不要自动重试"
-                } else {
-                    "HA 查询超时"
-                })
-            })??;
+        let mut result =
+            tokio::time::timeout(Duration::from_secs(25), self.execute(name, args, false))
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(if control {
+                        "HA 控制超时，执行结果可能未知；不要自动重试"
+                    } else {
+                        "HA 查询超时"
+                    })
+                })??;
         if control {
             let readback = async {
                 let mut conn = Connection::open(self).await?;
@@ -163,7 +164,7 @@ impl Settings {
         }
         Ok(result)
     }
-    async fn execute(&self, name: &str, args: Value) -> Result<Value> {
+    async fn execute(&self, name: &str, args: Value, hardware_only: bool) -> Result<Value> {
         ensure!(
             matches!(name, "ha_devices" | "ha_commands" | "ha_control"),
             "未知 HA 工具"
@@ -212,6 +213,9 @@ impl Settings {
         let inventory = inventory(states, &devices, &entities, &areas)?;
         if name == "ha_devices" {
             let q = args["query"].as_str().unwrap_or("").trim().to_lowercase();
+            if hardware_only {
+                return Ok(hardware_inventory(&inventory, &devices, &entities, &q));
+            }
             let filter = |key: &str| {
                 inventory[key]
                     .as_array()
@@ -519,6 +523,102 @@ fn inventory(states: &[Value], devices: &Value, entities: &Value, areas: &Value)
     other.sort_by_key(|e| e["entity_id"].to_string());
     Ok(json!({"devices":output.into_values().collect::<Vec<_>>(),"standalone_entities":other}))
 }
+
+fn hardware_inventory(inventory: &Value, devices: &Value, registry: &Value, query: &str) -> Value {
+    let devices = devices.as_array().unwrap();
+    let registry = registry.as_array().unwrap();
+    let matches = |value: &Value| {
+        value
+            .as_str()
+            .is_some_and(|s| s.to_lowercase().contains(query))
+    };
+    let matches_entity = |entity: &Value| {
+        ["entity_id", "type", "area"]
+            .iter()
+            .any(|key| matches(&entity[*key]))
+            || matches(&entity["attributes"]["friendly_name"])
+    };
+    let summarize = |name: &Value, area: &Value, states: &[Value]| {
+        let available = states
+            .iter()
+            .filter_map(|entity| entity["state"].as_str())
+            .any(|state| !matches!(state, "" | "unknown" | "unavailable"));
+        let status = if available {
+            "可用"
+        } else if states.iter().any(|entity| entity["state"] == "unavailable") {
+            "不可用"
+        } else {
+            "状态未知"
+        };
+        json!({"name":name,"area":area,"status":status})
+    };
+    let mut hardware = Vec::new();
+    for device in inventory["devices"].as_array().unwrap() {
+        let states = device["entities"].as_array().unwrap();
+        let source = devices
+            .iter()
+            .find(|d| d["id"] == device["device_id"])
+            .unwrap();
+        let mobile_app = source["identifiers"]
+            .as_array()
+            .is_some_and(|ids| !ids.is_empty() && ids.iter().all(|id| id[0] == "mobile_app"));
+        if states.is_empty() || source["entry_type"] == "service" || mobile_app {
+            continue;
+        }
+        if !query.is_empty()
+            && !["device_id", "name", "area", "manufacturer", "model"]
+                .iter()
+                .any(|key| matches(&device[*key]))
+            && !states.iter().any(matches_entity)
+        {
+            continue;
+        }
+        hardware.push(summarize(&device["name"], &device["area"], states));
+    }
+    for entity in inventory["standalone_entities"].as_array().unwrap() {
+        let Some(domain) = entity["type"].as_str() else {
+            continue;
+        };
+        let registration = registry
+            .iter()
+            .find(|e| e["entity_id"] == entity["entity_id"]);
+        let platform = registration
+            .and_then(|r| r["platform"].as_str())
+            .unwrap_or("");
+        // Some YAML/template actuators represent real hardware without a device registry entry.
+        // Detached remotes, diagnostic sensors and template setup switches are control surfaces.
+        if !matches!(
+            domain,
+            "camera"
+                | "climate"
+                | "cover"
+                | "fan"
+                | "humidifier"
+                | "light"
+                | "lock"
+                | "switch"
+                | "vacuum"
+                | "valve"
+                | "water_heater"
+        ) || matches!(platform, "group" | "demo" | "mobile_app" | "input_boolean")
+            || (platform == "template" && domain != "cover")
+            || registration.is_some_and(|r| !r["entity_category"].is_null())
+            || (!query.is_empty() && !matches_entity(entity))
+        {
+            continue;
+        }
+        let name = entity
+            .pointer("/attributes/friendly_name")
+            .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+            .unwrap_or(&entity["entity_id"]);
+        hardware.push(summarize(
+            name,
+            &entity["area"],
+            std::slice::from_ref(entity),
+        ));
+    }
+    json!(hardware)
+}
 fn is_xgimi_remote(id: &Value, registry: &Value) -> bool {
     id.as_str().is_some_and(|id| id.starts_with("remote."))
         && registry.as_array().is_some_and(|entries| {
@@ -740,6 +840,16 @@ pub async fn command(settings: Option<&Settings>, text: &str) -> Result<Value> {
     cfg.run(name, args).await
 }
 
+pub async fn hardware(settings: Option<&Settings>, query: &str) -> Result<Value> {
+    let cfg = settings.context("Home Assistant 未配置，请设置 XIAOLI_HA_URL 和 XIAOLI_HA_TOKEN")?;
+    tokio::time::timeout(
+        Duration::from_secs(25),
+        cfg.execute("ha_devices", json!({"query":query}), true),
+    )
+    .await
+    .context("HA 查询超时")?
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -774,8 +884,8 @@ pub(crate) mod tests {
         let mut fake = fixture();
         for index in 0..37 {
             fake.states.as_array_mut().unwrap().push(json!({
-                "entity_id":format!("sensor.demo_{index:02}"),"state":"on",
-                "attributes":{"friendly_name":format!("演示传感器 {index:02}"),"raw":"x".repeat(4000)}
+                "entity_id":format!("cover.demo_{index:02}"),"state":"closed",
+                "attributes":{"friendly_name":format!("演示窗帘 {index:02}"),"raw":"x".repeat(4000)}
             }));
         }
         let (settings, _, handle) = server(fake).await;
@@ -869,6 +979,53 @@ pub(crate) mod tests {
         .unwrap()
         .unwrap();
         (settings, shared, handle)
+    }
+    #[test]
+    fn hardware_groups_registered_devices_and_filters_system_entities() -> Result<()> {
+        let states = json!([
+            {"entity_id":"camera.study","state":"idle","attributes":{"friendly_name":"画面"}},
+            {"entity_id":"switch.camera_led","state":"off"},
+            {"entity_id":"sensor.backup","state":"idle"},
+            {"entity_id":"device_tracker.web","state":"online"},
+            {"entity_id":"person.administrator","state":"home","attributes":{"friendly_name":"家庭管理员"}},
+            {"entity_id":"cover.living","state":"closed","attributes":{"friendly_name":"朗森窗帘"}},
+            {"entity_id":"switch.curtain_setup","state":"on"},
+            {"entity_id":"remote.projector","state":"on"}
+        ]);
+        let devices = json!([
+            {"id":"camera","name":"学习摄像机","area_id":"study"},
+            {"id":"backup","name":"Backup","entry_type":"service"},
+            {"id":"mobile","name":"Web 端","identifiers":[["mobile_app","web"]]},
+            {"id":"adapter","name":"Core Bluetooth","connections":[["bluetooth","example"]]}
+        ]);
+        let entities = json!([
+            {"entity_id":"camera.study","device_id":"camera"},
+            {"entity_id":"switch.camera_led","device_id":"camera","entity_category":"config"},
+            {"entity_id":"sensor.backup","device_id":"backup"},
+            {"entity_id":"device_tracker.web","device_id":"mobile"},
+            {"entity_id":"cover.living","platform":"template"},
+            {"entity_id":"switch.curtain_setup","platform":"template"},
+            {"entity_id":"remote.projector","platform":"xgimi"}
+        ]);
+        let areas = json!([{"area_id":"study","name":"书房"}]);
+        let raw = inventory(states.as_array().unwrap(), &devices, &entities, &areas)?;
+        let view = hardware_inventory(&raw, &devices, &entities, "");
+        assert_eq!(
+            view,
+            json!([
+                {"name":"学习摄像机","area":"书房","status":"可用"},
+                {"name":"朗森窗帘","area":null,"status":"可用"}
+            ])
+        );
+        assert_eq!(
+            hardware_inventory(&raw, &devices, &entities, "camera_led"),
+            json!([view[0]])
+        );
+        assert_eq!(
+            hardware_inventory(&raw, &devices, &entities, "管理员"),
+            json!([])
+        );
+        Ok(())
     }
     #[tokio::test]
     async fn inventory_commands_and_control() -> Result<()> {

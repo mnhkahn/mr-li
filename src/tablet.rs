@@ -741,6 +741,27 @@ impl Gateway {
         }
         Ok(devices)
     }
+    pub async fn channel_devices(&self) -> Result<Vec<Value>> {
+        let mut command = tokio::process::Command::new(&self.cfg.homework_cli);
+        command
+            .args(["--no-analytics", "device", "list"])
+            .env("CYEAM_CLI_NO_UPDATE_NOTIFIER", "1")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(5), command.output())
+            .await
+            .context("作业平板连接查询超时")??;
+        let response: Value = serde_json::from_slice(&output.stdout).context("作业网关响应无效")?;
+        ensure!(
+            output.status.success() && response["ok"] == true,
+            "作业网关查询失败"
+        );
+        response["data"]["devices"]
+            .as_array()
+            .cloned()
+            .context("作业网关未返回设备列表")
+    }
     async fn rpc(&self, request: &Value) -> Result<Value> {
         match request["method"].as_str().unwrap_or("") {
             "initialize" => Ok(
@@ -1488,6 +1509,31 @@ mod tests {
         assert!(!notice_delivered(&text_content("通知已收到")));
         assert!(!notice_delivered(&json!({"isError":true,"delivered":true})));
     }
+    #[tokio::test]
+    async fn channel_uses_homework_cli_even_with_a_local_gateway_configured() -> Result<()> {
+        let sandbox = Sandbox::new();
+        std::fs::create_dir_all(&sandbox.0)?;
+        let cli = sandbox.0.join("cyeam");
+        std::fs::write(
+            &cli,
+            r#"#!/bin/sh
+[ "$*" = "--no-analytics device list" ] || exit 2
+printf '%s\n' '{"ok":true,"data":{"devices":[{"name":"学习平板","online":true}]}}'
+"#,
+        )?;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))?;
+        let mut cfg = sandbox.config();
+        cfg.homework_cli = cli.to_string_lossy().into_owned();
+        assert!(!cfg.tablet_public_url.is_empty());
+        let gateway = Gateway::open(Arc::new(cfg))?;
+        assert!(gateway.devices_status()?.is_empty());
+        assert_eq!(
+            gateway.channel_devices().await?,
+            vec![json!({"name":"学习平板","online":true})]
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn cloud_report_preserves_photo_when_screenshot_is_unavailable() -> Result<()> {
         let sandbox = Sandbox::new();

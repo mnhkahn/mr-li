@@ -17,15 +17,8 @@ pub fn command(action: &str, arg: &str, root: &Path, data: &Path) -> Result<Stri
     ensure!(cfg!(target_os = "macos"), "本地音乐播放需要 macOS");
     let root = root.canonicalize().context("无法打开本地音乐目录")?;
     ensure!(root.is_dir(), "本地音乐目录配置无效");
-    fs::create_dir_all(data)?;
+    let _lock = lock_player(data)?;
     let state = data.join("music-file");
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(data.join("music-file.lock"))?;
-    lock.lock_exclusive()?;
 
     let current = fs::read_to_string(&state).ok().map(PathBuf::from);
     if matches!(action, "status" | "pause" | "next" | "prev")
@@ -38,41 +31,9 @@ pub fn command(action: &str, arg: &str, root: &Path, data: &Path) -> Result<Stri
     if action == "playlists" {
         return playlist::names(data);
     }
-    if matches!(action, "playlist" | "album") {
-        let (queue, skipped) = if action == "playlist" {
-            playlist::load(arg, &root, data)?
-        } else {
-            let mut songs = Vec::new();
-            find_files(&root, &mut songs)?;
-            (
-                album::load(arg, &root, songs, &album::read_aliases(data)?)?,
-                0,
-            )
-        };
-        let worker = std::env::current_exe()?;
-        let spec = data.canonicalize()?.join("music-playlist.json");
-        stop_job(data)?;
-        fs::write(&spec, serde_json::to_vec(&queue)?)?;
-        bootstrap(
-            &state,
-            &[
-                worker.to_str().context("无法读取程序路径")?,
-                "music-playlist-worker",
-                spec.to_str().context("无法读取歌单播放器路径")?,
-            ],
-        )?;
-        for _ in 0..25 {
-            if let Some(result) = playlist::request(data, "status")? {
-                return Ok(if skipped == 0 {
-                    result
-                } else {
-                    format!("{result}（跳过 {skipped} 首不可用歌曲）")
-                });
-            }
-            std::thread::sleep(Duration::from_millis(80));
-        }
-        stop_job(data)?;
-        bail!("本地歌单播放器启动超时");
+    if action == "playlist" {
+        let (queue, skipped) = playlist::load(arg, &root, data)?;
+        return start_queue(data, &queue, skipped);
     }
 
     match action {
@@ -159,6 +120,66 @@ pub fn command(action: &str, arg: &str, root: &Path, data: &Path) -> Result<Stri
     Ok(format!("正在播放 · {}", label(&root, selected)))
 }
 
+pub async fn play_album(query: &str, root: &Path, data: &Path, storefront: &str) -> Result<String> {
+    ensure!(cfg!(target_os = "macos"), "本地音乐播放需要 macOS");
+    let root = root.to_owned();
+    let data = data.to_owned();
+    let (root, songs, data, lock) = tokio::task::spawn_blocking(move || -> Result<_> {
+        let lock = lock_player(&data)?;
+        let root = root.canonicalize().context("无法打开本地音乐目录")?;
+        let mut songs = Vec::new();
+        find_files(&root, &mut songs)?;
+        Ok((root, songs, data, lock))
+    })
+    .await??;
+    let queue = album::resolve(query, &root, songs, storefront).await?;
+    tokio::task::spawn_blocking(move || {
+        let _lock = lock;
+        start_queue(&data, &queue, 0)
+    })
+    .await?
+}
+
+fn lock_player(data: &Path) -> Result<fs::File> {
+    fs::create_dir_all(data)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(data.join("music-file.lock"))?;
+    lock.lock_exclusive()?;
+    Ok(lock)
+}
+
+fn start_queue(data: &Path, queue: &playlist::Queue, skipped: usize) -> Result<String> {
+    let state = data.join("music-file");
+    let worker = std::env::current_exe()?;
+    let spec = data.canonicalize()?.join("music-playlist.json");
+    stop_job(data)?;
+    fs::write(&spec, serde_json::to_vec(queue)?)?;
+    bootstrap(
+        &state,
+        &[
+            worker.to_str().context("无法读取程序路径")?,
+            "music-playlist-worker",
+            spec.to_str().context("无法读取歌单播放器路径")?,
+        ],
+    )?;
+    for _ in 0..25 {
+        if let Some(result) = playlist::request(data, "status")? {
+            return Ok(if skipped == 0 {
+                result
+            } else {
+                format!("{result}（跳过 {skipped} 首不可用歌曲）")
+            });
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    stop_job(data)?;
+    bail!("本地歌单播放器启动超时");
+}
+
 fn find_files(dir: &Path, songs: &mut Vec<PathBuf>) -> Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -199,7 +220,7 @@ fn artist(root: &Path, path: &Path) -> String {
         .unwrap_or_default()
 }
 
-fn title(path: &Path) -> String {
+pub fn title(path: &Path) -> String {
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
     let rest = stem.trim_start_matches(|c: char| c.is_ascii_digit() || c == '-');
     if let Some(title) = rest.strip_prefix(' ') {

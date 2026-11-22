@@ -142,6 +142,9 @@ pub async fn command(args: &str, storefront: &str, media_dir: &str, data: &Path)
                         && (1..=100).contains(&arg.chars().count())),
                 "用法：/music playlists、/music playlist <歌单名> 或 /music album <专辑名>"
             );
+            if action == "album" {
+                return local::play_album(arg, Path::new(media_dir), data, storefront).await;
+            }
             player(action, arg).await
         }
         "search" | "find" | "artist" => {
@@ -225,8 +228,8 @@ fn storefront_code(region: &str) -> Result<String> {
 }
 
 #[derive(Deserialize)]
-struct SearchResponse {
-    results: Vec<Song>,
+struct SearchResponse<T> {
+    results: Vec<T>,
 }
 
 #[derive(Deserialize)]
@@ -239,7 +242,7 @@ struct Song {
 
 async fn search(query: &str, storefront: &str) -> Result<String> {
     let region = storefront_code(storefront)?;
-    let response: SearchResponse = Client::builder()
+    let response: SearchResponse<Song> = Client::builder()
         .timeout(Duration::from_secs(12))
         .build()?
         .get("https://itunes.apple.com/search")

@@ -1,29 +1,152 @@
 //! Find albums in the local artist/album directory layout.
-use super::playlist::Queue;
-use anyhow::{Context, Result, bail};
+use super::{SearchResponse, local, playlist::Queue, storefront_code};
+use anyhow::{Context, Result, bail, ensure};
+use reqwest::Client;
+use serde::Deserialize;
 use std::{
     collections::BTreeMap,
-    fs,
-    io::ErrorKind,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
-pub const ALIASES: &str = "music-album-aliases.json";
-
-pub fn read_aliases(data: &Path) -> Result<BTreeMap<String, String>> {
-    match fs::read(data.join(ALIASES)) {
-        Ok(bytes) => serde_json::from_slice(&bytes).context("本地专辑别名文件格式错误"),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(error) => Err(error).context("无法读取本地专辑别名文件"),
-    }
-}
-
-pub fn load(
+pub async fn resolve(
     query: &str,
     root: &Path,
     files: Vec<PathBuf>,
-    aliases: &BTreeMap<String, String>,
+    storefront: &str,
 ) -> Result<Queue> {
+    let mut albums = index(root, files);
+    let query = query.trim();
+    let (artist, title) = query
+        .split_once('/')
+        .or_else(|| query.split_once('的'))
+        .unwrap_or(("", query));
+    let title = title.trim().trim_matches(['《', '》', '「', '」']);
+    let direct = select(&albums, query, "");
+    let local = if direct.is_empty() {
+        select(&albums, title, artist.trim())
+    } else {
+        direct
+    };
+    if !local.is_empty() {
+        let key = one_album(&local)?;
+        return Ok(queue(&mut albums, root, &key, &key.1));
+    }
+
+    let region = storefront_code(storefront)?;
+    let client = Client::builder().timeout(Duration::from_secs(8)).build()?;
+    let term = query.replace('/', " ");
+    let albums_found: SearchResponse<CatalogAlbum> = client
+        .get("https://itunes.apple.com/search")
+        .query(&[
+            ("term", term.trim()),
+            ("country", &region),
+            ("media", "music"),
+            ("entity", "album"),
+            ("limit", "1"),
+        ])
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .context("Apple 专辑搜索失败")?
+        .json()
+        .await
+        .context("无法读取 Apple 专辑搜索结果")?;
+    let album = albums_found
+        .results
+        .first()
+        .with_context(|| format!("Apple 搜索没有找到专辑「{query}」"))?;
+    let id = album.collection_id.to_string();
+    let track_results: SearchResponse<CatalogItem> = client
+        .get("https://itunes.apple.com/lookup")
+        .query(&[
+            ("id", id.as_str()),
+            ("country", region.as_str()),
+            ("entity", "song"),
+        ])
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .context("Apple 专辑曲目查询失败")?
+        .json()
+        .await
+        .context("无法读取 Apple 专辑曲目")?;
+    let tracks = catalog_tracks(album.collection_id, track_results.results);
+    let choices = match_tracks(&albums, &tracks);
+    ensure!(
+        !choices.is_empty(),
+        "Apple 找到了「{}」，本地资料库没有匹配的专辑文件。",
+        album.collection_name
+    );
+    let key = one_album(&choices)?;
+    Ok(queue(&mut albums, root, &key, &album.collection_name))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogAlbum {
+    collection_id: u64,
+    collection_name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogItem {
+    kind: Option<String>,
+    collection_id: Option<u64>,
+    disc_number: Option<u32>,
+    track_number: Option<u32>,
+    track_name: Option<String>,
+}
+
+fn catalog_tracks(id: u64, items: Vec<CatalogItem>) -> BTreeMap<(u32, u32), String> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            if item.kind.as_deref() != Some("song") || item.collection_id != Some(id) {
+                return None;
+            }
+            Some((
+                (item.disc_number.unwrap_or(1), item.track_number?),
+                normalize(&item.track_name?),
+            ))
+        })
+        .collect()
+}
+
+fn match_tracks<'a>(
+    albums: &'a AlbumTracks,
+    tracks: &BTreeMap<(u32, u32), String>,
+) -> Vec<&'a (String, String)> {
+    if tracks.is_empty() {
+        return Vec::new();
+    }
+    let mut best = Vec::new();
+    let mut best_count = 0;
+    for (album, files) in albums {
+        let evidence = files
+            .iter()
+            .filter_map(|(position, path)| {
+                let name = tracks.get(position)?;
+                (!name.is_empty() && normalize(&local::title(path)) == *name).then_some(position)
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        // Require agreement across the disc/track sequence to avoid a shared song
+        // (for example on a compilation) selecting an unrelated local album.
+        if evidence < tracks.len().min(3) || evidence * 2 < tracks.len() || evidence < best_count {
+            continue;
+        }
+        if evidence > best_count {
+            best.clear();
+            best_count = evidence;
+        }
+        best.push(album);
+    }
+    best
+}
+
+fn index(root: &Path, files: Vec<PathBuf>) -> AlbumTracks {
     let mut albums: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for path in files {
         let Some(relative) = path.strip_prefix(root).ok().and_then(Path::parent) else {
@@ -43,48 +166,7 @@ pub fn load(
         let order = track_order(&path, disc);
         albums.entry(key).or_default().push((order, path));
     }
-    let query = query.trim();
-    let mut candidates = select(&albums, query, "");
-    if candidates.is_empty()
-        && let Some(target) = aliases.get(query)
-    {
-        candidates = select(&albums, target, "");
-    }
-    if candidates.is_empty()
-        && let Some((artist, title)) = query.split_once('/').or_else(|| query.split_once('的'))
-    {
-        let title = title.trim().trim_matches(['《', '》', '「', '」']);
-        candidates = select(&albums, title, artist.trim());
-        if candidates.is_empty()
-            && let Some(target) = aliases.get(title)
-        {
-            candidates = select(&albums, target, artist.trim());
-        }
-    }
-    match candidates.as_slice() {
-        [key] => {
-            let key = (*key).clone();
-            let mut tracks = albums.remove(&key).expect("selected album exists");
-            tracks.sort_unstable();
-            Ok(Queue {
-                name: format!("{} · {}", key.1, key.0),
-                root: root.into(),
-                tracks: tracks.into_iter().map(|(_, path)| path).collect(),
-            })
-        }
-        [] => bail!("未找到本地专辑「{query}」。请使用本地资料库显示的专辑名。"),
-        choices => {
-            let names = choices
-                .iter()
-                .take(6)
-                .map(|(artist, title)| format!("{artist} / {title}"))
-                .collect::<Vec<_>>();
-            bail!(
-                "有多张匹配专辑，使用 /music album <歌手> / <专辑名> 指定：{}",
-                names.join("、")
-            )
-        }
-    }
+    albums
 }
 
 type AlbumTracks = BTreeMap<(String, String), Vec<((u32, u32), PathBuf)>>;
@@ -92,23 +174,40 @@ type AlbumTracks = BTreeMap<(String, String), Vec<((u32, u32), PathBuf)>>;
 fn select<'a>(albums: &'a AlbumTracks, title: &str, artist: &str) -> Vec<&'a (String, String)> {
     let title = normalize(title);
     let artist = normalize(artist);
-    if title.is_empty() {
-        return Vec::new();
-    }
-    let mut exact = Vec::new();
-    let mut partial = Vec::new();
-    for entry in albums.keys() {
-        if !normalize(&entry.0).contains(&artist) {
-            continue;
+    albums
+        .keys()
+        .filter(|(local_artist, local_title)| {
+            normalize(local_title) == title
+                && (artist.is_empty() || normalize(local_artist) == artist)
+        })
+        .collect()
+}
+
+fn one_album(choices: &[&(String, String)]) -> Result<(String, String)> {
+    match choices {
+        [key] => Ok((*key).clone()),
+        _ => {
+            let names = choices
+                .iter()
+                .take(6)
+                .map(|(artist, title)| format!("{artist} / {title}"))
+                .collect::<Vec<_>>();
+            bail!(
+                "有多张匹配专辑，使用 /music album <歌手> / <本地专辑名> 指定：{}",
+                names.join("、")
+            )
         }
-        let name = normalize(&entry.1);
-        if name == title {
-            exact.push(entry);
-        } else if name.contains(&title) {
-            partial.push(entry);
-        }
     }
-    if exact.is_empty() { partial } else { exact }
+}
+
+fn queue(albums: &mut AlbumTracks, root: &Path, key: &(String, String), title: &str) -> Queue {
+    let mut tracks = albums.remove(key).expect("selected album exists");
+    tracks.sort_unstable();
+    Queue {
+        name: format!("{title} · {}", key.0),
+        root: root.into(),
+        tracks: tracks.into_iter().map(|(_, path)| path).collect(),
+    }
 }
 
 fn normalize(value: &str) -> String {
@@ -165,10 +264,10 @@ mod tests {
             "歌手乙/同名/01 Other.m4a",
             "歌手甲/同名/2 Opening.m4a",
         ];
-        let files = || paths.iter().map(|path| root.join(path)).collect();
-        assert!(load("同名", root, files(), &BTreeMap::new()).is_err());
-        let aliases = BTreeMap::from([("中文别名".into(), "同名".into())]);
-        let queue = load("歌手甲 / 中文别名", root, files(), &aliases)?;
+        let mut albums = index(root, paths.iter().map(|path| root.join(path)).collect());
+        assert!(one_album(&select(&albums, "同名", "")).is_err());
+        let key = one_album(&select(&albums, "同名", "歌手甲"))?;
+        let queue = queue(&mut albums, root, &key, &key.1);
         assert_eq!(
             queue.tracks,
             [
@@ -178,5 +277,25 @@ mod tests {
             ]
         );
         Ok(())
+    }
+    #[test]
+    fn apple_tracks_identify_a_local_album_with_a_different_name() {
+        let root = Path::new("/music");
+        let files = [
+            "周杰伦/Yeh, Hwei-Mei/01 以父之名.m4a",
+            "周杰伦/Yeh, Hwei-Mei/02 懦夫.m4a",
+            "周杰伦/Yeh, Hwei-Mei/03 晴天.m4a",
+            "周杰伦/精选/03 晴天.m4a",
+        ];
+        let albums = index(root, files.iter().map(|path| root.join(path)).collect());
+        let tracks = BTreeMap::from([
+            ((1, 1), "以父之名".into()),
+            ((1, 2), "懦夫".into()),
+            ((1, 3), "晴天".into()),
+        ]);
+        assert_eq!(
+            match_tracks(&albums, &tracks),
+            [&("周杰伦".into(), "Yeh, Hwei-Mei".into())]
+        );
     }
 }

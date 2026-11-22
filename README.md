@@ -130,7 +130,7 @@ python3 scripts/auto-deploy.py status
 
 配置与版本记录在 `.data/auto-deploy/`，日志在 `logs/auto-deploy.log`。安装任务保留并备份原 crontab；停用时在 `crontab -e` 删除标有 `# MR-LI AUTO-DEPLOY` 的一行。验证脚本：`python3 scripts/test-auto-deploy.py`。
 
-每次实际升级且健康检查通过后，使用现有 `/speak` 的音色和喇叭播报“升级成功”及本次提交的简短说明，最多列出三项更新。GitHub 升级读取两次部署之间的提交标题；本机包携带最近的提交说明，也可在构建时设置 `MR_LI_RELEASE_NOTES='本次更新内容'`，说明未提交的现场改动。同版本跳过、失败或回滚时不播报成功。播报失败只记录日志，不回滚已成功的升级，也不自动重播；最近结果保存在 `.data/auto-deploy/last-announcement.json`。
+每次实际升级且健康检查通过后，使用现有 `/speak` 的音色和喇叭播报“升级成功”及本次提交的简短说明，最多列出三项更新。GitHub 升级读取两次部署之间的提交标题；本机包携带最近的提交说明，也可在构建时设置 `MR_LI_RELEASE_NOTES='本次更新内容'`，说明未提交的现场改动。处理新提交或新本机包时，若内容相同跳过部署，会播报“程序内容与当前版本相同，本次已跳过升级。”，不重启服务；每分钟检查未发现新提交时保持静音。失败或回滚时不播报成功。播报失败只记录日志，不回滚已成功的升级，也不自动重播；最近结果保存在 `.data/auto-deploy/last-announcement.json`。
 
 ## Mac mini 首次部署
 

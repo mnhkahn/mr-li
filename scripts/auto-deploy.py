@@ -16,6 +16,7 @@ import time
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {'bin', 'scripts', 'resource', 'models', 'README.md', '.env.example', 'opencode.example.json'}
 MANIFEST = 'release.json'
+SKIP_MESSAGE = '程序内容与当前版本相同，本次已跳过升级。'
 
 
 def run(args, **kwargs):
@@ -137,19 +138,21 @@ def upgrade_message(root, value, previous):
     return '升级成功。本次更新：' + notes[:240].rstrip('；。 ') + '。'
 
 
-def announce_upgrade(root, value, previous):
-    # This runs AFTER installed.json commits the healthy deployment. A speaker
-    # failure must neither roll back the service nor cause another deployment.
+def announce_upgrade(root, value, previous, *, skipped=False):
+    # Run after recording either a healthy upgrade or an unchanged package.
+    # A speaker failure must neither roll back nor cause another deployment.
     record = root / '.data/auto-deploy/last-announcement.json'
-    status = {'version': value['version'], 'text': '', 'status': 'started'}
+    status = {'version': value['version'], 'revision': value['revision'],
+              'outcome': 'skipped' if skipped else 'upgraded', 'text': '', 'status': 'started'}
     try:
-        status['text'] = upgrade_message(root, value, previous)
+        status['text'] = SKIP_MESSAGE if skipped else upgrade_message(root, value, previous)
         write_json(record, status)
         env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
         run([root / 'scripts/run.sh', 'speak', status['text']], cwd=root, env=env, timeout=200)
         status['status'] = 'completed'
         write_json(record, status)
-        print('Upgrade announcement completed: ' + status['text'], flush=True)
+        label = 'Skipped deployment' if skipped else 'Upgrade'
+        print(label + ' announcement completed: ' + status['text'], flush=True)
     except Exception as error:
         status['status'] = 'failed'
         status['error'] = str(error)
@@ -157,7 +160,8 @@ def announce_upgrade(root, value, previous):
             write_json(record, status)
         except OSError:
             pass
-        print('Upgrade succeeded, but voice announcement failed: ' + str(error), flush=True)
+        outcome = 'Deployment skipped' if skipped else 'Upgrade succeeded'
+        print(outcome + ', but voice announcement failed: ' + str(error), flush=True)
 
 
 def deploy(root, package, domain, data_dir=None):
@@ -171,6 +175,7 @@ def deploy(root, package, domain, data_dir=None):
         # so the next GitHub tick doesn't build that commit again.
         write_json(installed, value)
         print('Same version; skipped: ' + value['version'][:12], flush=True)
+        announce_upgrade(root, value, previous, skipped=True)
         return
     env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
     run([package / 'bin/mr-li', 'check'], cwd=root, env=env, timeout=30)

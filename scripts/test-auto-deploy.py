@@ -56,7 +56,9 @@ class DeploymentTests(unittest.TestCase):
             auto.deploy(self.root, self.package, 'test/501')
             self.assertEqual(restart.call_count, 1)
         self.assertEqual((self.root / '.env').read_text(), 'secret remains')
-        self.assertEqual(len((self.root / '.data/utterances').read_text().splitlines()), 1)
+        utterances = (self.root / '.data/utterances').read_text().splitlines()
+        self.assertEqual(len(utterances), 2)
+        self.assertEqual(utterances[-1], auto.SKIP_MESSAGE)
 
     def test_same_content_new_revision_updates_record_without_restart(self):
         with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
@@ -67,6 +69,11 @@ class DeploymentTests(unittest.TestCase):
             auto.deploy(self.root, self.package, 'test/501')
             self.assertEqual(restart.call_count, 1)
         self.assertEqual(json.loads((self.state / 'installed.json').read_text())['revision'], updated['revision'])
+        announcement = json.loads((self.state / 'last-announcement.json').read_text())
+        self.assertEqual(announcement['outcome'], 'skipped')
+        self.assertEqual(announcement['revision'], updated['revision'])
+        self.assertEqual(announcement['text'], auto.SKIP_MESSAGE)
+        self.assertNotIn('升级成功', announcement['text'])
 
     def test_failed_health_rolls_back_files_and_state(self):
         (self.package / 'resource').mkdir()
@@ -133,6 +140,16 @@ class DeploymentTests(unittest.TestCase):
         _, config = self.prepare_remote(self.value['revision'])
         self.assertIsNone(auto.remote_package(self.root, config))
 
+    def test_unchanged_github_polls_are_silent(self):
+        _, config = self.prepare_remote(self.value['revision'])
+        auto.write_json(self.state / 'config.json', dict(config, domain='test/501'))
+        with patch.object(auto, 'restart') as restart:
+            auto.once(self.root)
+            auto.once(self.root)
+            restart.assert_not_called()
+        self.assertFalse((self.root / '.data/utterances').exists())
+        self.assertFalse((self.state / 'last-announcement.json').exists())
+
     def test_new_github_commit_builds_in_isolated_checkout(self):
         remote, config = self.prepare_remote(self.value['revision'])
         (self.source / 'file').write_text('new GitHub code')
@@ -173,7 +190,7 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(restart.call_count, 2)
         self.assertEqual(self.old_binary.read_bytes(), (self.package / 'bin/mr-li').read_bytes())
 
-    def test_voice_failure_does_not_roll_back_or_repeat(self):
+    def test_voice_failure_does_not_roll_back_or_restart(self):
         (self.root / 'scripts/run.sh').write_text('#!/bin/sh\nexit 1\n')
         with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
             auto.deploy(self.root, self.package, 'test/501')

@@ -54,8 +54,11 @@ def manifest(package, source):
     files = package_files(package)
     revision = output(['git', '-C', source, 'rev-parse', 'HEAD'])
     dirty = bool(output(['git', '-C', source, 'status', '--porcelain', '--untracked-files=normal']))
+    changes = output(['git', '-C', source, 'log', '-20', '--format=%H%x09%s']).splitlines()
     value = {'schema': 1, 'revision': revision, 'dirty': dirty, 'files': files,
-             'version': hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()}
+             'version': hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+             'changes': [dict(zip(('revision', 'subject'), line.split('\t', 1))) for line in changes],
+             'release_notes': os.environ.get('MR_LI_RELEASE_NOTES', '').strip()[:300]}
     write_json(package / MANIFEST, value)
     return value
 
@@ -105,6 +108,58 @@ def replace_file(source, target):
     os.replace(temp, target)
 
 
+def upgrade_message(root, value, previous):
+    notes = value.get('release_notes', '')
+    subjects = []
+    if not notes and value['revision'] != previous.get('revision'):
+        source = root / '.data/auto-deploy/source'
+        before = previous.get('revision', '')
+        if (source / '.git').exists() and re.fullmatch(r'[0-9a-f]{40,64}', before):
+            try:
+                subjects = output(['git', '-C', source, 'log', '--no-merges', '--format=%s',
+                                   before + '..' + value['revision']], timeout=10,
+                                  stderr=subprocess.DEVNULL).splitlines()
+            except (subprocess.SubprocessError, OSError):
+                pass
+        if not subjects:
+            for change in value.get('changes', []):
+                if change.get('revision') == before:
+                    break
+                subjects.append(change.get('subject', ''))
+    if not notes:
+        # Commit subjects describe changes without relying on a model or network.
+        subjects = [re.sub(r'^[a-z]+(?:\([^)]*\))?!?:\s*', '', s.strip()) for s in subjects]
+        subjects = list(dict.fromkeys(s for s in subjects if s))
+        notes = '；'.join(s[:70] for s in subjects[:3]) or '更新了本机部署文件'
+        if len(subjects) > 3:
+            notes += '等更新'
+    notes = re.sub(r'[\x00-\x1f\x7f]', ' ', notes)
+    return '升级成功。本次更新：' + notes[:240].rstrip('；。 ') + '。'
+
+
+def announce_upgrade(root, value, previous):
+    # This runs AFTER installed.json commits the healthy deployment. A speaker
+    # failure must neither roll back the service nor cause another deployment.
+    record = root / '.data/auto-deploy/last-announcement.json'
+    status = {'version': value['version'], 'text': '', 'status': 'started'}
+    try:
+        status['text'] = upgrade_message(root, value, previous)
+        write_json(record, status)
+        env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
+        run([root / 'scripts/run.sh', 'speak', status['text']], cwd=root, env=env, timeout=200)
+        status['status'] = 'completed'
+        write_json(record, status)
+        print('Upgrade announcement completed: ' + status['text'], flush=True)
+    except Exception as error:
+        status['status'] = 'failed'
+        status['error'] = str(error)
+        try:
+            write_json(record, status)
+        except OSError:
+            pass
+        print('Upgrade succeeded, but voice announcement failed: ' + str(error), flush=True)
+
+
 def deploy(root, package, domain, data_dir=None):
     value = validate(package)
     installed = root / '.data/auto-deploy/installed.json'
@@ -144,6 +199,7 @@ def deploy(root, package, domain, data_dir=None):
             print('Deployment failed; restored previous files and restarted services.', flush=True)
             raise
     print('Deployed: ' + value['version'][:12] + ' commit ' + value['revision'], flush=True)
+    announce_upgrade(root, value, previous)
 
 
 def remote_package(root, config):

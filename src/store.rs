@@ -314,6 +314,14 @@ impl Store {
         let mut q=c.prepare("SELECT id,status,text,created FROM jobs WHERE key=?1 AND id<>?2 AND id NOT LIKE 'posture-sample:%' AND substr(text,1,2)<>'/_' AND text NOT LIKE '/task%' ORDER BY created DESC,rowid DESC LIMIT 10")?;
         Ok(q.query_map(params![key,exclude],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?})))?.collect::<rusqlite::Result<_>>()?)
     }
+    pub fn newer_ha_page(&self, job: &Job) -> Result<bool> {
+        Ok(self.0.lock().unwrap().query_row(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE message_id=?2 AND id LIKE 'card:ha-inventory:%'
+             AND rowid>(SELECT rowid FROM jobs WHERE id=?1))",
+            params![job.id, job.message_id],
+            |r| r.get(0),
+        )?)
+    }
     pub fn command_task(&self, key: &str, id: &str) -> Result<Option<serde_json::Value>> {
         Ok(self.0.lock().unwrap().query_row("SELECT id,status,text,created,output_kind,result FROM jobs WHERE key=?1 AND id=?2",params![key,id],|r|Ok(serde_json::json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"kind":r.get::<_,String>(4)?,"result":r.get::<_,String>(5)?}))).optional()?)
     }

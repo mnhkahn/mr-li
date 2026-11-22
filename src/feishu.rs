@@ -458,9 +458,30 @@ impl Feishu {
             .await?
             .file_name(file.name.clone())
             .mime_str("application/octet-stream")?;
+        self.upload_file_part(&file.name, part, Duration::from_secs(90))
+            .await
+    }
+    pub async fn upload_command_result(&self, name: &str, result: &str) -> Result<String> {
+        crate::files::validate_name(name)?;
+        ensure!(
+            !result.is_empty() && result.len() as u64 <= crate::files::MAX_SIZE,
+            "命令结果附件不能为空或超过30MB"
+        );
+        let part = reqwest::multipart::Part::text(result.to_owned())
+            .file_name(name.to_owned())
+            .mime_str("text/plain; charset=utf-8")?;
+        self.upload_file_part(name, part, Duration::from_secs(10))
+            .await
+    }
+    async fn upload_file_part(
+        &self,
+        name: &str,
+        part: reqwest::multipart::Part,
+        timeout: Duration,
+    ) -> Result<String> {
         let form = reqwest::multipart::Form::new()
             .text("file_type", "stream")
-            .text("file_name", file.name.clone())
+            .text("file_name", name.to_owned())
             .part("file", part);
         let response = self
             .http
@@ -470,7 +491,7 @@ impl Feishu {
             ))
             .bearer_auth(self.token().await?)
             .multipart(form)
-            .timeout(Duration::from_secs(90))
+            .timeout(timeout)
             .send()
             .await
             .map_err(|_| anyhow::anyhow!("飞书文件上传网络请求失败"))?;

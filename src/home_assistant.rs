@@ -741,7 +741,7 @@ pub async fn command(settings: Option<&Settings>, text: &str) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use tokio::net::TcpListener;
@@ -769,6 +769,17 @@ mod tests {
             readback_fail: false,
             accepted: false,
         }
+    }
+    pub(crate) async fn device_server() -> (Settings, tokio::task::JoinHandle<()>) {
+        let mut fake = fixture();
+        for index in 0..37 {
+            fake.states.as_array_mut().unwrap().push(json!({
+                "entity_id":format!("sensor.demo_{index:02}"),"state":"on",
+                "attributes":{"friendly_name":format!("演示传感器 {index:02}"),"raw":"x".repeat(4000)}
+            }));
+        }
+        let (settings, _, handle) = server(fake).await;
+        (settings, handle)
     }
     fn services() -> Value {
         json!({

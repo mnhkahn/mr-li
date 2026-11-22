@@ -176,7 +176,7 @@ def main():
         path = state / (date + '.json')
         if not args.preview and path.exists():
             previous = json.loads(path.read_text())
-            if args.scheduled or previous.get('status') in ('sending', 'done', 'uncertain'):
+            if args.scheduled or previous.get('status') in ('sending', 'done', 'queued', 'uncertain'):
                 print(date + ': skipped (' + previous['status'] + ')', flush=True)
                 return 0
         record = {'date': date, 'status': 'preparing'}
@@ -206,9 +206,14 @@ def main():
                 detail = next((line for line in result.stderr.splitlines()
                                if line.startswith('Error: ')), '')
                 raise RuntimeError('本机播报退出码 %s %s' % (result.returncode, detail))
-            record.update(status='done', finished_at=dt.datetime.now(BEIJING).isoformat())
+            outcome = result.stdout.strip().split()
+            if len(outcome) == 2 and outcome[0] == 'queued':
+                record.update(status='queued', inbox_id=int(outcome[1]))
+            else:
+                record.update(status='done', finished_at=dt.datetime.now(BEIJING).isoformat())
             save(path, record)
-            print(date + ': news broadcast completed', flush=True)
+            print(date + (': news saved to inbox' if record['status'] == 'queued'
+                          else ': news broadcast completed'), flush=True)
             return 0
         except Exception as error:
             record['status'] = 'uncertain' if record['status'] == 'sending' else 'failed'

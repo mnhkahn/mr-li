@@ -162,14 +162,18 @@ def speak(root, message):
     # The Intel deployment can take more than the CLI's 180-second limit to
     # synthesize and play a long uncached utterance.
     remaining = message.strip()
+    queued = False
     while remaining:
         end = len(remaining)
         if end > 60:
             boundary = max(remaining.rfind(mark, 25, 60) for mark in ('。', '，', '、', ' '))
             end = boundary + 1 if boundary >= 0 else 60
-        subprocess.run([str(root / 'scripts/run.sh'), 'speak', remaining[:end]], check=True,
-                       timeout=190, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        result = subprocess.run([str(root / 'scripts/run.sh'), 'speak', remaining[:end]], check=True,
+                                timeout=190, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                text=True)
+        queued |= result.stdout.strip().startswith('queued ')
         remaining = remaining[end:].lstrip()
+    return queued
 
 
 def workflow_target(repo, run):
@@ -277,12 +281,12 @@ def serve(root, directory, port, secret, get):
                     run = json.loads(payload)
                     target = workflow_target(repo, run)
                     message = announcement(get, target, run) if target else None
-                    if message:
-                        speak(root, message)
+                    queued = speak(root, message) if message else False
                     with db:
                         db.execute('UPDATE deliveries SET payload = NULL WHERE repository = ? AND run_id = ? AND attempt = ?',
                                    (repo, run_id, attempt))
-                    print(f'{repo}: {run_id}:{attempt} ' + ('已播报' if message else '已跳过'), flush=True)
+                    status = '已存入收件箱' if queued else ('已播报' if message else '已跳过')
+                    print(f'{repo}: {run_id}:{attempt} {status}', flush=True)
                 except (KeyError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
                     delay = min(900, 30 * (2 ** min(failures, 5)))
                     with db:

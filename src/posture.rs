@@ -275,14 +275,14 @@ impl Assessment {
 }
 
 /// System speech runs on the Mac mini; cancellation also stops the speech child.
-pub async fn speak(cfg: &Config, assessment: Assessment) -> Result<()> {
+pub async fn speak(cfg: &Config, assessment: Assessment, scope: &str) -> Result<()> {
     if !cfg.posture_speech {
         return Ok(());
     }
     let Some(text) = assessment.speech() else {
         return Ok(());
     };
-    crate::speech::speak_posture(cfg, text).await
+    crate::speech::speak_posture(cfg, text, scope).await
 }
 
 /// Run an isolated local worker; the main bridge does not link the ML runtime.

@@ -39,6 +39,7 @@ pub struct Config {
     pub pose_roi: String,
     pub photo_archive_dir: PathBuf,
     pub speech_program: String,
+    pub focus_assertions: Option<PathBuf>,
     pub news_enabled: bool,
     pub speak_voice: String,
     pub speak_audio_device: String,
@@ -181,6 +182,9 @@ impl Config {
             pose_roi: get("MR_LI_POSE_ROI", ""),
             photo_archive_dir: PathBuf::from(get("MR_LI_PHOTO_ARCHIVE_DIR", "photos")),
             speech_program: get("MR_LI_SPEECH_PROGRAM", "/usr/bin/say"),
+            focus_assertions: std::env::var_os("HOME")
+                .filter(|_| cfg!(target_os = "macos"))
+                .map(|home| PathBuf::from(home).join("Library/DoNotDisturb/DB/Assertions.json")),
             news_enabled: match get("MR_LI_NEWS_ENABLED", "false").as_str() {
                 "true" => true,
                 "false" => false,
@@ -257,6 +261,7 @@ impl Config {
             pose_roi: String::new(),
             photo_archive_dir: std::env::temp_dir().join("mr-li-test-photo-archive"),
             speech_program: "/usr/bin/say".into(),
+            focus_assertions: None,
             news_enabled: false,
             speak_voice: "Ting-Ting".into(),
             speak_audio_device: "Built-in Output".into(),

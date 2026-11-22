@@ -235,9 +235,10 @@ async fn reply_to_voice(
             store.status(&job.id, "done")?;
             *playing_final = true;
             println!("李老师：{text}");
+            let scope = models::scope(&job.key)?;
             let chars: Vec<char> = text.chars().collect();
             for part in chars.chunks(500) {
-                speech::speak(cfg, &part.iter().collect::<String>()).await?;
+                speech::speak(cfg, &part.iter().collect::<String>(), Some(&scope)).await?;
             }
             return Ok(());
         }
@@ -372,7 +373,7 @@ async fn esp32_dialogue(
                 if !matches!(
                     tokio::time::timeout(
                         ESP32_PROMPT_TIMEOUT,
-                        speech::speak_posture(cfg, "我在，请说。"),
+                        speech::speak_wake(cfg),
                     )
                     .await,
                     Ok(Ok(()))
@@ -392,7 +393,7 @@ async fn esp32_dialogue(
                     pending = None;
                     let _ = tokio::time::timeout(
                         ESP32_PROMPT_TIMEOUT,
-                        speech::speak(cfg, "好的，再见。"),
+                        speech::speak_progress(cfg, "好的，再见。"),
                     )
                     .await;
                 } else {
@@ -477,19 +478,19 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
                 Event::CaptureEnd => continue,
                 Event::CaptureError { message } => anyhow::bail!("{message}"),
                 Event::Wake => {
-                    speech::speak_posture(&cfg, "我在，请说。").await?;
+                    speech::speak_wake(&cfg).await?;
                     true
                 }
                 Event::Text { text } => {
                     println!("你：{text}");
                     if goodbye(&text) {
-                        speech::speak(&cfg, "好的，再见。").await?;
+                        speech::speak_progress(&cfg, "好的，再见。").await?;
                         false
                     } else {
                         // A failed task is never resubmitted automatically.
                         if let Err(e) = converse(&cfg, &store, &origin, &text).await {
                             tracing::error!(error=%e, "语音任务未完成，请在飞书查看状态");
-                            speech::speak(&cfg, FAILURE_REPLY).await?;
+                            speech::speak_progress(&cfg, FAILURE_REPLY).await?;
                             // Avoid accepting more work while the bridge may still be executing.
                             return Err(e);
                         }

@@ -738,7 +738,8 @@ pub fn parse_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<Job
     }
     let event = &v["event"];
     let a = &event["action"];
-    let explicit = a["value"]["action"] == "reply_action";
+    let pagination = a["value"]["action"] == "ha_inventory_page";
+    let explicit = pagination || a["value"]["action"] == "reply_action";
     let form_submit = !explicit && a["tag"] == "button" && a["form_value"].is_object();
     if !explicit && !form_submit {
         return Ok(None);
@@ -774,6 +775,29 @@ pub fn parse_action(v: &Value, cfg: &Config, store: &Store) -> Result<Option<Job
         "聊天无权限"
     );
     ensure!(a.to_string().len() <= 32 * 1024, "卡片提交内容过长");
+    if pagination {
+        ensure!(a["tag"] == "button", "翻页操作无效");
+        let inventory: crate::commands::HaInventory =
+            serde_json::from_value(card.spec["ha_inventory"].clone()).context("设备清单已失效")?;
+        let page = a["value"]["page"].as_u64().context("缺少页码")?;
+        ensure!(
+            (1..=inventory.pages() as u64).contains(&page),
+            "页码超出范围"
+        );
+        let event_id = v["header"]["event_id"]
+            .as_str()
+            .context("回调事件缺少标识")?;
+        text(event_id, 1, 200)?;
+        let uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, event_id.as_bytes());
+        return Ok(Some(Job {
+            id: format!("card:ha-inventory:{uuid}"),
+            key: card.origin_key,
+            message_id: message.into(),
+            text: format!("/_ha_page {} {page}", card.token),
+            result: String::new(),
+            sent: 0,
+        }));
+    }
     let spec: Reply = serde_json::from_value(card.spec)?;
     spec.validate()?;
     let (request, cancel) = if form_submit {

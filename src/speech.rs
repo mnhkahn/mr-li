@@ -1,5 +1,5 @@
 //! Manual text-to-speech on the deployment Mac. Text is stdin, never shell code or options.
-use crate::config::Config;
+use crate::{config::Config, inbox};
 use anyhow::{Context, Result, ensure};
 use std::{
     fs,
@@ -191,23 +191,42 @@ pub fn text(text: &str) -> Option<&str> {
     let args = args.trim();
     (command == "/speak" && !args.is_empty() && args != "stop").then_some(args)
 }
-pub async fn speak(cfg: &Config, text: &str) -> Result<()> {
-    speak_shared(cfg, text, Duration::from_secs(180)).await
+pub enum Delivery {
+    Played,
+    Queued(i64),
 }
-pub async fn speak_news(cfg: &Config, text: &str) -> Result<()> {
-    speak_shared(cfg, text, Duration::from_secs(360)).await
+
+pub async fn speak(cfg: &Config, text: &str, scope: Option<&str>) -> Result<Delivery> {
+    broadcast(cfg, text, scope, Duration::from_secs(180)).await
+}
+pub async fn speak_news(cfg: &Config, text: &str) -> Result<Delivery> {
+    broadcast(cfg, text, None, Duration::from_secs(360)).await
 }
 pub async fn speak_progress(cfg: &Config, text: &str) -> Result<()> {
-    speak_shared(cfg, text, Duration::from_secs(20)).await
+    speak_shared(cfg, text, Duration::from_secs(20)).await?;
+    Ok(())
 }
-pub async fn speak_posture(cfg: &Config, text: &str) -> Result<()> {
+fn posture_audio(cfg: &Config) -> Config {
     let mut cfg = cfg.clone();
     cfg.speak_voice = cfg.posture_voice.clone();
     cfg.speak_audio_device = cfg.posture_audio_device.clone();
-    speak_shared(&cfg, text, Duration::from_secs(20)).await
+    cfg
+}
+pub async fn speak_posture(cfg: &Config, text: &str, scope: &str) -> Result<()> {
+    broadcast(
+        &posture_audio(cfg),
+        text,
+        Some(scope),
+        Duration::from_secs(20),
+    )
+    .await?;
+    Ok(())
+}
+pub async fn speak_wake(cfg: &Config) -> Result<()> {
+    speak_progress(&posture_audio(cfg), "我在，请说。").await
 }
 
-async fn audio_lock(cfg: &Config, exclusive: bool) -> Result<fs::File> {
+pub(crate) async fn audio_lock(cfg: &Config, exclusive: bool) -> Result<fs::File> {
     fs::create_dir_all(&cfg.data_dir)?;
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -232,12 +251,29 @@ async fn audio_lock(cfg: &Config, exclusive: bool) -> Result<fs::File> {
     }
 }
 
-async fn speak_shared(cfg: &Config, text: &str, timeout: Duration) -> Result<()> {
+async fn broadcast(
+    cfg: &Config,
+    text: &str,
+    scope: Option<&str>,
+    timeout: Duration,
+) -> Result<Delivery> {
+    if speak_shared(cfg, text, timeout).await? {
+        Ok(Delivery::Played)
+    } else {
+        Ok(Delivery::Queued(inbox::enqueue(cfg, scope, text)?))
+    }
+}
+
+async fn speak_shared(cfg: &Config, text: &str, timeout: Duration) -> Result<bool> {
+    validate_text(text)?;
+    if !inbox::focus(cfg).allows_speech() {
+        return Ok(false);
+    }
     let deadline = tokio::time::Instant::now() + timeout;
     let _lock = tokio::time::timeout_at(deadline, audio_lock(cfg, false))
         .await
-        .context("喇叭正在等待语音回答")??;
-    speak_with_selection(
+        .context("喇叭正在播放其他内容或等待语音回答")??;
+    play_if_allowed(
         cfg,
         text,
         deadline.saturating_duration_since(tokio::time::Instant::now()),
@@ -246,12 +282,38 @@ async fn speak_shared(cfg: &Config, text: &str, timeout: Duration) -> Result<()>
 }
 
 pub async fn ask_aloud(cfg: &Config, question: &str) -> Result<fs::File> {
+    ensure!(
+        inbox::focus(cfg).allows_speech(),
+        "当前禁止语音播报，请用文字询问"
+    );
     let lock = tokio::time::timeout(Duration::from_secs(20), audio_lock(cfg, true))
         .await
         .context("喇叭忙，无法播报问题")??;
-    speak_with_selection(cfg, &format!("请回答。{question}"), Duration::from_secs(95)).await?;
+    ensure!(
+        play_if_allowed(cfg, &format!("请回答。{question}"), Duration::from_secs(95)).await?,
+        "当前禁止语音播报，请用文字询问"
+    );
     // Keep ordinary broadcasts quiet until the caller finishes recording.
     Ok(lock)
+}
+
+// The caller holds the audio lock. Dropping the player stops its audio child.
+pub(crate) async fn play_if_allowed(cfg: &Config, text: &str, timeout: Duration) -> Result<bool> {
+    if !inbox::focus(cfg).allows_speech() {
+        return Ok(false);
+    }
+    let player = speak_with_selection(cfg, text, timeout);
+    tokio::pin!(player);
+    loop {
+        tokio::select! {
+            result = &mut player => return result.map(|_| true),
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                if !inbox::focus(cfg).allows_speech() {
+                    return Ok(false);
+                }
+            }
+        }
+    }
 }
 
 async fn speak_with_selection(cfg: &Config, text: &str, timeout: Duration) -> Result<()> {
@@ -262,6 +324,14 @@ async fn speak_with_selection(cfg: &Config, text: &str, timeout: Duration) -> Re
     };
     play(program, voice, cfg, text, timeout).await
 }
+fn validate_text(text: &str) -> Result<()> {
+    ensure!(!text.trim().is_empty(), "用法：/speak 要播报的文字");
+    ensure!(
+        text.chars().count() <= 500 && !text.contains('\0'),
+        "播报文字最多 500 字，不能包含空字符"
+    );
+    Ok(())
+}
 async fn play(
     program: &Path,
     voice: &str,
@@ -269,11 +339,7 @@ async fn play(
     text: &str,
     timeout: Duration,
 ) -> Result<()> {
-    ensure!(!text.trim().is_empty(), "用法：/speak 要播报的文字");
-    ensure!(
-        text.chars().count() <= 500 && !text.contains('\0'),
-        "播报文字最多 500 字，不能包含空字符"
-    );
+    validate_text(text)?;
     let mut child = tokio::process::Command::new(program)
         .args(["-v", voice, "-a", &cfg.speak_audio_device, "-r", "180"])
         .stdin(Stdio::piped())
@@ -409,11 +475,11 @@ mod tests {
         let mut cfg = Config::fixture();
         cfg.data_dir = dir.join("data");
         cfg.speech_program = program.to_string_lossy().into_owned();
-        speak(&cfg, "新闻内容").await?;
+        speak(&cfg, "新闻内容", None).await?;
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, "新闻内容");
         cfg.posture_voice = "posture-voice".into();
         cfg.posture_audio_device = "posture-output".into();
-        speak_posture(&cfg, "坐直一点").await?;
+        speak_posture(&cfg, "坐直一点", "test").await?;
         assert_eq!(std::fs::read_to_string(dir.join("text"))?, "坐直一点");
         assert!(std::fs::read_to_string(dir.join("args"))?.contains("posture-output"));
         std::fs::remove_dir_all(dir)?;

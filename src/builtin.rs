@@ -66,7 +66,7 @@ pub async fn maintain(cfg: &Config, oc: &OpenCode) {
 
 pub fn tools() -> Value {
     let mut tools = json!([
-        {"name":"teacher_speak","description":"通过 Mac mini 喇叭说话，或停止当前会话语音。沿用现有音色；text 最多500字。超时先查任务，不要重复播报。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["say","stop"]},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["action"]}},
+        {"name":"teacher_speak","description":"通过 Mac mini 喇叭说话，或停止当前会话语音。沿用现有音色；text 最多500字。若返回已存入播报收件箱，表示等待退出免打扰后补播。超时先查任务，不要重复播报。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["say","stop"]},"text":{"type":"string","minLength":1,"maxLength":500}},"required":["action"]}},
         {"name":"teacher_ask_user_question","description":"Ask User Question：用喇叭问用户一个简短问题，播完后打开绑定的麦克风录制一次回答。工具结果 answer 是用户回答的本地转写。只在确实需要用户补充或选择时调用。直接传完整问题，不要先另行播报。","inputSchema":{"type":"object","properties":{"question":{"type":"string","minLength":1,"maxLength":100}},"required":["question"]}},
         {"name":"teacher_camera","description":"摄像头拍照或录制1–30秒视频，结果直接发到发起请求的飞书聊天。返回状态不代表你已看过画面，不得编造画面内容。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["photo","video"]},"seconds":{"type":"integer","minimum":1,"maximum":30}},"required":["action"]}},
         {"name":"teacher_reframe","description":"用户要求调整学习摄像头构图或追踪写作业的人时调用。本地识别唯一人体，上下左右逐步移动云台，直至进入画面中心区域或达到单次调整上限。无人或多人时停止。返回文字结果。","inputSchema":{"type":"object","properties":{},"required":[]}},
@@ -77,7 +77,7 @@ pub fn tools() -> Value {
         {"name":"teacher_proxy","description":"查询Mac mini代理节点、按国家/地区筛选、测试延迟或按用户要求切换。status/countries/list为查询；test无country测当前节点，有country批量测3次并排名（all为全部）；auto按country测速并切换最低延迟节点，未指定国家时比较全部节点。延迟不是下载带宽，国家按节点名称识别。set需要node唯一名称或关键字。仅在用户要求切换时使用set/auto。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["status","list","countries","test","set","auto"]},"country":{"type":"string","minLength":1,"maxLength":80},"node":{"type":"string","minLength":1,"maxLength":200}},"required":["action"]}},
         {"name":"teacher_music","description":"控制 Mac mini 音乐 App。play 开始或恢复播放，也可传歌曲名（命令行播放模式）或资料库歌曲 ID（音乐 App 模式）；artist 按歌手名随机播放资料库中的一首歌；random 随机播放资料库中的一首歌；playlist 按名称顺序播放本地歌单；album 按曲序播放本地专辑；playlists 列出本地歌单；pause 暂停；next 下一首；prev 上一首；status 查看当前歌曲和播放状态；search 在线搜歌，find 搜索资料库；list 列出资料库歌曲，可传页码；open 用 Apple Music 歌曲链接打开歌曲页。parameter 按操作传歌曲 ID、关键词、页码或链接。打开歌曲页后需要在 App 点播放。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["play","artist","random","playlist","playlists","album","pause","next","prev","status","search","find","list","open"]},"parameter":{"type":"string","minLength":1,"maxLength":1024}},"required":["action"]}},
         {"name":"teacher_memory","description":"保存、更新或忘记一条长期记忆。只在当前用户明确要求时操作；同标签保存会更新已有内容。删除前调用 teacher_query memory 核对标签。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["save","forget"]},"label":{"type":"string","minLength":1,"maxLength":100},"value":{"type":"string","minLength":1,"maxLength":2000,"description":"保存或更新时必填"}},"required":["action","label"]}},
-        {"name":"teacher_query","description":"只读查询当前会话任务、状态、设备入口、定时任务、通知送达、已保存的长期记忆、技能或MCP连接。task需要task_id。查询范围由当前请求决定。","inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["tasks","task","status","channel","cron","posture","notices","memory","skills","mcp","help"]},"task_id":{"type":"string"}},"required":["kind"]},"annotations":{"readOnlyHint":true}}
+        {"name":"teacher_query","description":"只读查询当前会话任务、状态、设备入口、定时任务、通知送达、播报收件箱、已保存的长期记忆、技能或MCP连接。task需要task_id。查询范围由当前请求决定。","inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["tasks","task","status","channel","cron","posture","notices","inbox","memory","skills","mcp","help"]},"task_id":{"type":"string"}},"required":["kind"]},"annotations":{"readOnlyHint":true}}
     ]);
     for tool in tools.as_array_mut().unwrap() {
         let query = tool["name"] == "teacher_query";
@@ -181,7 +181,7 @@ async fn command(bridge: &Bridge, name: &str, args: &Value) -> Result<String> {
             "cron" => "/cron list".into(),
             "posture" => "/posture status".into(),
             "notices" => "/notify list".into(),
-            kind @ ("tasks" | "status" | "channel" | "memory" | "skills" | "mcp" | "help") => {
+            kind @ ("tasks" | "status" | "channel" | "inbox" | "memory" | "skills" | "mcp" | "help") => {
                 format!("/{kind}")
             }
             _ => bail!("未知查询类型"),

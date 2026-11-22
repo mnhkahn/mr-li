@@ -141,7 +141,9 @@ def upgrade_message(root, value, previous):
 
 def speak(root, text, *, timeout=200):
     env = dict(os.environ, MR_LI_ENV=str(root / '.env'))
-    run([root / 'scripts/run.sh', 'speak', text], cwd=root, env=env, timeout=timeout)
+    result = run([root / 'scripts/run.sh', 'speak', text], cwd=root, env=env, timeout=timeout,
+                 stdout=subprocess.PIPE, text=True)
+    return result.stdout.strip().startswith('queued ')
 
 
 def announce_upgrade(root, value, previous, *, skipped=False):
@@ -153,11 +155,11 @@ def announce_upgrade(root, value, previous, *, skipped=False):
     try:
         status['text'] = SKIP_MESSAGE if skipped else upgrade_message(root, value, previous)
         write_json(record, status)
-        speak(root, status['text'])
-        status['status'] = 'completed'
+        queued = speak(root, status['text'])
+        status['status'] = 'queued' if queued else 'completed'
         write_json(record, status)
         label = 'Skipped deployment' if skipped else 'Upgrade'
-        print(label + ' announcement completed: ' + status['text'], flush=True)
+        print(label + ' announcement ' + ('queued' if queued else 'completed'), flush=True)
     except Exception as error:
         status['status'] = 'failed'
         status['error'] = str(error)

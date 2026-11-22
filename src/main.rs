@@ -8,6 +8,7 @@ mod feishu;
 mod files;
 mod forms;
 mod home_assistant;
+mod inbox;
 mod memory;
 mod models;
 mod music;
@@ -109,11 +110,15 @@ async fn main() -> Result<()> {
     }
     if mode == "speak" || mode == "speak-news" {
         let text = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
-        return if mode == "speak-news" {
-            speech::speak_news(&cfg, &text).await
+        let delivery = if mode == "speak-news" {
+            speech::speak_news(&cfg, &text).await?
         } else {
-            speech::speak(&cfg, &text).await
+            speech::speak(&cfg, &text, None).await?
         };
+        if let speech::Delivery::Queued(id) = delivery {
+            println!("queued {id}");
+        }
+        return Ok(());
     }
     if mode == "voice" || mode == "voice-check" {
         return voice::run(cfg, mode == "voice-check").await;
@@ -180,6 +185,7 @@ async fn main() -> Result<()> {
         r=feishu.run(store.clone())=>r?,
         r=bridge.clone().run()=>r?,
         _=news::maintain(&bridge.cfg)=>{},
+        _=inbox::maintain(&bridge.cfg)=>{},
         _=voice::maintain(bridge.cfg.clone())=>{},
         r=posture::follow_homework(&bridge.cfg, &store)=>r?,
         r=tablet.serve()=>r?,

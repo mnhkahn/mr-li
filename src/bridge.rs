@@ -61,12 +61,18 @@ fn destination(j: &Job) -> Result<String> {
 fn is_command(j: &Job) -> bool {
     j.text.starts_with('/')
 }
+fn user_command(j: &Job) -> bool {
+    j.id == j.message_id && is_command(j)
+}
 pub fn chunks(text: &str) -> Vec<String> {
     // Conservative bound in UTF-8 bytes, leaving room for JSON escaping and Feishu limits.
+    split_text(text, 6000)
+}
+pub fn split_text(text: &str, limit: usize) -> Vec<String> {
     let mut result = Vec::new();
     let mut s = String::new();
     for c in text.chars() {
-        if s.len() + c.len_utf8() > 6000 {
+        if s.len() + c.len_utf8() > limit {
             result.push(std::mem::take(&mut s));
         }
         s.push(c);
@@ -193,6 +199,10 @@ impl Bridge {
     }
     pub async fn recover(&self) -> Result<()> {
         for j in self.store.jobs("running")? {
+            if j.id.starts_with("card:ha-inventory:") {
+                self.store.status(&j.id, "queued")?;
+                continue;
+            }
             if j.id.starts_with("posture-sample:") {
                 self.store
                     .finish_posture_sample(&j, "上次采样因服务中断未完成；等待下一次采样。")?;
@@ -227,7 +237,9 @@ impl Bridge {
         let posture_check = camera::is_posture_check(&j.text);
         let mut media = if posture_check
             && self.cfg.posture_auto_frame
-            && self.store.claim_daily_posture_framing(crate::posture::now_epoch())?
+            && self
+                .store
+                .claim_daily_posture_framing(crate::posture::now_epoch())?
         {
             match camera::reframe(&self.cfg).await {
                 Ok((media, note)) => {
@@ -321,7 +333,7 @@ impl Bridge {
             self.store.status(&j.id, "done")?;
             return Ok(());
         }
-        let error = crate::posture::speak(&self.cfg, assessment)
+        let error = crate::posture::speak(&self.cfg, assessment, &models::scope(&j.key)?)
             .await
             .err()
             .map(|e| e.to_string());
@@ -449,9 +461,14 @@ impl Bridge {
             );
         }
         let text = speech::text(&j.text).context("请提供播报文字")?;
-        speech::speak(&self.cfg, text).await?;
-        self.store
-            .finish(&j.id, "已通过 Mac mini 连接的喇叭播报。")?;
+        let scope = models::scope(&j.key)?;
+        let result = match speech::speak(&self.cfg, text, Some(&scope)).await? {
+            speech::Delivery::Played => "已通过 Mac mini 连接的喇叭播报。",
+            speech::Delivery::Queued(_) => {
+                "已存入播报收件箱。退出免打扰后会自动播报，可用 /inbox 查看。"
+            }
+        };
+        self.store.finish(&j.id, result)?;
         Ok(())
     }
     pub(crate) async fn command(&self, j: &Job, active: Option<&Job>) -> Result<String> {
@@ -463,16 +480,23 @@ impl Bridge {
         let sid = self.session(&j.key)?;
         match cmd {
             "/help" => Ok(HELP.into()),
+            "/inbox" => crate::inbox::command(&self.cfg, &j.key, args),
             "/memory" => crate::memory::command(&self.store, &j.key, args),
             "/proxy" => crate::proxy::command(args).await,
             "/music" => self.music_command(args).await,
             "/ha" => {
                 if args.is_empty() {
-                    return Ok("/ha devices [名称/房间/类型]\n/ha commands <实体ID或设备ID>\n/ha control <实体ID> <domain.service> [JSON参数]".into());
+                    return Ok(format!(
+                        "{}\n/ha commands <实体ID或设备ID>\n/ha control <实体ID> <domain.service> [JSON参数]",
+                        commands::HA_DEVICES_USAGE
+                    ));
                 }
                 let value =
                     crate::home_assistant::command(self.cfg.home_assistant.as_ref(), args).await?;
-                Ok(serde_json::to_string_pretty(&value)?)
+                match args.split_whitespace().next() {
+                    Some("devices") => Ok(serde_json::to_string_pretty(&value)?),
+                    action => commands::ha_result(action.unwrap_or(""), &value),
+                }
             }
             "/skills" | "/mcp" if self.selected_agent(&j.key)? != Kind::OpenCode => Ok(
                 "此 Agent 的技能和 MCP 由其 CLI 配置及会话管理；平板 MCP 会在创建会话时传入。"
@@ -731,7 +755,39 @@ impl Bridge {
         }
         let mut words = j.text.split_whitespace();
         let cmd = words.next().unwrap_or("");
-        if cmd == "/_reply_cancel" {
+        let args = j.text[cmd.len()..].trim_start();
+        if cmd == "/ha" && args.split_whitespace().next() == Some("devices") {
+            let value =
+                crate::home_assistant::command(self.cfg.home_assistant.as_ref(), args).await?;
+            let inventory = commands::ha_devices(&value)?;
+            let token = uuid::Uuid::new_v4().simple().to_string();
+            let output = inventory.render(&self.store, &j.key, &token, 1)?;
+            if output.packets[0].token == token {
+                self.store
+                    .save_reply_card(&token, &j.key, &json!({"ha_inventory":inventory}))?;
+            }
+            self.store
+                .finish_output(&j.id, "rich_reply", &serde_json::to_value(output)?)?;
+        } else if cmd == "/_ha_page" {
+            ensure!(
+                j.id.starts_with("card:ha-inventory:"),
+                "请使用设备表格中的翻页按钮"
+            );
+            let token = words.next().context("设备卡片缺少标识")?;
+            let page = words.next().context("缺少页码")?.parse()?;
+            let Some(card) = self.store.reply_card(token, "")? else {
+                return self.store.status(&j.id, "done");
+            };
+            ensure!(
+                card.origin_key == j.key && card.message_id == j.message_id,
+                "设备卡片不属于当前聊天"
+            );
+            let inventory: commands::HaInventory =
+                serde_json::from_value(card.spec["ha_inventory"].clone())?;
+            let output = inventory.render(&self.store, &j.key, token, page)?;
+            self.store
+                .finish_output(&j.id, "ha_page_update", &output.packets[0].content)?;
+        } else if cmd == "/_reply_cancel" {
             ensure!(j.id.starts_with("reply-action:"), "请使用卡片取消按钮");
             if let Err(e) = crate::reply::acknowledge(self, j).await {
                 tracing::warn!(error=%e,"更新取消卡片失败");
@@ -1259,12 +1315,88 @@ impl Bridge {
         Ok(())
     }
 
+    async fn prepare_command_reply(&self, j: &Job) -> Result<bool> {
+        let result = if j.result.trim().is_empty() {
+            "已处理。"
+        } else {
+            &j.result
+        };
+        let fallback = if result.len() <= 6000 {
+            result.to_owned()
+        } else {
+            let end = (5797..=5800)
+                .rfind(|&i| result.is_char_boundary(i))
+                .unwrap();
+            format!(
+                "{}\n\n结果较长，此处仅显示开头。可缩小查询范围后重试。",
+                &result[..end]
+            )
+        };
+        let output = commands::presentation(&j.text, result).and_then(|card| {
+            match crate::reply::render(&card, &self.store, &j.key, "") {
+                Ok(output) => Some(output),
+                Err(error) => {
+                    tracing::warn!(%error, "命令卡片无法显示，改用文字或附件");
+                    None
+                }
+            }
+        });
+        let packet = if let Some(mut output) = output {
+            output.fallback = fallback;
+            self.store
+                .finish_output(&j.id, "rich_reply", &serde_json::to_value(output)?)?;
+            return Ok(true);
+        } else if result.len() > 6000 {
+            let name = format!("{}-完整结果.txt", commands::title(&j.text));
+            match self.feishu.upload_command_result(&name, result).await {
+                Ok(key) => crate::reply::Packet {
+                    kind: "file".into(),
+                    content: json!({"file_key":key}),
+                    token: String::new(),
+                },
+                Err(error) => {
+                    tracing::warn!(%error, "命令结果附件上传失败");
+                    crate::reply::Packet {
+                        kind: "text".into(),
+                        content: json!({"text":fallback}),
+                        token: String::new(),
+                    }
+                }
+            }
+        } else if result != j.result {
+            crate::reply::Packet {
+                kind: "text".into(),
+                content: json!({"text":result}),
+                token: String::new(),
+            }
+        } else {
+            return Ok(false);
+        };
+        let output = crate::reply::Output {
+            fallback,
+            packets: vec![packet],
+        };
+        self.store
+            .finish_output(&j.id, "rich_reply", &serde_json::to_value(output)?)?;
+        Ok(true)
+    }
+
     async fn deliver(&self) -> Result<()> {
         // One durable result per tick; failed sends remain in the outbox for retry.
         if let Some(j) = self.store.jobs("replying")?.first() {
             let kind = self.store.output_kind(&j.id)?;
             if kind == "rich_reply" {
                 return self.deliver_rich_reply(j).await;
+            }
+            if kind == "ha_page_update" {
+                if !self.store.newer_ha_page(j)? {
+                    let card: Value = serde_json::from_str(&j.result)?;
+                    if let Err(error) = self.feishu.update_card(&j.message_id, &card).await {
+                        self.store.retry_delivery(&j.id)?;
+                        return Err(error);
+                    }
+                }
+                return self.store.status(&j.id, "done");
             }
             if kind == "posture_report" {
                 if let Err(e) = self.prepare_posture_report(j).await {
@@ -1274,8 +1406,16 @@ impl Bridge {
                 return Ok(());
             }
             if kind == "camera_media" || kind == "file_attachment" {
+                let mut payload: Value = serde_json::from_str(&j.result)?;
                 if j.sent == 0 {
-                    let payload: Value = serde_json::from_str(&j.result)?;
+                    // Older queued posture results stored the photo and note separately.
+                    if kind == "camera_media"
+                        && payload["msg_type"] == "image"
+                        && let Some(note) = payload["note"].as_str()
+                        && let Some(key) = payload["content"]["image_key"].as_str()
+                    {
+                        payload = image_message(key, Some(note));
+                    }
                     let uuid = uuid::Uuid::new_v5(
                         &uuid::Uuid::NAMESPACE_OID,
                         format!(
@@ -1295,13 +1435,27 @@ impl Bridge {
                         .reply_camera_media(&destination(j)?, &payload, &uuid, false)
                         .await
                     {
+                        if user_command(j)
+                            && e.downcast_ref::<crate::feishu::MessageRejected>().is_some()
+                        {
+                            let note = payload
+                                .pointer("/content/zh_cn/content")
+                                .and_then(Value::as_array)
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|row| row.pointer("/0/text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            return self
+                                .store
+                                .finish(&j.id, &format!("飞书未能发送媒体结果。{note}"));
+                        }
                         self.store.retry_delivery(&j.id)?;
                         return Err(e);
                     }
                     self.store.sent(&j.id, 1)?;
                 }
-                let payload: Value = serde_json::from_str(&j.result)?;
-                if j.sent <= 1
+                if j.sent == 1
                     && let Some(note) = payload["note"].as_str()
                 {
                     let uuid = uuid::Uuid::new_v5(
@@ -1374,6 +1528,9 @@ impl Bridge {
                 return Ok(());
             }
             if kind == "model_card" || kind == "model_card_update" {
+                if j.sent > 0 {
+                    return self.store.status(&j.id, "done");
+                }
                 let mut payload: Value = serde_json::from_str(&j.result)?;
                 let card = if kind == "model_card" {
                     &payload["card"]
@@ -1413,11 +1570,26 @@ impl Bridge {
                     self.feishu.update_card(&j.message_id, &payload).await
                 };
                 if let Err(e) = result {
+                    if kind == "model_card"
+                        && user_command(j)
+                        && e.downcast_ref::<crate::feishu::MessageRejected>().is_some()
+                    {
+                        return self
+                            .store
+                            .finish(&j.id, "飞书未能显示模型选择卡片。请稍后用 /model 重试。");
+                    }
                     self.store.retry_delivery(&j.id)?;
                     return Err(e);
                 }
                 self.store.sent(&j.id, 1)?;
                 self.store.status(&j.id, "done")?;
+                return Ok(());
+            }
+            if kind == "text"
+                && j.sent == 0
+                && user_command(j)
+                && self.prepare_command_reply(j).await?
+            {
                 return Ok(());
             }
             if let Some((i, part)) = chunks(&j.result).iter().enumerate().nth(j.sent) {
@@ -1837,6 +2009,238 @@ mod tests {
         std::fs::remove_dir_all(dir)?;
         Ok(())
     }
+    #[tokio::test]
+    async fn slash_replies_use_one_wire_message_for_each_presentation() -> Result<()> {
+        use axum::{
+            Json, Router,
+            body::Bytes,
+            extract::{Path as RoutePath, State},
+            routing::{patch, post},
+        };
+        use std::sync::Mutex;
+        type Delivered = Arc<Mutex<Vec<(String, String, Value)>>>;
+        let delivered: Delivered = Default::default();
+        let app = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post(|| async {
+                    Json(json!({"code":0,"tenant_access_token":"fake","expire":3600}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/files",
+                post(|body: Bytes| async move {
+                    assert!(String::from_utf8_lossy(&body).contains("长结果结尾"));
+                    Json(json!({"code":0,"data":{"file_key":"fake-file"}}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message}/reactions",
+                post(|| async { Json(json!({"code":0,"data":{"reaction_id":"reaction"}})) }),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message}/reply",
+                post(
+                    |RoutePath(message): RoutePath<String>,
+                     State(delivered): State<Delivered>,
+                     Json(body): Json<Value>| async move {
+                        let kind = body["msg_type"].as_str().unwrap();
+                        if message == "om_fallback" && kind == "interactive" {
+                            return Json(json!({"code":230099}));
+                        }
+                        let content =
+                            serde_json::from_str(body["content"].as_str().unwrap()).unwrap();
+                        delivered
+                            .lock()
+                            .unwrap()
+                            .push((message, kind.into(), content));
+                        Json(json!({"code":0,"data":{"message_id":"om_reply"}}))
+                    },
+                ),
+            )
+            .route(
+                "/open-apis/im/v1/messages/{message}",
+                patch(
+                    |RoutePath(message): RoutePath<String>,
+                     State(delivered): State<Delivered>,
+                     Json(body): Json<Value>| async move {
+                        let content =
+                            serde_json::from_str(body["content"].as_str().unwrap()).unwrap();
+                        delivered
+                            .lock()
+                            .unwrap()
+                            .push((message, "update".into(), content));
+                        Json(json!({"code":0}))
+                    },
+                ),
+            )
+            .with_state(delivered.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let (ha, ha_server) = crate::home_assistant::tests::device_server().await;
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+        cfg.home_assistant = Some(ha);
+        let cfg = Arc::new(cfg);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let store = Arc::new(Store::open(std::path::Path::new(":memory:"))?);
+        let bridge = Bridge {
+            cfg: cfg.clone(),
+            store: store.clone(),
+            tablet: None,
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg.clone())?),
+        };
+        let long = format!("{}长结果结尾", "结果行\n".repeat(5000));
+        for (id, text, result, expected) in [
+            ("om_help", "/help", None, "interactive"),
+            ("om_status", "/status", None, "interactive"),
+            ("om_devices", "/ha devices", None, "interactive"),
+            ("om_native", "/ha devices demo_0", None, "interactive"),
+            (
+                "om_commands",
+                "/ha commands light.living",
+                None,
+                "interactive",
+            ),
+            (
+                "om_control",
+                "/ha control light.living light.turn_on",
+                None,
+                "interactive",
+            ),
+            ("om_short", "/new", Some("下条消息将创建新会话。"), "text"),
+            ("om_long", "/proxy list", Some(long.as_str()), "file"),
+            (
+                "om_fallback",
+                "/skills",
+                Some("可用技能\n".repeat(900).as_str()),
+                "text",
+            ),
+            ("om_posture", "/posture", None, "post"),
+            ("om_video", "/video 1", None, "media"),
+        ] {
+            let job = Job {
+                id: id.into(),
+                key: json!([cfg.workspace, "ou_owner", "oc_chat", ""]).to_string(),
+                message_id: id.into(),
+                text: text.into(),
+                result: String::new(),
+                sent: 0,
+            };
+            store.insert(&job)?;
+            match id {
+                "om_posture" => store.finish_output(
+                    &job.id,
+                    "camera_media",
+                    &json!({
+                        "msg_type":"image","content":{"image_key":"img_pose"},"note":"坐姿检测结果"
+                    }),
+                )?,
+                "om_video" => store.finish_output(
+                    &job.id,
+                    "camera_media",
+                    &json!({
+                        "msg_type":"media","content":{"file_key":"video","image_key":"cover"}
+                    }),
+                )?,
+                _ => match result {
+                    Some(result) => store.finish(&job.id, result)?,
+                    None => bridge.handle_command(&job, None).await?,
+                },
+            }
+            for _ in 0..5 {
+                bridge.deliver().await?;
+            }
+            assert!(store.jobs("replying")?.is_empty(), "{text}");
+            let messages = delivered.lock().unwrap();
+            let replies: Vec<_> = messages.iter().filter(|msg| msg.0 == id).collect();
+            assert_eq!(replies.len(), 1, "{text}");
+            let (_, kind, body) = replies[0];
+            assert_eq!(kind, expected, "{text}");
+            match id {
+                "om_help" => assert_eq!(body["body"]["elements"].as_array().unwrap().len(), 5),
+                "om_devices" => {
+                    let table = &body["body"]["elements"][1];
+                    assert_eq!(table["tag"], "table");
+                    assert_eq!(table["page_size"], 5);
+                    assert_eq!(table["rows"].as_array().unwrap().len(), 5);
+                    assert!(!body.to_string().contains("xxxx"));
+                    assert!(!body.to_string().contains("--page"));
+                }
+                "om_native" => {
+                    let elements = body["body"]["elements"].as_array().unwrap();
+                    assert_eq!(elements.len(), 2);
+                    assert_eq!(elements[1]["page_size"], 5);
+                    assert_eq!(elements[1]["rows"].as_array().unwrap().len(), 10);
+                }
+                "om_fallback" => {
+                    let text = body["text"].as_str().unwrap();
+                    assert!(text.len() <= 6000);
+                    assert!(text.contains("仅显示开头"));
+                }
+                "om_posture" => assert!(body.to_string().contains("坐姿检测结果")),
+                _ => {}
+            }
+        }
+        let card = delivered
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.0 == "om_devices")
+            .unwrap()
+            .2
+            .clone();
+        let button = |card: &Value| {
+            card.pointer("/body/elements/2/columns/0/elements/0/behaviors/0/value")
+                .unwrap()
+                .clone()
+        };
+        let callback = |id: &str, action: Value| {
+            json!({
+                "header":{"event_type":"card.action.trigger","event_id":id},
+                "event":{"operator":{"open_id":"ou_owner"},"context":{"open_chat_id":"oc_chat","open_message_id":"om_reply"},
+                         "action":{"tag":"button","value":action}}
+            })
+        };
+        let mut event = callback("turn_page", button(&card));
+        assert_eq!(event["event"]["action"]["value"]["page"], 2);
+        event["event"]["operator"]["open_id"] = json!("ou_stranger");
+        assert!(crate::reply::parse_action(&event, &cfg, &store).is_err());
+        event["event"]["operator"]["open_id"] = json!("ou_owner");
+        let job = crate::reply::parse_action(&event, &cfg, &store)?.unwrap();
+        assert!(store.insert(&job)?);
+        assert!(!store.insert(&job)?);
+        let before = delivered.lock().unwrap().len();
+        bridge.handle_command(&job, None).await?;
+        bridge.deliver().await?;
+        let page_two = {
+            let sent = delivered.lock().unwrap();
+            assert_eq!(sent.len(), before + 1);
+            assert_eq!(sent[before].0, "om_reply");
+            assert_eq!(sent[before].1, "update");
+            assert!(sent[before].2.to_string().contains("第 2/9 页"));
+            sent[before].2.clone()
+        };
+        assert_ne!(
+            page_two["body"]["elements"][1]["rows"],
+            card["body"]["elements"][1]["rows"]
+        );
+        let event = callback("return_page", button(&page_two));
+        assert_eq!(event["event"]["action"]["value"]["page"], 1);
+        let job = crate::reply::parse_action(&event, &cfg, &store)?.unwrap();
+        store.insert(&job)?;
+        bridge.handle_command(&job, None).await?;
+        bridge.deliver().await?;
+        {
+            let sent = delivered.lock().unwrap();
+            assert_eq!(sent.len(), before + 2);
+            assert_eq!(sent[before + 1], ("om_reply".into(), "update".into(), card));
+        }
+        server.abort();
+        ha_server.abort();
+        Ok(())
+    }
+
     #[tokio::test]
     async fn slash_and_speech_reactions_last_until_result_delivery() -> Result<()> {
         use axum::{

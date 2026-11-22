@@ -32,6 +32,16 @@ pub fn status(cfg: &Config) -> &'static str {
                 Some("preparing") => "今日已开始准备",
                 Some("sending") => "今日已开始播报",
                 Some("done") => "今日已播报",
+                Some("queued") => {
+                    match record["inbox_id"]
+                        .as_i64()
+                        .map(|id| crate::inbox::contains(cfg, id))
+                    {
+                        Some(Ok(false)) => "今日已从收件箱播报",
+                        Some(Ok(true)) => "今日已存入播报收件箱",
+                        _ => "今日收件箱状态无法读取",
+                    }
+                }
                 Some("uncertain") => "今日播报结果未确认",
                 Some("failed") => "今日执行失败",
                 _ => "今日状态无法读取",

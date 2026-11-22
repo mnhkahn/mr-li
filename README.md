@@ -253,6 +253,8 @@ sudo ./scripts/service.sh uninstall system
 
 ## 飞书指令
 
+每次 Slash 命令回复一条消息。简短确认和错误用文字，状态和列表用卡片，照片和视频沿用原生媒体。超出单张卡片容量的结果以一个 UTF-8 文本附件发送，附件不可用时显示一条带截断提示的摘要。
+
 | 指令 | 作用 |
 |---|---|
 | 普通文字 | 在当前会话执行任务，忙时排队 |
@@ -273,6 +275,9 @@ sudo ./scripts/service.sh uninstall system
 | `/notify send --device <ID> <内容>` | 多台平板时指定目标；单台已配对平板可省略设备参数 |
 | `/skills` | 查看 OpenCode 当前工作目录加载的技能名称和简介 |
 | `/mcp` | 查看 MCP 外部工具服务连接状态 |
+| `/ha devices [筛选]` | 查看设备和实体的名称、区域、状态和 ID。在同一张卡片内每 5 行翻页 |
+| `/ha commands <实体或设备ID>` | 查看支持的服务和参数 |
+| `/ha control <实体ID> <domain.service> [JSON参数]` | 执行 HA 操作并显示即时回读 |
 | `/channel` | 查看飞书入口和平板在线状态 |
 | `/tasks` | 当前用户、聊天、话题最近 10 项任务 |
 | `/task <ID>`、`/task status <ID>` | 查询本会话任务状态和结果摘要，不可查看其他用户或话题 |
@@ -284,6 +289,7 @@ sudo ./scripts/service.sh uninstall system
 | `/reminder del <ID>` | 删除提醒，取消尚未送达的消息 |
 | `/speak <文字>` | Mac mini 本地合成语音，通过配置的喇叭播放，最多 500 字 |
 | `/speak stop` | 停止本会话当前语音并取消待播报文字 |
+| `/inbox [页码]` | 查看 Mac 专注模式和收件箱中的待播报内容 |
 | `/music` | Apple Music 播放控制、搜歌与资料库命令 |
 | `/voice [status\|tingting\|clone]` | 查看或切换 Mac mini 全局播报音色 |
 | `/posture` | 本地姿态模型试验：抓图、回传关键点图片、背面判断和分数说明，不调用 OpenCode |
@@ -302,6 +308,8 @@ sudo ./scripts/service.sh uninstall system
 群聊中，文字指令需要 @李老师。模型选择在你当前聊天的所有话题中生效；`/stop`、权限回复等会话操作请在发起任务的同一话题发送。卡片点选无需再 @机器人，卡片 30 分钟有效，转发后不可操作。当前结果以任务完成后的文本发送，权限/提问在执行过程中同步；没有 token 流式卡片或过程工具日志展示；支持接收图片，以及通过 Agent 工具发送文件和图片。
 
 `/speak` 不受坐姿监测时段限制。文字经标准输入交给配置的语音程序，不会作为 shell 命令或命令行选项执行。手动语音独立排队，一次一条，播放期间仍可处理其他命令；最多播放 3 分钟，取消或超时会终止语音子进程。服务重启不重播执行中的语音；结果回发失败只重试结果，不重复播放。本机可用 `./scripts/run.sh speak "你好，我是李老师"` 检查喇叭。
+
+macOS 的「睡眠」或「勿扰」专注模式开启时，手动播报、新闻、升级和发布消息、坐姿提醒以及语音回复会进入播报收件箱。使用 Mac 的实际专注状态，时间表在系统设置中管理。收件箱存在 `MR_LI_DATA_DIR/broadcast-inbox.sqlite3`，重启后保留。退出上述专注模式后，桥接按入箱顺序合并播报，播完才移除。进入免打扰时，正在播放的内容也会停止并暂存。唤醒提示、语音进度和需要即时回答的问题会静音。群聊能查看发起者在本群的待播内容，私聊可额外查看设备公告。
 
 `/voice` 或 `/voice status` 显示当前音色。`/voice tingting` 使用系统 Ting-Ting，`/voice clone` 使用已安装的本地 ZipVoice 克隆音色。命令对 Mac mini 的所有播报生效，正在执行的播报继续使用原音色。选择保存到数据目录的 `speech-voice`，下次播报时读取，重启后继续生效。`MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和 `MR_LI_POSTURE_VOICE` 提供初始配置；手动播报仍使用配置的 `MR_LI_SPEAK_AUDIO_DEVICE`，未配置时沿用坐姿播报的输出设备。
 

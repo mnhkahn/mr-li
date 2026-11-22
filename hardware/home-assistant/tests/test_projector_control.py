@@ -48,6 +48,18 @@ class ProjectorControlTests(unittest.IsolatedAsyncioTestCase):
         e.coordinator.open_app.assert_awaited_once_with('云视听小电视')
         self.assertFalse(e.extra_state_attributes['launch_confirmed'])
 
+    async def test_play_and_pause_each_send_one_confirm_key_through_the_existing_remote(self):
+        e = self.make_control()
+        self.assertTrue(e.supported_features & MediaPlayerEntityFeature.PLAY)
+        self.assertTrue(e.supported_features & MediaPlayerEntityFeature.PAUSE)
+        for action in (e.async_media_play, e.async_media_pause):
+            e.hass.services.async_call.reset_mock()
+            await action()
+            e.hass.services.async_call.assert_awaited_once_with(
+                'remote', 'send_command', {'command': ['ok']},
+                target={'entity_id': 'remote.projector'}, blocking=True,
+            )
+
     async def test_running_app_overrides_the_legacy_closed_rtsp_probe(self):
         e = self.make_control()
         e.coordinator.last_update_success = True

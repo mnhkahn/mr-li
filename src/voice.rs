@@ -6,9 +6,11 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::HashSet, process::Stdio, sync::Arc, time::Duration};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{
+    AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
+};
 
 #[derive(Clone)]
 pub struct Settings {
@@ -114,10 +116,12 @@ enum Event {
     Ready { wake_word: Option<String> },
     Wake,
     Text { text: String },
+    CaptureEnd,
 }
 
 const PROGRESS_OPEN: &str = "<voice-progress>";
 const PROGRESS_CLOSE: &str = "</voice-progress>";
+const ESP32_PROMPT_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn progress_updates(output: &str) -> impl Iterator<Item = &str> {
     output.split(PROGRESS_OPEN).skip(1).filter_map(|part| {
@@ -147,6 +151,15 @@ pub fn final_reply(mut output: &str) -> String {
 
 async fn converse(cfg: &Config, store: &Store, origin: &Job, text: &str) -> Result<()> {
     let job = enqueue(store, origin, text)?;
+    reply_to_voice(cfg, store, &job, &mut false).await
+}
+
+async fn reply_to_voice(
+    cfg: &Config,
+    store: &Store,
+    job: &Job,
+    playing_final: &mut bool,
+) -> Result<()> {
     // No timeout retry: side effects may already have happened. /stop remains available in Feishu.
     let mut interval = tokio::time::interval(Duration::from_millis(250));
     loop {
@@ -158,6 +171,7 @@ async fn converse(cfg: &Config, store: &Store, origin: &Job, text: &str) -> Resu
             let text = spoken_result(&value)?;
             // Mark before playback so restarting never replays an old answer.
             store.status(&job.id, "done")?;
+            *playing_final = true;
             println!("李老师：{text}");
             let chars: Vec<char> = text.chars().collect();
             for part in chars.chunks(500) {
@@ -170,6 +184,115 @@ async fn converse(cfg: &Config, store: &Store, origin: &Job, text: &str) -> Resu
             && let Err(error) = speech::speak_progress(cfg, &progress).await
         {
             tracing::warn!(%error, "中间进度播报失败，继续等最终回复");
+        }
+    }
+}
+
+async fn read_event(output: &mut (impl AsyncBufRead + Unpin), line: &mut Vec<u8>) -> Result<Event> {
+    output
+        .take(65537_u64.saturating_sub(line.len() as u64))
+        .read_until(b'\n', line)
+        .await?;
+    ensure!(
+        !line.is_empty() && line.len() <= 65536 && line.ends_with(b"\n"),
+        "语音输入进程已退出或返回了过大数据，请检查麦克风权限和模型"
+    );
+    let event = serde_json::from_slice(line).context("语音输入协议无效")?;
+    line.clear();
+    Ok(event)
+}
+
+async fn listen(input: &mut (impl AsyncWrite + Unpin), enabled: bool) -> Result<()> {
+    input
+        .write_all(if enabled {
+            b"{\"listen\":true}\n"
+        } else {
+            b"{\"listen\":false}\n"
+        })
+        .await?;
+    input.flush().await?;
+    Ok(())
+}
+
+fn goodbye(text: &str) -> bool {
+    matches!(
+        text.trim_matches(|c: char| c.is_whitespace() || "，。！？,.!?".contains(c)),
+        "结束对话" | "再见" | "停止对话"
+    )
+}
+
+fn ready(word: Option<&str>) {
+    println!(
+        "麦克风已就绪，说“{}”开始对话。",
+        word.unwrap_or("你好，李老师")
+    );
+}
+
+async fn esp32_dialogue(
+    cfg: &Config,
+    store: &Store,
+    origin: &Job,
+    input: &mut (impl AsyncWrite + Unpin),
+    output: &mut (impl AsyncBufRead + Unpin),
+) -> Result<()> {
+    let mut line = Vec::new();
+    let mut pending: Option<Job> = None;
+    let mut capturing = false;
+    loop {
+        let mut playing_final = false;
+        let event = if let Some(job) = pending.as_ref().filter(|_| !capturing) {
+            tokio::select! { biased;
+                event = read_event(output, &mut line) => event?,
+                reply = reply_to_voice(cfg, store, job, &mut playing_final) => {
+                    pending = None;
+                    if let Err(error) = reply {
+                        tracing::warn!(%error, "语音回复未能播完");
+                    }
+                    continue;
+                }
+            }
+        } else {
+            read_event(output, &mut line).await?
+        };
+        if playing_final {
+            // A wake interrupted audio. The completed result remains available on the job.
+            pending = None;
+        }
+        match event {
+            Event::Ready { wake_word } => ready(wake_word.as_deref()),
+            Event::Wake => {
+                capturing = true;
+                // A busy shared speaker must not consume the board's entire wake window.
+                if !matches!(
+                    tokio::time::timeout(
+                        ESP32_PROMPT_TIMEOUT,
+                        speech::speak_posture(cfg, "我在，请说。"),
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    tracing::info!("唤醒提示音未能及时播完，直接开始录音");
+                }
+                listen(input, true).await?;
+            }
+            Event::CaptureEnd => capturing = false,
+            Event::Text { text } => {
+                println!("你：{text}");
+                capturing = false;
+                // Acknowledge the clip immediately so the helper can poll the next wake.
+                listen(input, !goodbye(&text)).await?;
+                if goodbye(&text) {
+                    pending = None;
+                    let _ = tokio::time::timeout(
+                        ESP32_PROMPT_TIMEOUT,
+                        speech::speak(cfg, "好的，再见。"),
+                    )
+                    .await;
+                } else {
+                    // Newest turn gets the speaker. Prior Agent work stays in the bridge queue.
+                    pending = Some(enqueue(store, origin, &text)?);
+                }
+            }
         }
     }
 }
@@ -235,32 +358,24 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
     let mut output = BufReader::new(child.stdout.take().context("语音助手没有stdout")?);
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let dialogue = async {
+        if !cfg.voice.esp32_config.is_empty() {
+            return esp32_dialogue(&cfg, &store, &origin, &mut input, &mut output).await;
+        }
+        let mut line = Vec::new();
         loop {
-            let mut line = Vec::new();
-            let n = (&mut output)
-                .take(65537)
-                .read_until(b'\n', &mut line)
-                .await?;
-            ensure!(
-                n > 0 && n <= 65536,
-                "语音输入进程已退出或返回了过大数据，请检查麦克风权限和模型"
-            );
-            let event: Event = serde_json::from_slice(&line).context("语音输入协议无效")?;
-            let listen = match event {
+            let enabled = match read_event(&mut output, &mut line).await? {
                 Event::Ready { wake_word } => {
-                    println!(
-                        "麦克风已就绪，说“{}”开始对话。",
-                        wake_word.as_deref().unwrap_or("你好，李老师")
-                    );
+                    ready(wake_word.as_deref());
                     continue;
                 }
+                Event::CaptureEnd => continue,
                 Event::Wake => {
                     speech::speak_posture(&cfg, "我在，请说。").await?;
                     true
                 }
                 Event::Text { text } => {
                     println!("你：{text}");
-                    if matches!(text.trim_matches(|c: char| c.is_whitespace() || "，。！？,.!?".contains(c)), "结束对话" | "再见" | "停止对话") {
+                    if goodbye(&text) {
                         speech::speak(&cfg, "好的，再见。").await?;
                         false
                     } else {
@@ -277,13 +392,8 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
             };
             // The helper has closed its microphone before emitting wake/text and only reopens
             // after playback finishes. No Agent or TTS implementation is part of the helper.
-            if cfg.voice.esp32_config.is_empty() {
-                tokio::time::sleep(Duration::from_millis(350)).await;
-            }
-            input
-                .write_all(format!("{}\n", json!({"listen":listen})).as_bytes())
-                .await?;
-            input.flush().await?;
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            listen(&mut input, enabled).await?;
         }
         #[allow(unreachable_code)]
         Ok::<(), anyhow::Error>(())
@@ -301,6 +411,77 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn esp32_accepts_a_second_wake_while_previous_agent_is_still_running() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mr-li-wake-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir)?;
+        let mut cfg = Config::fixture();
+        cfg.data_dir = dir.clone();
+        cfg.speech_program = dir.join("speech").to_string_lossy().into();
+        std::fs::write(dir.join("heartbeat"), "test")?;
+        std::fs::write(
+            &cfg.speech_program,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\n[ ! -f '{}/busy' ] || exec sleep 20\n",
+                dir.display()
+            ),
+        )?;
+        std::fs::set_permissions(&cfg.speech_program, std::fs::Permissions::from_mode(0o700))?;
+        let store = Store::open(&dir.join("mr-li.sqlite3"))?;
+        let origin = origin(&cfg, "ou_owner", "oc_chat");
+        let (mut events, output) = tokio::io::duplex(1024);
+        let (acks, mut input) = tokio::io::duplex(1024);
+        let mut acks = BufReader::new(acks).lines();
+        let mut output = BufReader::new(output);
+        let exchange = async {
+            events.write_all(b"{\"event\":\"wake\"}\n").await?;
+            assert_eq!(
+                acks.next_line().await?.as_deref(),
+                Some("{\"listen\":true}")
+            );
+            events
+                .write_all("{\"event\":\"text\",\"text\":\"第一条命令\"}\n".as_bytes())
+                .await?;
+            assert_eq!(
+                acks.next_line().await?.as_deref(),
+                Some("{\"listen\":true}")
+            );
+            let first = store.jobs("queued")?.into_iter().next().unwrap();
+            store.status(&first.id, "running")?;
+            std::fs::write(dir.join("busy"), "")?;
+
+            events.write_all(b"{\"event\":\"wake\"}\n").await?;
+            assert_eq!(
+                acks.next_line().await?.as_deref(),
+                Some("{\"listen\":true}")
+            );
+            events
+                .write_all("{\"event\":\"text\",\"text\":\"第二条命令\"}\n".as_bytes())
+                .await?;
+            assert_eq!(
+                acks.next_line().await?.as_deref(),
+                Some("{\"listen\":true}")
+            );
+            assert_eq!(store.jobs("running")?[0].id, first.id);
+            assert_eq!(store.jobs("queued")?[0].text, "第二条命令");
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::select! {
+                result = exchange => result,
+                result = esp32_dialogue(&cfg, &store, &origin, &mut input, &mut output) => {
+                    result?;
+                    anyhow::bail!("ESP32 测试在完成前退出");
+                }
+            }
+        })
+        .await??;
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
     #[tokio::test]
     async fn frontend_resumes_only_after_configured_speech_and_routes_transcript_through_queue()
     -> Result<()> {

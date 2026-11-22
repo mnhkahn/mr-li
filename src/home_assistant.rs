@@ -251,9 +251,23 @@ impl Settings {
             .collect::<Vec<_>>();
         ensure!(!selected.is_empty(), "未找到有效实体，请先查询 ha_devices");
         let services = conn.call("get_services", json!({})).await?;
-        Ok(
-            json!({"entities":selected.iter().map(|e|json!({"entity":e,"commands":commands(e,&services)})).collect::<Vec<_>>()}),
-        )
+        let selected = selected
+            .iter()
+            .map(|e| {
+                let mut available = commands(e, &services);
+                if is_xgimi_remote(&e["entity_id"], &entities)
+                    && let Some(field) =
+                        available.pointer_mut("/remote.send_command/fields/command")
+                {
+                    field["example"] = json!(["ok"]);
+                    field["description"] = json!(
+                        "极米遥控器键名。确认当前选项用小写 ok。播放和暂停优先使用极米统一控制实体的 media_player.media_play 或 media_player.media_pause（如果 ha_commands 已列出）。"
+                    );
+                }
+                json!({"entity": e, "commands": available})
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({"entities": selected}))
     }
 }
 struct Connection {
@@ -505,6 +519,21 @@ fn inventory(states: &[Value], devices: &Value, entities: &Value, areas: &Value)
     other.sort_by_key(|e| e["entity_id"].to_string());
     Ok(json!({"devices":output.into_values().collect::<Vec<_>>(),"standalone_entities":other}))
 }
+fn is_xgimi_remote(id: &Value, registry: &Value) -> bool {
+    id.as_str().is_some_and(|id| id.starts_with("remote."))
+        && registry.as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|entry| entry["entity_id"] == *id && entry["platform"] == "xgimi")
+        })
+}
+
+fn is_xgimi_confirm_alias(command: &Value) -> bool {
+    command.as_str().is_some_and(|key| {
+        key != "ok" && (key.eq_ignore_ascii_case("ok") || key.eq_ignore_ascii_case("play"))
+    })
+}
+
 fn validate_data(data: &Value, fields: &Value) -> Result<()> {
     let data = data.as_object().context("data 必须是 JSON 对象")?;
     for (key, value) in data {
@@ -555,8 +584,30 @@ async fn control_entity(conn: &mut Connection, args: &Value, states: &[Value]) -
     let service = supported
         .get(command)
         .context("该实体不支持此命令，请查询 ha_commands")?;
-    let data = args.get("data").cloned().unwrap_or_else(|| json!({}));
+    let mut data = args.get("data").cloned().unwrap_or_else(|| json!({}));
     validate_data(&data, &service["fields"])?;
+    if command == "remote.send_command" && id.starts_with("remote.") {
+        let key = &data["command"];
+        let keys = key
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(std::slice::from_ref(key));
+        if keys.iter().any(is_xgimi_confirm_alias)
+            && is_xgimi_remote(
+                &args["entity_id"],
+                &conn.call("config/entity_registry/list", json!({})).await?,
+            )
+        {
+            let key = &mut data["command"];
+            let keys = match key {
+                Value::Array(keys) => keys.as_mut_slice(),
+                _ => std::slice::from_mut(key),
+            };
+            for key in keys.iter_mut().filter(|key| is_xgimi_confirm_alias(key)) {
+                *key = json!("ok");
+            }
+        }
+    }
     let (domain, name) = command.split_once('.').unwrap();
     let mut params =
         json!({"domain":domain,"service":name,"target":{"entity_id":id},"service_data":data});
@@ -719,7 +770,8 @@ mod tests {
     fn services() -> Value {
         json!({
             "light":{"turn_on":{"target":{"entity":{"domain":"light"}},"fields":{"brightness_pct":{"selector":{"number":{"min":0,"max":100}},"filter":{"attribute":{"supported_color_modes":["brightness","hs"]}}},"rgb_color":{"filter":{"attribute":{"supported_color_modes":["rgb"]}}}}},"turn_off":{"target":{},"fields":{}}},
-            "media_player":{"volume_set":{"target":{"entity":{"domain":"media_player","supported_features":[4]}},"fields":{"volume_level":{"required":true,"selector":{"number":{"min":0,"max":1}}}}},"media_play":{"target":{"entity":{"supported_features":[16384]}},"fields":{}},"toggle":{"target":{"entity":{"supported_features":[[128,256]]}},"fields":{}}},
+            "media_player":{"volume_set":{"target":{"entity":{"domain":"media_player","supported_features":[4]}},"fields":{"volume_level":{"required":true,"selector":{"number":{"min":0,"max":1}}}}},"media_play":{"target":{"entity":{"supported_features":[16384]}},"fields":{}},"media_pause":{"target":{"entity":{"supported_features":[1]}},"fields":{}},"toggle":{"target":{"entity":{"supported_features":[[128,256]]}},"fields":{}}},
+            "remote":{"send_command":{"target":{},"fields":{"command":{"required":true,"example":"Play"}}}},
             "custom":{"set_level":{"target":{"entity":{"domain":"light"}},"fields":{"level":{"required":true}},"response":{"optional":false}}},
             "homeassistant":{"restart":{"fields":{}}}
         })
@@ -763,7 +815,7 @@ mod tests {
                                     false,
                                 ),
                                 "config/entity_registry/list" => (
-                                    json!([{"entity_id":"light.living","device_id":"d1"},{"entity_id":"sensor.temperature","device_id":"d1","area_id":"bedroom"}]),
+                                    json!([{"entity_id":"light.living","device_id":"d1"},{"entity_id":"sensor.temperature","device_id":"d1","area_id":"bedroom"},{"entity_id":"remote.projector","platform":"xgimi"},{"entity_id":"remote.other","platform":"other"}]),
                                     false,
                                     false,
                                 ),
@@ -855,6 +907,82 @@ mod tests {
         h.abort();
         Ok(())
     }
+    #[tokio::test]
+    async fn projector_play_example_and_command_use_the_remote_confirm_key() -> Result<()> {
+        let mut fake = fixture();
+        fake.states.as_array_mut().unwrap().extend([
+            json!({"entity_id":"remote.projector","state":"on","attributes":{}}),
+            json!({"entity_id":"remote.other","state":"on","attributes":{}}),
+            json!({"entity_id":"media_player.xgimi_control","state":"on","attributes":{"supported_features":16385}}),
+        ]);
+        let (client, state, handle) = server(fake).await;
+        let available = client
+            .run(
+                "ha_commands",
+                json!({"entity_id":"media_player.xgimi_control"}),
+            )
+            .await?;
+        for service in ["media_play", "media_pause"] {
+            let command = format!("media_player.{service}");
+            assert!(available["entities"][0]["commands"].get(&command).is_some());
+            client
+                .run(
+                    "ha_control",
+                    json!({
+                        "entity_id":"media_player.xgimi_control", "command":command
+                    }),
+                )
+                .await?;
+            let state = state.lock().unwrap();
+            let call = state
+                .calls
+                .iter()
+                .rev()
+                .find(|v| v["type"] == "call_service")
+                .unwrap();
+            assert_eq!(call["domain"], "media_player");
+            assert_eq!(call["service"], service);
+            assert_eq!(call["service_data"], json!({}));
+        }
+        for (entity, example, input, sent) in [
+            (
+                "remote.projector",
+                json!(["ok"]),
+                json!("Play"),
+                json!("ok"),
+            ),
+            (
+                "remote.projector",
+                json!(["ok"]),
+                json!(["right", "OK"]),
+                json!(["right", "ok"]),
+            ),
+            ("remote.other", json!("Play"), json!("Play"), json!("Play")),
+        ] {
+            let commands = client
+                .run("ha_commands", json!({"entity_id":entity}))
+                .await?;
+            assert_eq!(
+                commands["entities"][0]["commands"]["remote.send_command"]["fields"]["command"]["example"],
+                example
+            );
+            client.run("ha_control", json!({
+                "entity_id":entity, "command":"remote.send_command", "data":{"command":input}
+            })).await?;
+            let state = state.lock().unwrap();
+            let call = state
+                .calls
+                .iter()
+                .rev()
+                .find(|v| v["type"] == "call_service")
+                .unwrap();
+            assert_eq!(call["target"]["entity_id"], entity);
+            assert_eq!(call["service_data"]["command"], sent);
+        }
+        handle.abort();
+        Ok(())
+    }
+
     #[tokio::test]
     async fn unknown_feedback_allows_a_supported_control() -> Result<()> {
         let mut fake = fixture();

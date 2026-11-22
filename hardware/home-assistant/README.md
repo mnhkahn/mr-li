@@ -65,7 +65,7 @@ python3 -m unittest discover -s hardware/home-assistant/tests -v
 ## Mr-li 统一控制
 
 在 XGIMI Apps 的配置选项中关联已有 `remote` 实体和 ESP32 蓝牙开机 `script`，
-集成会提供“统一控制”媒体播放器实体。开机、应用、关机、音量加减统一暴露为标准
+集成会提供“统一控制”媒体播放器实体。开机、应用、播放、暂停、关机、音量加减统一暴露为标准
 `media_player` 操作；只声明已经接好的能力，不声明不支持的绝对音量设置。
 
 | 操作 | HA 命令 | 实际路径 |
@@ -74,6 +74,9 @@ python3 -m unittest discover -s hardware/home-assistant/tests -v
 | 打开应用 | `media_player.select_source`，`source` 为 APP 标签或包名 | 投影局域网应用接口 |
 | 关机 | `media_player.turn_off` | 已有 Wi-Fi 遥控器 |
 | 音量增加/减小 | `media_player.volume_up` / `media_player.volume_down` | 已有 Wi-Fi 遥控器 |
+| 开始播放当前选中的节目 | `media_player.media_play` | HA 固定向 Wi-Fi 遥控器发送一次 `ok` |
+| 暂停当前播放 | `media_player.media_pause` | HA 固定向 Wi-Fi 遥控器发送一次 `ok` |
+| 确认当前选项 | 极米 `remote` 实体的 `remote.send_command`，参数 `command: ["ok"]` | 已有 Wi-Fi 遥控器的确认键 |
 
 Mr-li 保留原来的 `ha_devices`、`ha_commands`、`ha_control` 三个工具：动态发现统一实体、
 读取它的 `source_list` / `apps` 和可用命令，再通过 `ha_control` 调用。无需替换 Mr-li
@@ -90,6 +93,8 @@ Mr-li 保留原来的 `ha_devices`、`ha_commands`、`ha_control` 三个工具�
 遥控器的 RTSP 554 端口关闭时误判关机。选择应用只记录“最后请求”，不冒充前台状态；
 音量支持加减，无法读取当前音量或按百分比精确设置。Mr-li 的 accepted/即时回读也不能
 代替画面或声音的现场确认。
+
+播放和暂停服务各发一次遥控器确认键，作用由投影仪当前焦点和播放状态决定。HA 无法从此接口回读真实的媒体播放状态，重复调用会再次按键。
 
 路由及关机可唤醒回归测试需使用安装了 Home Assistant 的 Python：
 

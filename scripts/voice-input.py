@@ -221,8 +221,9 @@ def esp32_audio(config_path, recognizer, np, check):
         print(f"PASS: ESP32 唤醒词“{state['wake_word']}”，状态 {state['state']}")
         return
     emit("ready", wake_word=state["wake_word"])
-    announced = (state["boot_id"], state["wake_count"])
+    announced = (state["boot_id"], 0)
     last = announced
+    capturing = False
     while True:
         try:
             state = status()
@@ -237,9 +238,13 @@ def esp32_audio(config_path, recognizer, np, check):
                     try:
                         with request_device("/api/voice/listen", {"boot_id": pending[0], "wake": pending[1]}):
                             pass
+                        capturing = True
+                        continue  # Poll fresh state after acknowledging this wake.
                     except urllib.error.HTTPError as error:
                         if error.code != 409:  # The wake can expire during playback.
                             raise
+                capturing = False
+                emit("capture_end")
             wake = (state["boot_id"], state["recording_wake"])
             if wake[1] and wake == announced and wake != last:
                 with request_device("/api/voice/recording.wav") as response:
@@ -260,9 +265,13 @@ def esp32_audio(config_path, recognizer, np, check):
                         recognizer.decode_stream(stream)
                         text = stream.result.text.strip()
                         if any(character.isalnum() for character in text):
+                            capturing = False
                             emit("text", text=text)
                             if not sys.stdin.readline(4096):
                                 return
+            if capturing and state["state"] == "listening" and not state["pending_wake"]:
+                capturing = False
+                emit("capture_end")
         except urllib.error.HTTPError:
             raise
         except (urllib.error.URLError, TimeoutError, socket.gaierror):

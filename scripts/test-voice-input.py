@@ -66,6 +66,30 @@ class CaptureTest(unittest.TestCase):
         self.assertEqual(json.loads(requests[3][1]), {"boot_id": 7, "wake": 5})
         self.assertEqual([call.args for call in emit.call_args_list], [("ready",), ("wake",), ("text",)])
 
+    def test_esp32_reports_empty_capture_even_when_wake_was_pending_at_startup(self):
+        pending = dict(state="awaiting_host", wake_word="小李", boot_id=7, wake_count=5,
+                       pending_wake=5, recording_wake=0)
+        recording = dict(pending, state="recording", pending_wake=0)
+        finished = dict(recording, state="listening")
+        states = iter((pending, pending, recording, finished))
+
+        def open_device(request, **_):
+            if request.full_url.endswith("/status"):
+                return io.BytesIO(json.dumps(next(states)).encode())
+            self.assertTrue(request.full_url.endswith("/listen"))
+            return io.BytesIO()
+
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "esp32.json"
+            config.write_text(json.dumps({"base_url": "http://192.0.2.1", "api_token": "fixture"}))
+            with patch.object(voice.urllib.request, "build_opener", return_value=NS(open=open_device)), \
+                 patch.object(voice, "emit") as emit, patch.object(voice.time, "sleep"), \
+                 patch.object(voice.sys, "stdin", io.StringIO('{"listen":true}\n')):
+                with self.assertRaises(StopIteration):
+                    voice.esp32_audio(config, None, None, check=False)
+        self.assertEqual([call.args for call in emit.call_args_list],
+                         [("ready",), ("wake",), ("capture_end",)])
+
     def test_mac_selects_private_bundled_audio_library_before_global_library(self):
         with tempfile.TemporaryDirectory() as temporary:
             package=Path(temporary)

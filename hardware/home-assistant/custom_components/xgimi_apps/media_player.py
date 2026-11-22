@@ -27,7 +27,10 @@ class ProjectorControl(CoordinatorEntity, MediaPlayerEntity):
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, entry.unique_id)}, name=entry.title, manufacturer='XGIMI')
         features = MediaPlayerEntityFeature.SELECT_SOURCE
         if self.remote:
-            features |= MediaPlayerEntityFeature.TURN_OFF | MediaPlayerEntityFeature.VOLUME_STEP
+            features |= (
+                MediaPlayerEntityFeature.TURN_OFF | MediaPlayerEntityFeature.VOLUME_STEP
+                | MediaPlayerEntityFeature.PLAY | MediaPlayerEntityFeature.PAUSE
+            )
         if self.wake_script:
             features |= MediaPlayerEntityFeature.TURN_ON
         self._attr_supported_features = features
@@ -75,6 +78,13 @@ class ProjectorControl(CoordinatorEntity, MediaPlayerEntity):
 
     async def async_turn_off(self):
         await self.remote_call('turn_off')
+
+    async def async_media_play(self):
+        await self.remote_call('send_command', command=['ok'])
+
+    async def async_media_pause(self):
+        # The LAN remote exposes the same confirm key for playback and pause.
+        await self.async_media_play()
 
     async def async_volume_up(self):
         await self.remote_call('send_command', command=['volumeup'])

@@ -324,7 +324,9 @@ sudo ./scripts/service.sh uninstall system
 |---|---|
 | `/music play`、`/music pause` | 开始或恢复播放、暂停 |
 | `/music artist <歌手>`、`/music random` | 从资料库点播该歌手的一首歌，或随机播一首。语音可说「播放一首周杰伦的歌」或「给我唱首歌」 |
-| `/music next`、`/music prev` | 下一首、上一首 |
+| `/music playlist <歌单名>`、`/music playlists` | 顺序播放本地歌单、列出本地歌单。可直接说「播放我的最爱歌单」 |
+| `/music album <专辑名>` | 按碟号和曲号播放本地专辑。可说「播放范特西专辑」，同名时用 `/music album <歌手> / <专辑名>` |
+| `/music next`、`/music prev` | 在当前歌单或专辑内切换，或在本地歌曲间切换 |
 | `/music status` | 查看 Music.app 的播放状态 |
 | `/music list [页码]`、`/music find <关键词>` | 查看 Music.app 资料库，每页 15 首，结果附歌曲 ID |
 | `/music play <歌曲ID>` | 点播资料库歌曲 |
@@ -332,6 +334,8 @@ sudo ./scripts/service.sh uninstall system
 | `/music open <Apple Music 歌曲链接>` | 让 Mac mini 的音乐 App 打开歌曲页，可在页面点击播放 |
 
 配置 `MR_LI_MUSIC_MEDIA_DIR` 为本地音乐根目录（例如 iTunes 的 `iTunes Media/Music`）后，使用系统 `afplay` 播放本地文件，适用于锁屏和没有显示器的 Mac mini。按歌手点歌从根目录下的歌手目录匹配，`/music play 晴天` 可按歌曲名点播。在线搜索仍返回 Apple 的目录链接。仅在线可用或需要 DRM 解密的歌曲无法走本地播放。
+
+歌单存放在 `MR_LI_DATA_DIR/music-playlists/` 下，默认是 `.data/music-playlists/`。创建 UTF-8 格式的 `歌单名.m3u8` 或 `歌单名.m3u`，每行写一首本地歌曲。路径可以是相对于音乐根目录的路径，或指向音乐根目录内的绝对路径。按文件顺序播放，自动跳过不可用路径并在歌单结束时停止。Apple Music「喜爱歌曲」的本地副本可命名为 `我的最爱.m3u8`。
 
 使用音乐 App 模式时，Apple Music 订阅曲目通过 Mac mini 的音乐 App 播放，使用 App 中已登录的 Apple 账户。播放和资料库操作需要 macOS 桌面会话及“自动化”权限。使用后台开机模式时，如遇 AppleEvent 超时，可在桌面会话运行本地命令检查授权。上面的登录型 LaunchAgent 会在桌面会话运行桥接。在线搜索无需登录和开发者密钥，默认搜索香港区，使用 `MR_LI_MUSIC_STOREFRONT` 可指定其他地区（如 `TW` 或 `US`）。公开接口的结果取决于地区和 Apple 提供的索引。订阅歌曲加入资料库后可按 ID 点播。飞书与语音 Agent 也可通过 `teacher_music` 使用这些操作。
 

@@ -1,4 +1,7 @@
+mod album;
 mod local;
+mod playlist;
+pub use playlist::worker as playlist_worker;
 
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{Client, Url};
@@ -23,7 +26,7 @@ pub fn local_setting(key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.into())
 }
 
-const USAGE: &str = "/music status 查看播放状态\n/music play [歌曲名或资料库ID] 开始或恢复播放，也可点播\n/music artist <歌手> 随机播放资料库中这位歌手的一首歌\n/music random 随机播放资料库中的一首歌\n/music pause 暂停\n/music next 下一首\n/music prev 上一首\n/music search <关键词> 在线搜歌\n/music list [页码] 列出资料库歌曲（每页 15 首）\n/music find <关键词> 搜索资料库\n/music open <Apple Music 歌曲链接> 在音乐 App 打开歌曲页";
+const USAGE: &str = "/music status 查看播放状态\n/music play [歌曲名或资料库ID] 开始或恢复播放，也可点播\n/music artist <歌手> 随机播放资料库中这位歌手的一首歌\n/music random 随机播放资料库中的一首歌\n/music playlists 列出本地歌单\n/music playlist <名称> 按顺序连续播放本地歌单\n/music album <专辑名> 按曲序播放本地专辑\n/music pause 暂停\n/music next 下一首\n/music prev 上一首\n/music search <关键词> 在线搜歌\n/music list [页码] 列出资料库歌曲（每页 15 首）\n/music find <关键词> 搜索资料库\n/music open <Apple Music 歌曲链接> 在音乐 App 打开歌曲页";
 
 pub fn voice_command(text: &str) -> Option<String> {
     let text = text
@@ -41,6 +44,45 @@ pub fn voice_command(text: &str) -> Option<String> {
             | "随机播放一首歌"
     ) {
         return Some("random".into());
+    }
+    match text {
+        "下一首" | "下一首歌" | "切到下一首" => return Some("next".into()),
+        "上一首" | "上一首歌" | "切到上一首" => return Some("prev".into()),
+        _ => {}
+    }
+    if let Some(name) = ["给我播放", "帮我播放", "播放", "给我放", "放"]
+        .into_iter()
+        .find_map(|prefix| text.strip_prefix(prefix))
+    {
+        if let Some(album) = name
+            .strip_suffix("专辑")
+            .or_else(|| name.strip_prefix("专辑"))
+            .map(|album| {
+                album
+                    .trim()
+                    .trim_matches(['《', '》', '「', '」', '“', '”'])
+            })
+            .filter(|album| {
+                !album.is_empty()
+                    && album.chars().count() <= 100
+                    && !album.chars().any(char::is_control)
+            })
+        {
+            return Some(format!("album {album}"));
+        }
+        let name = if matches!(
+            name,
+            "我的最爱" | "我的最愛" | "我的最爱歌曲" | "最爱歌曲" | "喜爱歌曲" | "喜愛歌曲"
+        ) {
+            name
+        } else {
+            name.strip_suffix("歌单").unwrap_or("")
+        }
+        .trim()
+        .trim_matches(['《', '》', '「', '」', '“', '”']);
+        if !name.is_empty() && name.chars().count() <= 100 && !name.chars().any(char::is_control) {
+            return Some(format!("playlist {name}"));
+        }
     }
     let artist = ["播放一首", "放一首", "给我播放一首", "给我放一首"]
         .into_iter()
@@ -82,6 +124,16 @@ pub async fn command(args: &str, storefront: &str, media_dir: &str, data: &Path)
     };
     match action {
         "" | "help" if arg.is_empty() => Ok(USAGE.into()),
+        "playlists" | "playlist" | "album" => {
+            ensure!(!media_dir.is_empty(), "请先配置本地音乐目录");
+            ensure!(
+                (action == "playlists" && arg.is_empty())
+                    || (matches!(action, "playlist" | "album")
+                        && (1..=100).contains(&arg.chars().count())),
+                "用法：/music playlists、/music playlist <歌单名> 或 /music album <专辑名>"
+            );
+            player(action, arg).await
+        }
         "search" | "find" | "artist" => {
             ensure!(
                 (1..=200).contains(&arg.chars().count()),
@@ -256,6 +308,19 @@ mod tests {
         assert_eq!(
             voice_command("播放一首周杰伦的歌曲。").as_deref(),
             Some("artist 周杰伦")
+        );
+        assert_eq!(
+            voice_command("播放《我的最爱》歌单。").as_deref(),
+            Some("playlist 我的最爱")
+        );
+        assert_eq!(
+            voice_command("播放我的最爱歌曲").as_deref(),
+            Some("playlist 我的最爱歌曲")
+        );
+        assert_eq!(voice_command("下一首。").as_deref(), Some("next"));
+        assert_eq!(
+            voice_command("播放《范特西》专辑。").as_deref(),
+            Some("album 范特西")
         );
         for text in ["暂停视频播放", "给我唱首歌然后暂停视频", "播放一首的歌"]
         {

@@ -38,6 +38,10 @@ async fn main() -> Result<()> {
         println!("{}", proxy::command(&args).await?);
         return Ok(());
     }
+    if mode == "music-playlist-worker" {
+        let spec = std::env::args().nth(2).context("缺少本地歌单播放文件")?;
+        return music::playlist_worker(std::path::Path::new(&spec));
+    }
     if mode == "music" {
         let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
         let storefront = music::local_setting(music::STOREFRONT_KEY, music::DEFAULT_STOREFRONT);

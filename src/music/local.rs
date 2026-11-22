@@ -1,4 +1,5 @@
 //! Play downloaded songs via the per-user launchd domain, including when the screen is locked.
+use super::{album, playlist};
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use rand::seq::IndexedRandom;
@@ -27,6 +28,50 @@ pub fn command(action: &str, arg: &str, root: &Path, data: &Path) -> Result<Stri
     lock.lock_exclusive()?;
 
     let current = fs::read_to_string(&state).ok().map(PathBuf::from);
+    if matches!(action, "status" | "pause" | "next" | "prev")
+        || (action == "play" && arg.is_empty())
+    {
+        if let Some(result) = playlist::request(data, action)? {
+            return Ok(result);
+        }
+    }
+    if action == "playlists" {
+        return playlist::names(data);
+    }
+    if matches!(action, "playlist" | "album") {
+        let (queue, skipped) = if action == "playlist" {
+            playlist::load(arg, &root, data)?
+        } else {
+            let mut songs = Vec::new();
+            find_files(&root, &mut songs)?;
+            (album::load(arg, &root, songs)?, 0)
+        };
+        let worker = std::env::current_exe()?;
+        let spec = data.canonicalize()?.join("music-playlist.json");
+        stop_job(data)?;
+        fs::write(&spec, serde_json::to_vec(&queue)?)?;
+        bootstrap(
+            &state,
+            &[
+                worker.to_str().context("无法读取程序路径")?,
+                "music-playlist-worker",
+                spec.to_str().context("无法读取歌单播放器路径")?,
+            ],
+        )?;
+        for _ in 0..25 {
+            if let Some(result) = playlist::request(data, "status")? {
+                return Ok(if skipped == 0 {
+                    result
+                } else {
+                    format!("{result}（跳过 {skipped} 首不可用歌曲）")
+                });
+            }
+            std::thread::sleep(Duration::from_millis(80));
+        }
+        stop_job(data)?;
+        bail!("本地歌单播放器启动超时");
+    }
+
     match action {
         "status" => return status(&root, current.as_deref()),
         "pause" => {
@@ -121,21 +166,22 @@ fn find_files(dir: &Path, songs: &mut Vec<PathBuf>) -> Result<()> {
         }
         if kind.is_dir() {
             find_files(&path, songs)?;
-        } else if kind.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "mp3" | "m4a" | "aac" | "wav" | "aif" | "aiff" | "flac" | "caf"
-                    )
-                })
-        {
+        } else if kind.is_file() && audio_file(&path) {
             songs.push(path);
         }
     }
     Ok(())
+}
+
+pub fn audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "mp3" | "m4a" | "aac" | "wav" | "aif" | "aiff" | "flac" | "caf"
+            )
+        })
 }
 
 fn key(text: &str) -> String {
@@ -160,7 +206,7 @@ fn title(path: &Path) -> String {
     }
 }
 
-fn label(root: &Path, path: &Path) -> String {
+pub fn label(root: &Path, path: &Path) -> String {
     let title = crate::commands::preview(&title(path), 120);
     let artist = crate::commands::preview(&artist(root, path), 100);
     if artist.is_empty() {
@@ -224,30 +270,40 @@ fn status(root: &Path, current: Option<&Path>) -> Result<String> {
     })
 }
 
-fn play(path: &Path, state: &Path) -> Result<()> {
-    let track = path.to_str().context("歌曲文件名无法读取")?;
+fn stop_job(data: &Path) -> Result<()> {
+    let _ = playlist::request(data, "stop");
+    if pid()?.is_some() {
+        // A paused afplay cannot handle the usual termination signal until resumed.
+        control("kill", &["SIGKILL"])?;
+    }
+    control("bootout", &[])?;
+    playlist::remove_socket(data)
+}
+
+fn bootstrap(state: &Path, args: &[&str]) -> Result<()> {
     let plist = state.with_extension("plist");
-    let escaped = track
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
+    let args = args
+        .iter()
+        .map(|arg| {
+            let escaped = arg
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            format!("<string>{escaped}</string>")
+        })
+        .collect::<String>();
     let contents = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0">
 <dict>
   <key>Label</key><string>{JOB}</string>
-  <key>ProgramArguments</key><array><string>/usr/bin/afplay</string><string>{escaped}</string></array>
+  <key>ProgramArguments</key><array>{args}</array>
   <key>LimitLoadToSessionType</key><string>Background</string>
   <key>RunAtLoad</key><true/>
 </dict>
 </plist>
 "#
     );
-    if pid()?.is_some() {
-        // A paused afplay cannot handle the usual termination signal until resumed.
-        control("kill", &["SIGKILL"])?;
-    }
-    control("bootout", &[])?;
     fs::write(&plist, contents)?;
     let out = launchctl()
         .arg("bootstrap")
@@ -259,6 +315,13 @@ fn play(path: &Path, state: &Path) -> Result<()> {
         "无法启动命令行播放器：{}",
         String::from_utf8_lossy(&out.stderr).trim()
     );
+    Ok(())
+}
+
+fn play(path: &Path, state: &Path) -> Result<()> {
+    let track = path.to_str().context("歌曲文件名无法读取")?;
+    stop_job(state.parent().context("音乐数据目录无效")?)?;
+    bootstrap(state, &["/usr/bin/afplay", track])?;
     std::thread::sleep(Duration::from_millis(500));
     ensure!(pid()?.is_some(), "播放器未能打开该歌曲文件");
     let temp = state.with_extension("tmp");

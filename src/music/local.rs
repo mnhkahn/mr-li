@@ -44,7 +44,10 @@ pub fn command(action: &str, arg: &str, root: &Path, data: &Path) -> Result<Stri
         } else {
             let mut songs = Vec::new();
             find_files(&root, &mut songs)?;
-            (album::load(arg, &root, songs)?, 0)
+            (
+                album::load(arg, &root, songs, &album::read_aliases(data)?)?,
+                0,
+            )
         };
         let worker = std::env::current_exe()?;
         let spec = data.canonicalize()?.join("music-playlist.json");

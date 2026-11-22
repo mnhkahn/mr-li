@@ -1,12 +1,29 @@
 //! Find albums in the local artist/album directory layout.
 use super::playlist::Queue;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::{
     collections::BTreeMap,
+    fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
-pub fn load(query: &str, root: &Path, files: Vec<PathBuf>) -> Result<Queue> {
+pub const ALIASES: &str = "music-album-aliases.json";
+
+pub fn read_aliases(data: &Path) -> Result<BTreeMap<String, String>> {
+    match fs::read(data.join(ALIASES)) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("本地专辑别名文件格式错误"),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(error).context("无法读取本地专辑别名文件"),
+    }
+}
+
+pub fn load(
+    query: &str,
+    root: &Path,
+    files: Vec<PathBuf>,
+    aliases: &BTreeMap<String, String>,
+) -> Result<Queue> {
     let mut albums: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for path in files {
         let Some(relative) = path.strip_prefix(root).ok().and_then(Path::parent) else {
@@ -29,13 +46,20 @@ pub fn load(query: &str, root: &Path, files: Vec<PathBuf>) -> Result<Queue> {
     let query = query.trim();
     let mut candidates = select(&albums, query, "");
     if candidates.is_empty()
+        && let Some(target) = aliases.get(query)
+    {
+        candidates = select(&albums, target, "");
+    }
+    if candidates.is_empty()
         && let Some((artist, title)) = query.split_once('/').or_else(|| query.split_once('的'))
     {
-        candidates = select(
-            &albums,
-            title.trim().trim_matches(['《', '》']),
-            artist.trim(),
-        );
+        let title = title.trim().trim_matches(['《', '》', '「', '」']);
+        candidates = select(&albums, title, artist.trim());
+        if candidates.is_empty()
+            && let Some(target) = aliases.get(title)
+        {
+            candidates = select(&albums, target, artist.trim());
+        }
     }
     match candidates.as_slice() {
         [key] => {
@@ -142,8 +166,9 @@ mod tests {
             "歌手甲/同名/2 Opening.m4a",
         ];
         let files = || paths.iter().map(|path| root.join(path)).collect();
-        assert!(load("同名", root, files()).is_err());
-        let queue = load("歌手甲 / 同名", root, files())?;
+        assert!(load("同名", root, files(), &BTreeMap::new()).is_err());
+        let aliases = BTreeMap::from([("中文别名".into(), "同名".into())]);
+        let queue = load("歌手甲 / 中文别名", root, files(), &aliases)?;
         assert_eq!(
             queue.tracks,
             [

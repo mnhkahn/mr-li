@@ -54,21 +54,31 @@ pub fn voice_command(text: &str) -> Option<String> {
         .into_iter()
         .find_map(|prefix| text.strip_prefix(prefix))
     {
-        if let Some(album) = name
-            .strip_suffix("专辑")
-            .or_else(|| name.strip_prefix("专辑"))
-            .map(|album| {
-                album
-                    .trim()
-                    .trim_matches(['《', '》', '「', '」', '“', '”'])
-            })
-            .filter(|album| {
-                !album.is_empty()
-                    && album.chars().count() <= 100
-                    && !album.chars().any(char::is_control)
-            })
+        let (artist, album) = if let Some((artist, title)) = name.split_once("的专辑")
+            && !title.trim().is_empty()
         {
-            return Some(format!("album {album}"));
+            (artist.trim(), title)
+        } else {
+            (
+                "",
+                name.strip_suffix("专辑")
+                    .or_else(|| name.strip_prefix("专辑"))
+                    .unwrap_or(""),
+            )
+        };
+        let album = album
+            .trim()
+            .trim_matches(['《', '》', '「', '」', '“', '”'])
+            .trim();
+        if !album.is_empty() {
+            let query = if artist.is_empty() {
+                album.to_owned()
+            } else {
+                format!("{artist} / {album}")
+            };
+            if query.chars().count() <= 100 && !query.chars().any(char::is_control) {
+                return Some(format!("album {query}"));
+            }
         }
         let name = if matches!(
             name,
@@ -321,6 +331,14 @@ mod tests {
         assert_eq!(
             voice_command("播放《范特西》专辑。").as_deref(),
             Some("album 范特西")
+        );
+        assert_eq!(
+            voice_command("播放周杰伦的专辑叶惠美。").as_deref(),
+            Some("album 周杰伦 / 叶惠美")
+        );
+        assert_eq!(
+            voice_command("放专辑叶惠美。").as_deref(),
+            Some("album 叶惠美")
         );
         for text in ["暂停视频播放", "给我唱首歌然后暂停视频", "播放一首的歌"]
         {

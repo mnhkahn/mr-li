@@ -22,8 +22,11 @@ static std::string Read(const std::string &path) {
 
 int main(int argc, char **argv) {
   try {
-    if (argc != 6 && argc != 7) throw std::runtime_error("本地音色参数不完整");
+    if (argc != 6) throw std::runtime_error("本地音色参数不完整");
     const std::string root = argv[1], request = argv[2], output = argv[3];
+    const std::string mode = argv[5];
+    if (mode != "cache" && mode != "play" && mode != "play-locked")
+      throw std::runtime_error("本地音色模式无效");
     const int steps = std::stoi(argv[4]);
     if (steps < 1 || steps > 16) throw std::runtime_error("无效的生成步数");
     const auto text = Read(request);
@@ -63,7 +66,7 @@ int main(int argc, char **argv) {
     const auto finished = std::chrono::steady_clock::now();
     if (audio.samples.empty() || audio.sample_rate <= 0)
       throw std::runtime_error("本地克隆没有生成有效音频");
-    const auto partial = output + ".partial.wav";
+    const auto partial = output + "." + std::to_string(getpid()) + ".partial.wav";
     if (!WriteWave(partial, {audio.samples, audio.sample_rate}))
       throw std::runtime_error("本地克隆音频写入失败");
     if (std::rename(partial.c_str(), output.c_str()) != 0)
@@ -75,17 +78,13 @@ int main(int argc, char **argv) {
         std::chrono::duration<double>(finished - loaded).count(),
         static_cast<double>(audio.samples.size()) / audio.sample_rate,
         static_cast<double>(usage.ru_maxrss) / 1024 / 1024, steps);
-    if (std::string(argv[5]) == "play") {
-      if (argc == 7) {
-        const int synthesis = std::stoi(argv[6]);
-        if (synthesis < 3 || flock(synthesis, LOCK_UN) != 0)
-          throw std::runtime_error("无法释放音色合成锁");
-        close(synthesis);
-        // Keep this descriptor across exec so audio stays serialized until afplay exits.
-        const int playback = open((root + "/playback.lock").c_str(), O_CREAT | O_WRONLY, 0600);
-        if (playback < 0 || flock(playback, LOCK_EX) != 0)
-          throw std::runtime_error("无法取得音频播放锁");
-      }
+    if (mode == "play-locked") {
+      // Keep this descriptor across exec so audio stays serialized until afplay exits.
+      const int playback = open((root + "/playback.lock").c_str(), O_CREAT | O_WRONLY, 0600);
+      if (playback < 0 || flock(playback, LOCK_EX) != 0)
+        throw std::runtime_error("无法取得音频播放锁");
+    }
+    if (mode == "play" || mode == "play-locked") {
       execl("/usr/bin/afplay", "afplay", output.c_str(), static_cast<char *>(nullptr));
       throw std::runtime_error("无法启动本机音频播放");
     }

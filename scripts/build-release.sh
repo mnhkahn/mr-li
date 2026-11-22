@@ -52,6 +52,7 @@ cp scripts/speech_api.py scripts/speech-api.sh scripts/import-xiaoli-speech.py "
 cp scripts/local-voice.cc scripts/local-voice.py scripts/local-voice.sh scripts/build-local-voice.sh "$DEST/scripts/"
 cp README.md .env.example opencode.example.json "$DEST/"
 cp scripts/auto-deploy.py "$DEST/scripts/"
+cp scripts/github-release-broadcast.py "$DEST/scripts/"
 chmod +x "$DEST/bin/mr-li" "$DEST/scripts/"*.sh
 python3 scripts/auto-deploy.py manifest --package "$DEST" --source "$ROOT"
 COPYFILE_DISABLE=1 tar -czf "$ROOT/dist/mr-li-$PLATFORM.tar.gz" -C "$ROOT/dist" "mr-li-$PLATFORM"

@@ -3,12 +3,14 @@
 // /speak stop also cancels synthesis and releases the playback lock.
 #include <chrono>
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
 #include <sys/resource.h>
+#include <sys/file.h>
 #include <unistd.h>
 #include "sherpa-onnx/c-api/cxx-api.h"
 
@@ -20,7 +22,7 @@ static std::string Read(const std::string &path) {
 
 int main(int argc, char **argv) {
   try {
-    if (argc != 6) throw std::runtime_error("本地音色参数不完整");
+    if (argc != 6 && argc != 7) throw std::runtime_error("本地音色参数不完整");
     const std::string root = argv[1], request = argv[2], output = argv[3];
     const int steps = std::stoi(argv[4]);
     if (steps < 1 || steps > 16) throw std::runtime_error("无效的生成步数");
@@ -74,6 +76,16 @@ int main(int argc, char **argv) {
         static_cast<double>(audio.samples.size()) / audio.sample_rate,
         static_cast<double>(usage.ru_maxrss) / 1024 / 1024, steps);
     if (std::string(argv[5]) == "play") {
+      if (argc == 7) {
+        const int synthesis = std::stoi(argv[6]);
+        if (synthesis < 3 || flock(synthesis, LOCK_UN) != 0)
+          throw std::runtime_error("无法释放音色合成锁");
+        close(synthesis);
+        // Keep this descriptor across exec so audio stays serialized until afplay exits.
+        const int playback = open((root + "/playback.lock").c_str(), O_CREAT | O_WRONLY, 0600);
+        if (playback < 0 || flock(playback, LOCK_EX) != 0)
+          throw std::runtime_error("无法取得音频播放锁");
+      }
       execl("/usr/bin/afplay", "afplay", output.c_str(), static_cast<char *>(nullptr));
       throw std::runtime_error("无法启动本机音频播放");
     }

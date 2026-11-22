@@ -408,6 +408,22 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 状态与新闻稿保存在 `.data/news-broadcast/YYYY-MM-DD.json`。互斥锁防止并发，启动播放前持久化状态，成功后标记 `done`；`sending` 或 `uncertain` 状态不会自动重播。机器需开机且网络、声音设备可用，错过 08:30 不补播；正常重启后 crontab 保留。
 
+### GitHub 发布播报
+
+Mac mini 每 10 分钟检查已配置项目的 GitHub Actions 发布工作流，使用 `scripts/run.sh speak` 播放新完成的结果。首次检查每个工作流时建立基线。之后，每个 run ID 和尝试次数分别记账，播放失败会重试。每次检查最近 30 次运行。管理端以生产部署任务的结果为准。
+
+发布成功时播报版本标签和 Release 正文摘要。正文缺失时采用本次提交说明，分支部署播报短提交号。发布失败时播报失败的任务和步骤，日志有可识别错误时补充原因。
+
+发布脚本的 `WORKFLOWS` 列出监控项目和实际发布流程。私有仓库可以使用 GitHub 细粒度令牌，向选定仓库授予 Actions、Contents 和 Checks 的只读权限，将令牌保存在部署目录的 `.data/github-release-broadcast/token`，文件权限设为 `600`。
+
+```sh
+/usr/bin/python3 scripts/github-release-broadcast.py once
+/usr/bin/python3 scripts/github-release-broadcast.py install
+/usr/bin/python3 scripts/github-release-broadcast.py preview mi-clip 44996695578
+```
+
+`preview` 输出一条已有运行的播报文案。定时任务日志位于 `logs/github-release-broadcast.log`。删除 crontab 中标记为 `# MR-LI GITHUB RELEASE BROADCAST` 的一行即可停用。
+
 ## 飞书自然回复与常见交互
 
 普通问答直接发送简短自然文字。每次模型请求会说明飞书支持的呈现方式，复杂回复由 Agent 输出受限的 `feishu_reply: 1` 语义结构，桥接校验后生成飞书原生消息，不直接执行模型提供的卡片 JSON。完整协议和例子见 `resource/feishu-replies.txt`。

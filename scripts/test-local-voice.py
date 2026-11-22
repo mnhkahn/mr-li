@@ -75,6 +75,31 @@ class WorkerTest(unittest.TestCase):
         (self.root / "reference.wav").unlink()
         with self.assertRaisesRegex(ValueError,"参考音频"):self.invoke("你好")
 
+    def test_cached_voice_does_not_acquire_synthesis_lock(self):
+        def seed(program, args):
+            with wave.open(args[3], "wb") as output:
+                output.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                output.writeframes(b"\0\0" * 100)
+            raise ExecIntercept()
+
+        with patch.object(os, "execv", seed), self.assertRaises(ExecIntercept):
+            self.invoke("我在，请说。", ["--cache-only"])
+
+        (self.root / "bin/mr-li-local-voice.lock-v2").touch()
+        with (self.root / "synthesis.lock").open("a") as synthesis:
+            voice.fcntl.flock(synthesis, voice.fcntl.LOCK_EX)
+            original = voice.fcntl.flock
+
+            def check_playback_lock(lock, flags):
+                self.assertEqual(Path(lock.name), self.root / "playback.lock")
+                return original(lock, flags)
+
+            with patch.object(voice.fcntl, "flock", check_playback_lock), \
+                 patch.object(os, "execv", side_effect=ExecIntercept) as playback, \
+                 self.assertRaises(ExecIntercept):
+                self.invoke("我在，请说。")
+            self.assertEqual(playback.call_args.args[0], "/usr/bin/afplay")
+
 
 if __name__ == "__main__":
     unittest.main()

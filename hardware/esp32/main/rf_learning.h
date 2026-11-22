@@ -73,5 +73,6 @@ public:
     }
     CaptureProgress Progress() const { return progress_; }
 };
-CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<void(CaptureProgress)>& progress);
+CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<void(CaptureProgress)>& progress,
+                      bool raw_capture = false);
 }

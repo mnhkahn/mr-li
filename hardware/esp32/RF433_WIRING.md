@@ -1,5 +1,16 @@
 # 这块 S3 的逐线接法
 
+当前按用户最新要求**先接收端测试**，使用新照片 IMG_5305 的
+[接收端最简三线接法](RF433_RX_FIRST.md)。发射板暂不接；麦克风及现有供电轨
+保留，旧线不必全部拆除。后续发射端接法见 [RF433_TX_FIRST.md](RF433_TX_FIRST.md)。
+
+最新实物为 GOOUUU ESP32-S3-CAM V1.5。按照片复用原有线材、面包板行号的步骤见
+[当前实物改线表](RF433_REWIRE_PHOTO.md)：GPIO47 对应右侧第26行灰桥，GPIO21 对应
+第27行橙桥；原右侧红色供电轨是3.3V。
+
+**麦克风保留，电源、地、L/R和GPIO1/2/42信号线原样不动；仅拆屏幕、功放及其
+专用线路。** 射频21/47与麦克风不冲突。当前固件未启用录音，后续可在同一接线上扩展。
+
 固件固定配置：**TX GPIO21，RX GPIO47**。依据 `../xiaoli/docs/flash-guide.md` 和
 `../xiaoli/xiaozhi-esp32/main/boards/bread-compact-wifi-s3cam/config.h`：旧相机用了
 GPIO4/5；21/47 分别是旧屏幕 RST/DC。独立固件没有屏幕、相机和音频驱动。

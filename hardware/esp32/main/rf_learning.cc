@@ -9,7 +9,8 @@
 #include <soc/soc_caps.h>
 
 namespace curtain {
-CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<void(CaptureProgress)>& progress) {
+CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<void(CaptureProgress)>& progress,
+                      bool raw_capture) {
 #if !SOC_RMT_SUPPORT_DMA
     return {{}, {}, "RF learning requires ESP32-S3 DMA; import verified waveforms on C3"};
 #else
@@ -53,11 +54,16 @@ CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<voi
     receive.signal_range_max_ns = 30000000;
     const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(seconds) * 1000000;
     FrameLearner learner;
+    std::vector<int> raw;
+    size_t raw_score = 0;
     while (esp_timer_get_time() < deadline) {
         RF_CHECK(rmt_receive(resources.channel, resources.buffer, kSymbols * sizeof(rmt_symbol_word_t), &receive), "Start RF capture");
         rmt_rx_done_event_data_t event;
         while (xQueueReceive(resources.queue, &event, pdMS_TO_TICKS(100)) != pdTRUE) {
-            if (esp_timer_get_time() >= deadline) return {{}, learner.Progress(), "Learning timed out; press the SAME button three separate times, pausing 1 second between presses"};
+            if (esp_timer_get_time() >= deadline) {
+                if (raw_capture) return {std::move(raw), {}, {}};
+                return {{}, learner.Progress(), "Learning timed out; press the SAME button three separate times, pausing 1 second between presses"};
+            }
         }
         std::vector<int> pulses;
         pulses.reserve(event.num_symbols * 2);
@@ -65,6 +71,16 @@ CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<voi
             const auto& symbol = event.received_symbols[i];
             if (symbol.duration0) pulses.push_back(symbol.level0 ? static_cast<int>(symbol.duration0) : -static_cast<int>(symbol.duration0));
             if (symbol.duration1) pulses.push_back(symbol.level1 ? static_cast<int>(symbol.duration1) : -static_cast<int>(symbol.duration1));
+        }
+        if (raw_capture) {
+            // Bound the USB reply and keep the block with the most transitions.
+            constexpr size_t max_pulses = 500;
+            if (pulses.size() > raw_score) {
+                raw_score = pulses.size();
+                if (pulses.size() > max_pulses) pulses.resize(max_pulses);
+                raw = std::move(pulses);
+            }
+            continue;
         }
         const int64_t now = esp_timer_get_time();
         std::vector<int64_t> ends;
@@ -76,6 +92,7 @@ CaptureResult LearnRf(int gpio, int seconds, int gap_us, const std::function<voi
         }
         progress(learner.Progress());
     }
+    if (raw_capture) return {std::move(raw), {}, {}};
     return {{}, learner.Progress(), "No stable repeated RF frame found; check wiring, modulation and rolling-code behavior"};
 #undef RF_CHECK
 #endif

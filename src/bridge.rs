@@ -508,11 +508,11 @@ impl Bridge {
                         ensure!(self.cfg.pose_model.is_file() && self.cfg.pose_detector.as_ref().is_none_or(|p|p.is_file()) && std::path::Path::new(&self.cfg.pose_bin).is_file(),"请先安装人体检测/姿态模型和程序");
                         let seconds=words.get(1).map(|s|s.parse::<u64>()).transpose()?.unwrap_or(60);
                         self.store.start_posture_watch(j,seconds)?;
-                        Ok(format!("已启用每日北京时间 17:00–21:30 每 {seconds} 秒检查，仅低头或歪头时在 Mac mini 播报，其余静音。21:30 停止检查，次日 17:00 自动恢复；飞书每 10 分钟图文汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
+                        Ok(format!("已启用作业联动。平板作业开始计时后每 {seconds} 秒检查，计时停止后结束。仅低头或歪头时在 Mac mini 播报，飞书每 10 分钟图文汇总。\n/posture status 查看最近结果\n/posture stop 停止\n/posture 查看单次关键点图片"))
                     }
                     ["stop"] => {self.store.stop_posture_watch(&models::scope(&j.key)?)?;crate::posture::clear_frames(&self.cfg,&j.key)?;Ok("已停止此聊天的定时姿态试验。".into())}
                     ["status"] => self.store.posture_watch_status(&models::scope(&j.key)?),
-                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 每日 17:00–21:30 检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止".into()),
+                    _=>Ok("/posture 单次关键点试验\n/posture start [间隔秒数] 平板作业计时期间检查，默认 60 秒，仅异常播报\n/posture status 最近结果\n/posture stop 停止".into()),
                 }
             }
             "/status" => {
@@ -962,6 +962,9 @@ impl Bridge {
             self.store
                 .finish_output(&j.id, "posture_report", &payload)?;
         }
+        if payload["capture_tablet"] == false || !self.store.homework_active() {
+            payload["tablet_done"] = json!(true);
+        }
         if payload["tablet_done"] != true {
             let capture = match &self.tablet {
                 Some(tablet) => tablet.report_capture(&j.id).unwrap_or_else(
@@ -1379,10 +1382,9 @@ impl Bridge {
                 }
                 seen.clear();
             }
-            if !crate::posture::schedule_active()
-                && camera_active
-                    .as_ref()
-                    .is_some_and(|(j, _)| j.id.starts_with("posture-sample:"))
+            if let Some((job, _)) = &camera_active
+                && job.id.starts_with("posture-sample:")
+                && !self.store.posture_enabled(&job.key)?
             {
                 let (j, h) = camera_active.take().unwrap();
                 h.abort();
@@ -1428,21 +1430,7 @@ impl Bridge {
                 let job = j.clone();
                 camera_active = Some((
                     j.clone(),
-                    tokio::spawn(async move {
-                        if job.id.starts_with("posture-sample:") {
-                            match tokio::time::timeout(
-                                crate::posture::remaining_window(),
-                                b.capture_camera(&job),
-                            )
-                            .await
-                            {
-                                Ok(result) => result,
-                                Err(_) => b.store.status(&job.id, "done"),
-                            }
-                        } else {
-                            b.capture_camera(&job).await
-                        }
-                    }),
+                    tokio::spawn(async move { b.capture_camera(&job).await }),
                 ));
             }
             if speech_active.is_none()

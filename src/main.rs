@@ -157,6 +157,7 @@ async fn main() -> Result<()> {
         _=builtin::maintain(&bridge.cfg, &oc)=>{},
         r=feishu.run(store.clone())=>r?,
         r=bridge.clone().run()=>r?,
+        r=posture::follow_homework(&bridge.cfg, &store)=>r?,
         r=tablet.serve()=>r?,
         _=async {if let Some(ha)=&bridge.cfg.home_assistant {ha.maintain(&oc).await}else{std::future::pending::<()>().await}}=>{},
         _=tokio::signal::ctrl_c()=>{},

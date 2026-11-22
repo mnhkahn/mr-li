@@ -38,6 +38,10 @@ class DeploymentTests(unittest.TestCase):
         self.old_binary.parent.mkdir()
         self.old_binary.write_text('old executable')
         (self.root / '.env').write_text('secret remains')
+        (self.root / 'scripts').mkdir()
+        speaker = self.root / 'scripts/run.sh'
+        speaker.write_text('#!/bin/sh\nprintf "%s\\n" "$2" >> .data/utterances\n')
+        speaker.chmod(0o755)
         self.old_state = {'version': 'old', 'revision': self.value['revision']}
         auto.write_json(self.state / 'installed.json', self.old_state)
 
@@ -52,6 +56,7 @@ class DeploymentTests(unittest.TestCase):
             auto.deploy(self.root, self.package, 'test/501')
             self.assertEqual(restart.call_count, 1)
         self.assertEqual((self.root / '.env').read_text(), 'secret remains')
+        self.assertEqual(len((self.root / '.data/utterances').read_text().splitlines()), 1)
 
     def test_same_content_new_revision_updates_record_without_restart(self):
         with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
@@ -74,6 +79,7 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(self.old_binary.read_text(), 'old executable')
         self.assertFalse((self.root / 'resource/new.txt').exists())
         self.assertEqual(json.loads((self.state / 'installed.json').read_text()), self.old_state)
+        self.assertFalse((self.root / '.data/utterances').exists())
 
     def test_tamper_rejected_before_restart(self):
         (self.package / 'bin/mr-li').write_text('tampered')
@@ -166,6 +172,44 @@ class DeploymentTests(unittest.TestCase):
             auto.deploy(self.root, self.package, 'test/501')
             self.assertEqual(restart.call_count, 2)
         self.assertEqual(self.old_binary.read_bytes(), (self.package / 'bin/mr-li').read_bytes())
+
+    def test_voice_failure_does_not_roll_back_or_repeat(self):
+        (self.root / 'scripts/run.sh').write_text('#!/bin/sh\nexit 1\n')
+        with patch.object(auto, 'restart') as restart, patch.object(auto, 'healthy'):
+            auto.deploy(self.root, self.package, 'test/501')
+            auto.deploy(self.root, self.package, 'test/501')
+            self.assertEqual(restart.call_count, 1)
+        self.assertEqual(json.loads((self.state / 'installed.json').read_text()), self.value)
+        self.assertEqual(json.loads((self.state / 'last-announcement.json').read_text())['status'], 'failed')
+
+    def test_message_uses_only_new_commits_and_strips_conventional_prefix(self):
+        remote, _ = self.prepare_remote(self.value['revision'])
+        self.git('commit', '--allow-empty', '-qm', 'feat(deploy): 升级成功后播报更新内容')
+        self.git('commit', '--allow-empty', '-qm', 'fix(voice): 修复语音超时')
+        auto.run(['git', '-C', remote, 'fetch', '-q'])
+        updated = auto.manifest(self.package, self.source)
+        text = auto.upgrade_message(self.root, updated, self.value)
+        self.assertIn('修复语音超时；升级成功后播报更新内容', text)
+        self.assertNotIn('initial', text)
+        self.assertNotIn('feat(', text)
+
+    def test_local_package_has_change_summary_without_git_checkout(self):
+        self.git('commit', '--allow-empty', '-qm', 'feat(deploy): 升级成功后播报更新内容')
+        updated = auto.manifest(self.package, self.source)
+        text = auto.upgrade_message(self.root, updated, self.value)
+        self.assertIn('升级成功后播报更新内容', text)
+        self.assertNotIn('initial', text)
+
+    def test_same_revision_local_changes_do_not_claim_old_commit(self):
+        self.assertEqual(auto.upgrade_message(self.root, self.value, self.value),
+                         '升级成功。本次更新：更新了本机部署文件。')
+
+    def test_release_notes_are_literal_and_bounded(self):
+        updated = dict(self.value, release_notes='增加升级播报 $(touch /tmp/not-executed)\n' + '功能' * 300)
+        text = auto.upgrade_message(self.root, updated, self.value)
+        self.assertIn('$(touch /tmp/not-executed)', text)
+        self.assertNotIn('\n', text)
+        self.assertLess(len(text), 500)
 
 
 if __name__ == '__main__':

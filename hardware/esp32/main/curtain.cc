@@ -5,6 +5,9 @@
 #include <mutex>
 #include <stdexcept>
 #include <driver/gpio.h>
+#include <driver/pulse_cnt.h>
+#include <esp_timer.h>
+#include <atomic>
 #include <driver/rmt_tx.h>
 #include <driver/rmt_encoder.h>
 #include <freertos/FreeRTOS.h>
@@ -72,6 +75,7 @@ bool Ready(const Config& config) {
 class Curtain {
     std::mutex mutex_;
     bool busy_ = false, pending_stop_ = false, learning_ = false;
+    std::vector<uint32_t> trace_;
     int action_ = 0, learn_seconds_ = 30, learn_gap_ = 6000;
     curtain::CaptureProgress progress_;
     std::string state_ = "idle", error_, last_action_;
@@ -256,6 +260,130 @@ public:
         cJSON_AddBoolToObject(result, "position_supported", false);
         return result;
     }
+    cJSON* TraceInput(const cJSON* params) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const int seconds = Integer(params, "seconds", 1, 45);
+        if (busy_) throw std::runtime_error("RF busy");
+        auto config = Load();
+        if (config.rx < 0) throw std::runtime_error("Configure RF RX first");
+        if (config.enabled) throw std::runtime_error("Disable RF transmission before tracing");
+        const auto pin = static_cast<gpio_num_t>(config.rx);
+        trace_.resize(16000);
+        struct Trace {
+            uint32_t* edges;
+            unsigned capacity;
+            gpio_num_t pin;
+            int64_t start;
+            std::atomic<unsigned> count{0};
+        } trace{trace_.data(), static_cast<unsigned>(trace_.size()), pin, 0};
+        Check(gpio_set_direction(pin, GPIO_MODE_INPUT), "Set RF input mode");
+        Check(gpio_set_pull_mode(pin, GPIO_PULLDOWN_ONLY), "Set RF input pull-down");
+        Check(gpio_set_intr_type(pin, GPIO_INTR_ANYEDGE), "Set RF edge interrupt");
+        Check(gpio_install_isr_service(0), "Install GPIO diagnostic interrupt");
+        struct Cleanup {
+            gpio_num_t pin;
+            ~Cleanup() { gpio_isr_handler_remove(pin); gpio_uninstall_isr_service(); }
+        } cleanup{pin};
+        const auto initial = gpio_get_level(pin);
+        trace.start = esp_timer_get_time();
+        Check(gpio_isr_handler_add(pin, [](void* context) {
+            auto& t = *static_cast<Trace*>(context);
+            const auto i = t.count.load(std::memory_order_relaxed);
+            if (i >= t.capacity) return;
+            const auto elapsed = static_cast<uint32_t>(esp_timer_get_time() - t.start);
+            t.edges[i] = (elapsed << 1) | static_cast<uint32_t>(gpio_get_level(t.pin));
+            t.count.store(i + 1, std::memory_order_release);
+        }, &trace), "Record RF edge timestamps");
+        busy_ = true;
+        lock.unlock();
+        vTaskDelay(pdMS_TO_TICKS(seconds * 1000));
+        const auto stop_result = gpio_intr_disable(pin);
+        lock.lock();
+        busy_ = false;
+        Check(stop_result, "Stop recording RF edges");
+        const auto count = trace.count.load(std::memory_order_acquire);
+        trace_.resize(count);
+        auto result = cJSON_CreateObject();
+        cJSON_AddNumberToObject(result, "initial_level", initial);
+        cJSON_AddNumberToObject(result, "edges", count);
+        cJSON_AddBoolToObject(result, "buffer_full", count == trace.capacity);
+        return result;
+    }
+
+    cJSON* ReadTrace(const cJSON* params) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto offset = static_cast<size_t>(Integer(params, "offset", 0, 16000));
+        auto result = cJSON_CreateObject();
+        auto rows = cJSON_AddArrayToObject(result, "packed_edges");
+        for (size_t i = offset; i < trace_.size() && i < offset + 250; ++i)
+            cJSON_AddItemToArray(rows, cJSON_CreateNumber(trace_[i]));
+        return result;
+    }
+
+    cJSON* CaptureRaw() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (busy_) throw std::runtime_error("RF busy");
+        const auto config = Load();
+        if (config.rx < 0) throw std::runtime_error("Configure RF RX first");
+        auto capture = curtain::LearnRf(config.rx, 1, 0, {}, true);
+        if (!capture.error.empty()) throw std::runtime_error(capture.error);
+        auto result = cJSON_CreateObject();
+        cJSON_AddNumberToObject(result, "rx_gpio", config.rx);
+        auto pulses = cJSON_AddArrayToObject(result, "pulses_us");
+        for (int pulse : capture.pulses) cJSON_AddItemToArray(pulses, cJSON_CreateNumber(pulse));
+        return result;
+    }
+    cJSON* ProbeInput() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (busy_) throw std::runtime_error("RF busy");
+        auto config = Load();
+        if (config.rx < 0) throw std::runtime_error("Configure RF RX first");
+        struct Counter {
+            pcnt_unit_handle_t unit = nullptr;
+            pcnt_channel_handle_t channel = nullptr;
+            bool enabled = false, started = false;
+            ~Counter() {
+                if (started) pcnt_unit_stop(unit);
+                if (enabled) pcnt_unit_disable(unit);
+                if (channel) pcnt_del_channel(channel);
+                if (unit) pcnt_del_unit(unit);
+            }
+        } counter;
+        pcnt_unit_config_t unit = {};
+        unit.low_limit = -1;
+        unit.high_limit = 32767;
+        Check(pcnt_new_unit(&unit, &counter.unit), "Create RX pulse counter");
+        pcnt_chan_config_t channel = {};
+        channel.edge_gpio_num = config.rx;
+        channel.level_gpio_num = -1;
+        Check(pcnt_new_channel(counter.unit, &channel, &counter.channel), "Attach RX pulse counter");
+        Check(pcnt_channel_set_edge_action(counter.channel, PCNT_CHANNEL_EDGE_ACTION_INCREASE,
+                                          PCNT_CHANNEL_EDGE_ACTION_HOLD), "Count rising edges");
+        pcnt_glitch_filter_config_t filter = {};
+        filter.max_glitch_ns = 2000;
+        Check(pcnt_unit_set_glitch_filter(counter.unit, &filter), "Filter short RX glitches");
+        Check(pcnt_unit_enable(counter.unit), "Enable RX pulse counter");
+        counter.enabled = true;
+
+        int counts[10] = {};
+        const int level_before = gpio_get_level(static_cast<gpio_num_t>(config.rx));
+        for (int& count : counts) {
+            Check(pcnt_unit_clear_count(counter.unit), "Clear RX pulse counter");
+            Check(pcnt_unit_start(counter.unit), "Start RX pulse counter");
+            counter.started = true;
+            vTaskDelay(pdMS_TO_TICKS(100));
+            Check(pcnt_unit_stop(counter.unit), "Stop RX pulse counter");
+            counter.started = false;
+            Check(pcnt_unit_get_count(counter.unit, &count), "Read RX pulse counter");
+        }
+        auto result = cJSON_CreateObject();
+        cJSON_AddNumberToObject(result, "rx_gpio", config.rx);
+        cJSON_AddNumberToObject(result, "level_before", level_before);
+        cJSON_AddNumberToObject(result, "level_after", gpio_get_level(static_cast<gpio_num_t>(config.rx)));
+        cJSON_AddNumberToObject(result, "sample_ms", 100);
+        cJSON_AddItemToObject(result, "rising_edges", cJSON_CreateIntArray(counts, 10));
+        return result;
+    }
     cJSON* Setup(const cJSON* params) {
         int tx = Integer(params, "tx_gpio", 0, 48), rx = Integer(params, "rx_gpio", 0, 48);
         Pin(tx); Pin(rx, true);
@@ -338,6 +466,10 @@ public:
 cJSON* HandleCurtainCommand(const std::string& method, const cJSON* params) {
     auto& curtain = Curtain::Instance();
     if (method == "curtain.status") return curtain.Status();
+    if (method == "curtain.probe_input") return curtain.ProbeInput();
+    if (method == "curtain.capture_raw") return curtain.CaptureRaw();
+    if (method == "curtain.trace_input") return curtain.TraceInput(params);
+    if (method == "curtain.read_trace") return curtain.ReadTrace(params);
     if (method == "curtain.setup") return curtain.Setup(params);
     if (method == "curtain.configure") return curtain.Configure(params);
     if (method == "curtain.enable") return curtain.Enable(params);

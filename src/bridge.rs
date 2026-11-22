@@ -308,6 +308,16 @@ impl Bridge {
         };
         self.store
             .finish_posture_observation(j, &note, assessment, error.as_deref())?;
+        if self.cfg.tablet_public_url.is_empty()
+            && self.store.posture_enabled(&j.key)?
+            && let Some(tablet) = &self.tablet
+            && let Err(error) = self
+                .store
+                .posture_capture_id(&j.key)
+                .and_then(|id| tablet.report_capture(&id))
+        {
+            tracing::warn!(%error, "无法启动平板汇总采集");
+        }
         Ok(())
     }
     async fn execute(&self, j: &Job) -> Result<()> {
@@ -962,22 +972,28 @@ impl Bridge {
             self.store
                 .finish_output(&j.id, "posture_report", &payload)?;
         }
-        if payload["capture_tablet"] == false || !self.store.homework_active() {
-            payload["tablet_done"] = json!(true);
-        }
+        let capture_id = payload["capture_id"].as_str().unwrap_or(&j.id).to_owned();
         if payload["tablet_done"] != true {
-            let capture = match &self.tablet {
-                Some(tablet) => tablet.report_capture(&j.id).unwrap_or_else(
-                    |e| json!({"status":"failed","error":format!("平板采集失败：{e}")}),
-                ),
-                None => json!({"status":"failed","error":"平板网关未启用"}),
+            let can_capture = payload["capture_tablet"] != false && self.store.homework_active();
+            let attempted = match &self.tablet {
+                Some(tablet) if can_capture => tablet.report_capture(&capture_id).map(Some),
+                Some(tablet) => tablet.existing_report_capture(&capture_id),
+                None => Ok(None),
             };
+            let capture = attempted
+                .unwrap_or_else(|e| {
+                    Some(json!({"status":"failed","error":format!("平板采集失败：{e}")}))
+                })
+                .unwrap_or_else(
+                    || json!({"status":"failed","error":"本段作业期间未取得平板照片和截屏"}),
+                );
             if capture["status"] == "pending" {
                 return Ok(());
             }
             let mut note = payload["note"].as_str().unwrap_or("").to_owned();
             if capture["status"] == "ready" {
-                let at = capture_time(capture["captured_at"].as_u64().unwrap_or(0));
+                let cloud = capture["source"] == "cloud";
+                let kind = if cloud { "tablet-cloud" } else { "tablet" };
                 let images = capture["images"].as_array().context("平板汇总图片缺失")?;
                 for image in images {
                     let label = match image["name"].as_str() {
@@ -985,7 +1001,16 @@ impl Bridge {
                         Some("screenshot") => "平板当前屏幕截图",
                         _ => continue,
                     };
-                    payload["assets"].as_array_mut().unwrap().push(json!({"kind":"tablet","device":capture["device"],"path":image["path"],"label":format!("{label}（{at}）")}));
+                    let at = capture_time(
+                        image["captured_at"]
+                            .as_u64()
+                            .or_else(|| capture["captured_at"].as_u64())
+                            .unwrap_or(0),
+                    );
+                    payload["assets"].as_array_mut().unwrap().push(json!({"kind":kind,"device":capture["device"],"path":image["path"],"label":format!("{label}（{at}）")}));
+                }
+                if let Some(error) = capture["photo_error"].as_str() {
+                    note.push_str(&format!("\n平板照片未取得：{error}"));
                 }
                 if !images.iter().any(|image| image["name"] == "screenshot") {
                     note.push_str(&format!(
@@ -1022,6 +1047,11 @@ impl Bridge {
                     path == expected || path == expected.with_extension("jpg"),
                     "坐姿汇总图片路径不匹配"
                 );
+            } else if asset["kind"] == "tablet-cloud" {
+                self.tablet
+                    .as_ref()
+                    .context("平板网关未启用")?
+                    .validate_cloud_report_image(&capture_id, &path)?;
             } else {
                 self.tablet
                     .as_ref()
@@ -1060,7 +1090,7 @@ impl Bridge {
                 .finish_output(&j.id, "camera_media", &report_message(note, &images))?;
         }
         for asset in payload["assets"].as_array().unwrap() {
-            if asset["kind"] == "posture"
+            if (asset["kind"] == "posture" || asset["kind"] == "tablet-cloud")
                 && let Some(path) = asset["path"].as_str()
             {
                 let _ = std::fs::remove_file(path);

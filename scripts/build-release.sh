@@ -14,6 +14,18 @@ DEST="$ROOT/dist/mr-li-$PLATFORM"
 rm -rf -- "$DEST"
 mkdir -p "$DEST/bin" "$DEST/scripts"
 cp target/release/mr-li "$DEST/bin/"
+CYEAM_CLI_REVISION="1f049cef59204134161cac1685e3fa6aa7f936bb"
+GO_BIN="$(command -v go || true)"
+if [[ -z "$GO_BIN" && -x /usr/local/go/bin/go ]]; then
+  GO_BIN=/usr/local/go/bin/go
+fi
+if [[ -z "$GO_BIN" ]]; then
+  echo 'Go is required to build the Homework CLI from GitHub.' >&2
+  exit 1
+fi
+CGO_ENABLED=0 GOTOOLCHAIN=go1.25.5 GOBIN="$DEST/bin" "$GO_BIN" install \
+  -trimpath -ldflags="-s -w" "github.com/mnhkahn/cyeam-cli/cmd/cyeam@$CYEAM_CLI_REVISION"
+mv "$DEST/bin/cyeam" "$DEST/bin/cyeam-homework-status"
 cp scripts/init.sh scripts/init-camera.sh scripts/setup-pose.sh scripts/run.sh scripts/service.sh scripts/watchdog-system.sh scripts/boot-start.sh "$DEST/scripts/"
 if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
   cp target/release/mr-li-pose "$DEST/bin/"

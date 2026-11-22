@@ -497,6 +497,15 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+    pub fn posture_capture_id(&self, origin: &str) -> Result<String> {
+        let scope = crate::models::scope(origin)?;
+        let started: u64 = self.0.lock().unwrap().query_row(
+            "SELECT started FROM posture_report_state WHERE scope=?1",
+            [&scope],
+            |r| r.get(0),
+        )?;
+        Ok(format!("{scope}:{started}"))
+    }
     /// Queue one durable summary per enabled scope every ten minutes, including unknowns.
     /// Capture and speech failure never prevent this independent timer from reporting.
     pub fn queue_due_posture_reports(&self) -> Result<()> {
@@ -506,7 +515,7 @@ impl Store {
         let active = self.homework_active();
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction()?;
-        let row=tx.query_row("SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,r.speech_failures,r.last_speech_error,max(1,((CASE WHEN ?2 THEN ?1 ELSE min(?1,max(w.last_at,r.started)) END)-r.started+59)/60) FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND (r.next_due<=?1 OR NOT ?2) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done') ORDER BY r.next_due LIMIT 1",params![now,active],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?))).optional()?;
+        let row=tx.query_row("SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,r.speech_failures,r.last_speech_error,max(1,((CASE WHEN ?2 THEN ?1 ELSE min(?1,max(w.last_at,r.started)) END)-r.started+59)/60),r.started FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND (r.next_due<=?1 OR NOT ?2) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done') ORDER BY r.next_due LIMIT 1",params![now,active],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?,r.get::<_,u64>(12)?))).optional()?;
         if let Some((
             scope,
             key,
@@ -520,6 +529,7 @@ impl Store {
             speech_failures,
             speech_error,
             minutes,
+            started,
         )) = row
         {
             let total = bad + clear + unknown + away + observe;
@@ -580,7 +590,7 @@ impl Store {
                     "\n语音播报失败 {speech_failures} 次，最近原因：{speech_error}"
                 ));
             }
-            tx.execute("INSERT INTO jobs(id,key,message_id,text,status,result,output_kind) VALUES (?1,?2,?3,'/posture report','replying',?4,'posture_report')",params![format!("posture-report:{}",uuid::Uuid::new_v4().simple()),key,message,serde_json::json!({"note":note,"capture_tablet":active}).to_string()])?;
+            tx.execute("INSERT INTO jobs(id,key,message_id,text,status,result,output_kind) VALUES (?1,?2,?3,'/posture report','replying',?4,'posture_report')",params![format!("posture-report:{}",uuid::Uuid::new_v4().simple()),key,message,serde_json::json!({"note":note,"capture_tablet":active,"capture_id":format!("{scope}:{started}")}).to_string()])?;
             tx.execute("UPDATE posture_report_state SET started=?2,next_due=?3,bad=0,clear=0,unknown=0,away=0,observe=0,speech_failures=0,last_speech_error='' WHERE scope=?1",params![scope,now,now + 600])?;
             tx.execute("DELETE FROM posture_samples WHERE scope=?1", [scope])?;
         }
@@ -1082,6 +1092,10 @@ mod tests {
         s.queue_due_posture_reports_at(start + 11)?;
         let report = s.jobs("replying")?.remove(0);
         assert!(report.result.contains("检查 1 次"));
+        let report_payload: serde_json::Value = serde_json::from_str(&report.result)?;
+        let capture_id = format!("{}:{start}", crate::models::scope(&j.key)?);
+        assert_eq!(report_payload["capture_id"], capture_id);
+        assert_eq!(report_payload["capture_tablet"], false);
         s.status(&report.id, "done")?;
         s.queue_due_posture_at(start + 12)?;
         s.queue_due_posture_reports_at(start + 12)?;

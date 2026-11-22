@@ -9,6 +9,7 @@ mod files;
 mod forms;
 mod home_assistant;
 mod models;
+mod music;
 mod notices;
 mod opencode;
 mod posture;
@@ -35,6 +36,12 @@ async fn main() -> Result<()> {
     if mode == "proxy" {
         let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
         println!("{}", proxy::command(&args).await?);
+        return Ok(());
+    }
+    if mode == "music" {
+        let args = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
+        let storefront = music::local_storefront();
+        println!("{}", music::command(&args, &storefront).await?);
         return Ok(());
     }
     if mode == "reply-check" {

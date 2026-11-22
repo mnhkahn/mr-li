@@ -274,6 +274,7 @@ sudo ./scripts/service.sh uninstall system
 | `/reminder del <ID>` | 删除提醒，取消尚未送达的消息 |
 | `/speak <文字>` | Mac mini 本地合成语音，通过配置的喇叭播放，最多 500 字 |
 | `/speak stop` | 停止本会话当前语音并取消待播报文字 |
+| `/music` | Apple Music 播放控制、搜歌与资料库命令 |
 | `/voice [status\|tingting\|clone]` | 查看或切换 Mac mini 全局播报音色 |
 | `/posture` | 本地姿态模型试验：抓图、回传关键点图片、背面判断和分数说明，不调用 OpenCode |
 | `/posture start [秒数]` | 启用平板作业计时联动，默认每 60 秒，支持 30–3600 秒；仅低头或歪头时在 Mac mini 语音播报，飞书每 10 分钟汇总并附坐姿检测图、平板照片和当前屏幕截图 |
@@ -305,6 +306,22 @@ sudo ./scripts/service.sh uninstall system
 `/baby`、`/notify` 直接复用当前 Homework APP 的 `self.notify.send`，无需升级 APK。通知以“李老师通知”为标题，在作业首页已有的通知卡片显示；首页只显示最新通知，收到当日结束后自动消失。通知管理只记录通过 `/baby` 或 `/notify` 发布的通知，不导入旧小李的通知数据，也不恢复旧服务端推送协议。
 
 通知保存到 `tablet/notices.sqlite3`：未开始发送的通知离线后会等待重连，待发通知到北京时间当天结束失效；同一台平板新的通知替换仍在等待发送的旧通知。收到 APP 的 MCP `delivered=true` 才标记已送达。发送中的请求若遇到断线、超时或服务重启，会标记“送达未确认”，不自动重复发送，避免重复弹出；此时应先查看 APP。取消仅作用于尚未发送的记录，不会假称已从平板撤回。列表和取消按用户＋聊天隔离，同一聊天跨话题可管理自己的通知。
+
+### Apple Music
+
+在飞书或 Mac mini 上使用同一组命令。本地命令以 `scripts/run.sh music` 开头。
+
+| 命令 | 用途 |
+|---|---|
+| `/music play`、`/music pause` | 开始或恢复播放、暂停 |
+| `/music next`、`/music prev` | 下一首、上一首 |
+| `/music status` | 查看 Music.app 的播放状态 |
+| `/music list [页码]`、`/music find <关键词>` | 查看 Music.app 资料库，每页 15 首，结果附歌曲 ID |
+| `/music play <歌曲ID>` | 点播资料库歌曲 |
+| `/music search <关键词>` | 用 Apple 公开搜索接口按地区搜歌，最多返回 8 首 |
+| `/music open <Apple Music 歌曲链接>` | 让 Mac mini 的音乐 App 打开歌曲页，可在页面点击播放 |
+
+Apple Music 订阅曲目通过 Mac mini 的音乐 App 播放，使用 App 中已登录的 Apple 账户。播放和资料库操作需要 macOS 桌面会话及“自动化”权限。使用后台开机模式时，如遇 AppleEvent 超时，可在桌面会话运行本地命令检查授权。上面的登录型 LaunchAgent 会在桌面会话运行桥接。在线搜索无需登录和开发者密钥，默认搜索香港区，使用 `MR_LI_MUSIC_STOREFRONT` 可指定其他地区（如 `TW` 或 `US`）。公开接口的结果取决于地区和 Apple 提供的索引。订阅歌曲加入资料库后可按 ID 点播。飞书与语音 Agent 也可通过 `teacher_music` 使用这些操作。
 
 ## Homebridge 摄像头
 

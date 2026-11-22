@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use std::{env, path::PathBuf, time::Duration};
 #[derive(Clone)]
 pub struct Config {
+    pub music_storefront: String,
     pub home_assistant: Option<crate::home_assistant::Settings>,
     pub tablet_listen: String,
     pub tablet_public_url: String,
@@ -110,6 +111,10 @@ impl Config {
             );
         }
         Ok(Self {
+            music_storefront: get(
+                crate::music::STOREFRONT_KEY,
+                crate::music::DEFAULT_STOREFRONT,
+            ),
             voice: crate::voice::Settings::from_settings(get),
             home_assistant: crate::home_assistant::Settings::from_settings(get, &env_path)?,
             tablet_listen: get("MR_LI_TABLET_LISTEN", "127.0.0.1:8787"),
@@ -208,6 +213,7 @@ impl Config {
         Self {
             voice: crate::voice::Settings::from_settings(|_, d| d.into()),
             home_assistant: None,
+            music_storefront: crate::music::DEFAULT_STOREFRONT.into(),
             tablet_listen: "127.0.0.1:8787".into(),
             tablet_public_url: String::new(),
             app_id: "app".into(),

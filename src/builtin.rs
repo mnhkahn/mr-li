@@ -75,6 +75,7 @@ pub fn tools() -> Value {
         {"name":"teacher_posture","description":"单次坐姿检测并发送标注图，或开启/停止当前聊天的定时坐姿监测。定时监测跟随平板作业计时，默认每60秒采样、每10分钟汇总；interval_seconds支持30–3600。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["check","start","stop"]},"interval_seconds":{"type":"integer","minimum":30,"maximum":3600}},"required":["action"]}},
         {"name":"teacher_notice","description":"给学习平板首页发送文字通知，或取消当前用户在当前聊天尚未送达的通知。保存/排队不代表送达；用teacher_query notices查询确认。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["send","cancel"]},"text":{"type":"string","minLength":1,"maxLength":2000},"device_id":{"type":"string"},"notice_id":{"type":"string"}},"required":["action"]}},
         {"name":"teacher_proxy","description":"查询Mac mini代理节点、按国家/地区筛选、测试延迟或按用户要求切换。status/countries/list为查询；test无country测当前节点，有country批量测3次并排名（all为全部）；auto按country测速并切换最低延迟节点，未指定国家时比较全部节点。延迟不是下载带宽，国家按节点名称识别。set需要node唯一名称或关键字。仅在用户要求切换时使用set/auto。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["status","list","countries","test","set","auto"]},"country":{"type":"string","minLength":1,"maxLength":80},"node":{"type":"string","minLength":1,"maxLength":200}},"required":["action"]}},
+        {"name":"teacher_music","description":"控制 Mac mini 音乐 App。play 开始或恢复播放，可传资料库歌曲 ID；pause 暂停；next 下一首；prev 上一首；status 查看当前歌曲和播放状态；search 在线搜歌，find 搜索资料库；list 列出资料库歌曲，可传页码；open 用 Apple Music 歌曲链接打开歌曲页。parameter 按操作传歌曲 ID、关键词、页码或链接。打开歌曲页后需要在 App 点播放。","inputSchema":{"type":"object","properties":{"action":{"type":"string","enum":["play","pause","next","prev","status","search","find","list","open"]},"parameter":{"type":"string","minLength":1,"maxLength":1024}},"required":["action"]}},
         {"name":"teacher_query","description":"只读查询当前会话任务、状态、设备入口、坐姿定时监测、通知送达、技能或MCP连接。task需要task_id。不能访问其他用户/会话的任务或通知。","inputSchema":{"type":"object","properties":{"kind":{"type":"string","enum":["tasks","task","status","channel","cron","posture","notices","skills","mcp","help"]},"task_id":{"type":"string"}},"required":["kind"]},"annotations":{"readOnlyHint":true}}
     ]);
     for tool in tools.as_array_mut().unwrap() {
@@ -184,6 +185,14 @@ async fn command(bridge: &Bridge, name: &str, args: &Value) -> Result<String> {
             }
             _ => bail!("未知查询类型"),
         },
+        "teacher_music" => {
+            let parameter = args["parameter"].as_str().unwrap_or("").trim();
+            ensure!(
+                !parameter.chars().any(char::is_control),
+                "音乐命令参数不能含控制字符"
+            );
+            format!("/music {action} {parameter}").trim_end().to_owned()
+        }
         "teacher_proxy" => {
             let country = args["country"].as_str().unwrap_or("").trim();
             let node = args["node"].as_str().unwrap_or("").trim();
@@ -296,6 +305,11 @@ async fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value> {
         command(bridge, name, args).await?
     };
     if name == "teacher_query"
+        || (name == "teacher_music"
+            && matches!(
+                args["action"].as_str(),
+                Some("status" | "search" | "list" | "find")
+            ))
         || (name == "teacher_proxy" && !matches!(args["action"].as_str(), Some("set" | "auto")))
     {
         let mut j = parent.clone();
@@ -825,7 +839,12 @@ mod tests {
         ] {
             assert!(command(&f.bridge, "teacher_proxy", &args).await.is_err());
         }
-        assert_eq!(tools().as_array().unwrap().len(), 10);
+        assert_eq!(tools().as_array().unwrap().len(), 11);
+        let music = json!({"action":"find","parameter":"周杰伦 晴天"});
+        assert_eq!(
+            command(&f.bridge, "teacher_music", &music).await?,
+            "/music find 周杰伦 晴天"
+        );
         assert!(!tools().to_string().contains("teacher_approve"));
         let config = mcp_acp(&f.bridge.cfg)?;
         assert!(!config.to_string().contains(&f.bridge.cfg.app_secret));

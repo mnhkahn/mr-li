@@ -276,8 +276,9 @@ sudo ./scripts/service.sh uninstall system
 | `/channel` | 查看飞书入口和平板在线状态 |
 | `/tasks` | 当前用户、聊天、话题最近 10 项任务 |
 | `/task <ID>`、`/task status <ID>` | 查询本会话任务状态和结果摘要，不可查看其他用户或话题 |
-| `/cron`、`/cron list` | 查看当前聊天的定时任务和坐姿监测状态 |
+| `/cron`、`/cron list` | 查看早间新闻播报及当前聊天的坐姿监测状态 |
 | `/cron run posture` | 立即执行一次坐姿检测，返回关键点图 |
+| `/memory`、`/memory list` | 查看已保存的长期记忆 |
 | `/reminder`、`/reminder list` | 查看你在当前聊天的提醒及送达状态 |
 | `/reminder add <时间> <内容>` | 创建一次性飞书提醒，最多 500 字 |
 | `/reminder del <ID>` | 删除提醒，取消尚未送达的消息 |
@@ -306,7 +307,11 @@ sudo ./scripts/service.sh uninstall system
 
 模型需要补充信息时，可在绑定麦克风的会话调用 **Ask User Question**（`teacher_ask_user_question`）。Mac mini 先播报问题，再录一次回答。用 ESP32-S3 时，灯变绿后直接回答，无需再次说唤醒词，单次最多约 8 秒。回答由本地 ASR 转写，作为工具结果返回原任务；静音或设备不可用会返回错误。
 
-`/skills`、`/mcp` 直接读取 OpenCode 当前工作目录的真实接口；`/tasks`、`/task` 只读本会话的 SQLite 记录。旧小李的记忆、历史会话切换及模型余额查询尚未迁移。
+`/skills`、`/mcp` 直接读取 OpenCode 当前工作目录的真实接口；`/tasks`、`/task` 只读本会话的 SQLite 记录。旧小李的历史会话切换及模型余额查询尚未迁移。
+
+明确说“记住我的饮食偏好是少糖”可以写入长期记忆，也可用 `/memory save ["饮食偏好","少糖"]`。同标签再次保存会更新原条目。说“忘掉饮食偏好”或用 `/memory forget 饮食偏好` 可删除。记忆保存在 SQLite，构建每次 Agent 提示词时重新读取，换 Agent 或执行 `/new` 后继续生效。私聊按账号共享记忆，群聊按用户和群隔离。语音沿用其绑定聊天的记忆。
+
+可在仅有一个授权用户的部署目录运行 `scripts/run.sh memory-import /路径/Memory.md`，将旧小李的全局记忆一次性导入该用户的私聊记忆。
 
 例如 `/reminder add "2026-12-01 09:00" 交房租`。双引号内的日期和时间按北京时间解释，也可以传 RFC3339，例如 `2026-12-01T09:00:00+08:00`。提醒按用户和聊天管理，同一聊天的不同话题共享列表。到点后机器人把文字发到创建提醒的私聊或群聊。提醒和待发消息存入 SQLite，服务重启后会补发到期提醒，飞书发送失败时会重试。
 
@@ -444,13 +449,13 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ## Mac mini 每日早间新闻播报
 
-每天北京时间 08:30 在 Mac mini 本机获取当天科技及 AI 新闻，经本机 OpenCode 免费模型整理为五条中文早间简报，再调用 `scripts/run.sh speak`，复用 `/speak` 的声音和喇叭设置。任务由 Mac mini 的 crontab 运行，无需 Codex 或其他电脑在线。
+mr-li 每天北京时间 08:30 在 Mac mini 本机获取当天科技及 AI 新闻，经本机 OpenCode 免费模型整理为五条中文早间简报，复用 `/speak` 的声音和喇叭设置。`/cron list` 显示当天的运行状态。
 
-在 Mac mini 的部署目录执行 `/usr/bin/python3 scripts/install-news-broadcast.py` 安装或更新任务，保留其他 crontab 条目并自动备份。Mac mini 系统时区须为北京时间。依赖 `~/.local/bin/cyeam`、现有本机 OpenCode 服务与 `.env`；新闻获取对该子进程设置 `NO_PROXY=*`，避免 CLI 包装脚本使用未运行的本机代理。
+在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，然后重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。新闻获取依赖 `~/.local/bin/cyeam`、本机 OpenCode 服务与 `.env`。获取新闻时设置 `NO_PROXY=*`，避免依赖本机代理。
 
-`/usr/bin/python3 scripts/news-broadcast.py --preview` 获取并生成新闻稿但不播放。实际播报为 60–500 字，摘要优先使用配置中的 OpenCode 免费模型；配置的模型已下线时，从本机最新目录选取可用免费模型，不使用付费模型。当天新闻为空或获取失败时，每隔 5 分钟重试，最多重试两次；失败会写入 `logs/news-broadcast.log`。新闻正文属于输入数据，不作为命令执行。
+`/usr/bin/python3 scripts/news-broadcast.py --preview` 获取并生成新闻稿但不播放。实际播报为 60–500 字，摘要优先使用配置中的 OpenCode 免费模型；配置的模型已下线时，从本机最新目录选取可用免费模型，不使用付费模型。当天新闻为空或获取失败时，每隔 5 分钟重试，最多重试两次；失败会写入 `logs/bridge.error.log`。新闻正文属于输入数据，不作为命令执行。
 
-状态与新闻稿保存在 `.data/news-broadcast/YYYY-MM-DD.json`。互斥锁防止并发，启动播放前持久化状态，成功后标记 `done`；`sending` 或 `uncertain` 状态不会自动重播。机器需开机且网络、声音设备可用，错过 08:30 不补播；正常重启后 crontab 保留。
+状态与新闻稿保存在 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认位于 `.data/news-broadcast/`。任务开始时锁定并记录当天的运行，播放成功后标记 `done`，服务重启时不会重复运行当天已经启动的任务。Mac mini 的 mr-li 桥接服务需在 08:30 运行，错过时不补播。
 
 ### GitHub 发布播报
 

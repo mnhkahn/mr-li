@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily Mac mini news briefing. Run from cron; --preview never plays audio."""
+"""Generate and play mr-li's morning news. Preview mode only generates the script."""
 import argparse
 import base64
 import datetime as dt
@@ -18,7 +18,6 @@ import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 BEIJING = dt.timezone(dt.timedelta(hours=8))
-STATE = ROOT / '.data/news-broadcast'
 
 
 def save(path, value):
@@ -159,25 +158,31 @@ def summarize(data, date):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--preview', action='store_true', help='fetch and summarize without audio')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--preview', action='store_true', help='fetch and summarize without audio')
+    mode.add_argument('--scheduled', action='store_true', help='claim the daily run before fetching news')
+    parser.add_argument('--state-dir', type=Path, default=ROOT / '.data/news-broadcast')
     args = parser.parse_args()
     os.umask(0o077)
-    STATE.mkdir(parents=True, exist_ok=True)
+    state = args.state_dir
+    state.mkdir(parents=True, exist_ok=True)
     date = dt.datetime.now(BEIJING).date().isoformat()
-    with (STATE / 'broadcast.lock').open('a') as lock:
+    with (state / 'broadcast.lock').open('a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             print('Another news broadcast is running', flush=True)
             return 0
-        path = STATE / (date + '.json')
+        path = state / (date + '.json')
         if not args.preview and path.exists():
             previous = json.loads(path.read_text())
-            if previous.get('status') in ('sending', 'done', 'uncertain'):
+            if args.scheduled or previous.get('status') in ('sending', 'done', 'uncertain'):
                 print(date + ': skipped (' + previous['status'] + ')', flush=True)
                 return 0
         record = {'date': date, 'status': 'preparing'}
         try:
+            if args.scheduled:
+                save(path, record)
             for attempt in range(3):
                 try:
                     data = fetch(date)
@@ -186,19 +191,21 @@ def main():
                     if args.preview or attempt == 2:
                         raise
                     time.sleep(300)
-            save(STATE / (date + '-news.json'), data)
+            save(state / (date + '-news.json'), data)
             text = summarize(data, date)
             if args.preview:
-                save(STATE / (date + '-preview.json'), {'date': date, 'text': text})
+                save(state / (date + '-preview.json'), {'date': date, 'text': text})
                 print(text, flush=True)
                 return 0
             # Only this daily job is claimed; an interrupted playback is never repeated.
             record.update(status='sending', text=text, started_at=dt.datetime.now(BEIJING).isoformat())
             save(path, record)
-            result = subprocess.run([str(ROOT / 'scripts/run.sh'), 'speak', text],
-                                    capture_output=True, text=True, timeout=210)
+            result = subprocess.run([str(ROOT / 'scripts/run.sh'), 'speak-news', text],
+                                    capture_output=True, text=True, timeout=390)
             if result.returncode:
-                raise RuntimeError('本机 speak 退出码 %s' % result.returncode)
+                detail = next((line for line in result.stderr.splitlines()
+                               if line.startswith('Error: ')), '')
+                raise RuntimeError('本机播报退出码 %s %s' % (result.returncode, detail))
             record.update(status='done', finished_at=dt.datetime.now(BEIJING).isoformat())
             save(path, record)
             print(date + ': news broadcast completed', flush=True)
@@ -206,7 +213,7 @@ def main():
         except Exception as error:
             record['status'] = 'uncertain' if record['status'] == 'sending' else 'failed'
             record['error'] = str(error)
-            save(path if not args.preview else STATE / (date + '-preview-error.json'), record)
+            save(path if not args.preview else state / (date + '-preview-error.json'), record)
             print(date + ': ' + str(error), file=sys.stderr, flush=True)
             return 1
 

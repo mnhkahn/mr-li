@@ -194,6 +194,9 @@ pub fn text(text: &str) -> Option<&str> {
 pub async fn speak(cfg: &Config, text: &str) -> Result<()> {
     speak_shared(cfg, text, Duration::from_secs(180)).await
 }
+pub async fn speak_news(cfg: &Config, text: &str) -> Result<()> {
+    speak_shared(cfg, text, Duration::from_secs(360)).await
+}
 pub async fn speak_progress(cfg: &Config, text: &str) -> Result<()> {
     speak_shared(cfg, text, Duration::from_secs(20)).await
 }

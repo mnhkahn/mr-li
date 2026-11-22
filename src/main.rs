@@ -8,8 +8,10 @@ mod feishu;
 mod files;
 mod forms;
 mod home_assistant;
+mod memory;
 mod models;
 mod music;
+mod news;
 mod notices;
 mod opencode;
 mod posture;
@@ -77,6 +79,11 @@ async fn main() -> Result<()> {
         return tablet::stdio().await;
     }
     let cfg = Arc::new(config::Config::load(mode == "enroll")?);
+    if mode == "memory-import" {
+        let path = std::env::args_os().nth(2).context("用法：memory-import <Memory.md>")?;
+        println!("已导入 {} 条旧小李记忆。", memory::import(&cfg, std::path::Path::new(&path))?);
+        return Ok(());
+    }
     if mode == "enroll" {
         let chat = std::env::args()
             .nth(2)
@@ -100,12 +107,13 @@ async fn main() -> Result<()> {
     if mode.starts_with("tablet-") {
         return tablet::command(&cfg, &mode).await;
     }
-    if mode == "speak" {
-        return speech::speak(
-            &cfg,
-            &std::env::args().skip(2).collect::<Vec<_>>().join(" "),
-        )
-        .await;
+    if mode == "speak" || mode == "speak-news" {
+        let text = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
+        return if mode == "speak-news" {
+            speech::speak_news(&cfg, &text).await
+        } else {
+            speech::speak(&cfg, &text).await
+        };
     }
     if mode == "voice" || mode == "voice-check" {
         return voice::run(cfg, mode == "voice-check").await;
@@ -171,6 +179,7 @@ async fn main() -> Result<()> {
         _=builtin::maintain(&bridge.cfg, &oc)=>{},
         r=feishu.run(store.clone())=>r?,
         r=bridge.clone().run()=>r?,
+        _=news::maintain(&bridge.cfg)=>{},
         _=voice::maintain(bridge.cfg.clone())=>{},
         r=posture::follow_homework(&bridge.cfg, &store)=>r?,
         r=tablet.serve()=>r?,

@@ -75,6 +75,7 @@ impl Store {
           CREATE INDEX IF NOT EXISTS reply_cards_message ON reply_cards(message_id);
           CREATE TABLE IF NOT EXISTS builtin_contexts (token TEXT PRIMARY KEY,job_id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS memories (scope TEXT NOT NULL,label TEXT NOT NULL,value TEXT NOT NULL,PRIMARY KEY(scope,label));
           CREATE TABLE IF NOT EXISTS processing_reactions (job_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,reaction_id TEXT NOT NULL,due INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY,scope TEXT NOT NULL,origin_key TEXT NOT NULL,due INTEGER NOT NULL,text TEXT NOT NULL,queued INTEGER NOT NULL DEFAULT 0);
           CREATE INDEX IF NOT EXISTS reminders_due ON reminders(due) WHERE queued=0;
@@ -794,6 +795,55 @@ impl Store {
             )
             .optional()?
             .unwrap_or_else(|| "opencode".into()))
+    }
+    pub fn memories(&self, scope: &str) -> Result<std::collections::BTreeMap<String, String>> {
+        let db = self.0.lock().unwrap();
+        let mut stmt = db.prepare("SELECT label,value FROM memories WHERE scope=?1")?;
+        Ok(stmt
+            .query_map([scope], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn save_memory(&self, scope: &str, label: &str, value: &str) -> Result<()> {
+        let changed = self.0.lock().unwrap().execute(
+            "INSERT INTO memories (scope,label,value)
+             SELECT ?1,?2,?3 WHERE length(CAST(?2 AS BLOB)) + length(CAST(?3 AS BLOB)) + (
+                 SELECT coalesce(sum(length(CAST(label AS BLOB)) + length(CAST(value AS BLOB))),0)
+                 FROM memories WHERE scope=?1 AND label<>?2
+             ) <= ?4
+             ON CONFLICT(scope,label) DO UPDATE SET value=excluded.value",
+            params![scope, label, value, crate::memory::MAX_BYTES],
+        )?;
+        anyhow::ensure!(changed == 1, "此处的记忆已满，请先删除不再需要的条目");
+        Ok(())
+    }
+    pub fn forget_memory(&self, scope: &str, label: &str) -> Result<bool> {
+        Ok(self.0.lock().unwrap().execute(
+            "DELETE FROM memories WHERE scope=?1 AND label=?2", params![scope,label],
+        )? == 1)
+    }
+    pub fn import_memories(
+        &self, scope: &str, records: &std::collections::BTreeMap<String, String>,
+    ) -> Result<usize> {
+        let mut db = self.0.lock().unwrap();
+        let tx = db.transaction()?;
+        let marker = format!("xiaoli-memory-import:{scope}");
+        if tx.execute("INSERT OR IGNORE INTO runtime_meta VALUES (?1,'done')", [&marker])? == 0 {
+            return Ok(0);
+        }
+        let mut imported = 0;
+        for (label, value) in records {
+            imported += tx.execute(
+                "INSERT OR IGNORE INTO memories (scope,label,value) VALUES (?1,?2,?3)",
+                params![scope,label,value],
+            )?;
+        }
+        let size: usize = tx.query_row(
+            "SELECT coalesce(sum(length(CAST(label AS BLOB)) + length(CAST(value AS BLOB))),0)
+             FROM memories WHERE scope=?1", [scope], |r| r.get(0),
+        )?;
+        anyhow::ensure!(size <= crate::memory::MAX_BYTES, "旧记忆导入后将超过容量");
+        tx.commit()?;
+        Ok(imported)
     }
     pub fn agent_session(&self, key: &str, agent: &str) -> Result<Option<String>> {
         if agent == "opencode" {

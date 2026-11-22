@@ -16,6 +16,7 @@ pub struct Settings {
     helper: String,
     models: String,
     device: String,
+    esp32_config: String,
     user: String,
     chat: String,
 }
@@ -26,6 +27,7 @@ impl Settings {
             helper: get("MR_LI_VOICE_HELPER", "scripts/voice-input.py"),
             models: get("MR_LI_VOICE_MODELS", ".data/voice/models"),
             device: get("MR_LI_VOICE_INPUT_DEVICE", ""),
+            esp32_config: get("MR_LI_VOICE_ESP32_CONFIG", ""),
             user: get("MR_LI_VOICE_USER_ID", ""),
             chat: get("MR_LI_VOICE_CHAT_ID", ""),
         }
@@ -109,7 +111,7 @@ fn spoken_result(value: &Value) -> Result<String> {
 #[derive(Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 enum Event {
-    Ready,
+    Ready { wake_word: Option<String> },
     Wake,
     Text { text: String },
 }
@@ -148,6 +150,18 @@ fn bridge_alive(cfg: &Config) -> Result<()> {
     );
     Ok(())
 }
+pub async fn maintain(cfg: Arc<Config>) {
+    if cfg.voice.esp32_config.is_empty() {
+        return std::future::pending::<()>().await;
+    }
+    loop {
+        if let Err(error) = run(cfg.clone(), false).await {
+            tracing::warn!(%error, "ESP32 语音监听中断，稍后重连");
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
 pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
     std::fs::create_dir_all(&cfg.data_dir)?;
     let lock = std::fs::OpenOptions::new()
@@ -158,7 +172,9 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
     fs2::FileExt::try_lock_exclusive(&lock).context("已有麦克风语音进程")?;
     let mut command = tokio::process::Command::new(&cfg.voice.python);
     command.args([&cfg.voice.helper, "--models", &cfg.voice.models]);
-    if !cfg.voice.device.is_empty() {
+    if !cfg.voice.esp32_config.is_empty() {
+        command.args(["--esp32-config", &cfg.voice.esp32_config]);
+    } else if !cfg.voice.device.is_empty() {
         command.args(["--device", &cfg.voice.device]);
     }
     if check {
@@ -197,12 +213,15 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
             );
             let event: Event = serde_json::from_slice(&line).context("语音输入协议无效")?;
             let listen = match event {
-                Event::Ready => {
-                    println!("麦克风已就绪，说“你好，李老师”开始对话。");
+                Event::Ready { wake_word } => {
+                    println!(
+                        "麦克风已就绪，说“{}”开始对话。",
+                        wake_word.as_deref().unwrap_or("你好，李老师")
+                    );
                     continue;
                 }
                 Event::Wake => {
-                    speech::speak(&cfg, "我在，请说。").await?;
+                    speech::speak_posture(&cfg, "我在，请说。").await?;
                     true
                 }
                 Event::Text { text } => {
@@ -224,7 +243,9 @@ pub async fn run(cfg: Arc<Config>, check: bool) -> Result<()> {
             };
             // The helper has closed its microphone before emitting wake/text and only reopens
             // after playback finishes. No Agent or TTS implementation is part of the helper.
-            tokio::time::sleep(Duration::from_millis(350)).await;
+            if cfg.voice.esp32_config.is_empty() {
+                tokio::time::sleep(Duration::from_millis(350)).await;
+            }
             input
                 .write_all(format!("{}\n", json!({"listen":listen})).as_bytes())
                 .await?;
@@ -259,6 +280,8 @@ mod tests {
         cfg.speech_program = dir.join("speech").to_string_lossy().into();
         cfg.speak_voice = "configured-clone".into();
         cfg.speak_audio_device = "configured-output".into();
+        cfg.posture_voice = "posture-clone".into();
+        cfg.posture_audio_device = "posture-output".into();
         std::fs::write(dir.join("heartbeat"), "test")?;
         std::fs::write(
             &cfg.speech_program,
@@ -325,8 +348,9 @@ resume(False, '好的，再见。')
         assert!(frontend.is_err());
         assert_eq!(std::fs::read_to_string(dir.join("passed"))?, "ok");
         let args = std::fs::read_to_string(dir.join("args"))?;
-        assert_eq!(args.matches("configured-clone").count(), 4);
-        assert_eq!(args.matches("configured-output").count(), 4);
+        assert!(args.starts_with("-v\nposture-clone\n-a\nposture-output\n"));
+        assert_eq!(args.matches("configured-clone").count(), 3);
+        assert_eq!(args.matches("configured-output").count(), 3);
         assert!(store.jobs("queued")?.is_empty());
         assert!(store.jobs("replying")?.is_empty());
         std::fs::remove_dir_all(dir)?;

@@ -1,6 +1,7 @@
 #include "xgimi_wake.h"
 #include "curtain.h"
 #include "network.h"
+#include "voice.h"
 #include <cstdio>
 #include <cstdarg>
 #include <esp_log.h>
@@ -26,7 +27,12 @@ void Reply(const std::string& line) {
             throw std::runtime_error("Expected a JSON object with method and id");
         if (params && !cJSON_IsObject(params)) throw std::runtime_error("params must be an object");
         std::string name = method->valuestring;
-        auto result = name.rfind("network.", 0) == 0 ? HandleNetworkCommand(name, params) :
+        cJSON* result;
+#if CONFIG_IDF_TARGET_ESP32S3
+        if (name.rfind("voice.", 0) == 0) result = HandleVoiceCommand(name, params, true);
+        else
+#endif
+        result = name.rfind("network.", 0) == 0 ? HandleNetworkCommand(name, params) :
             name.rfind("curtain.", 0) == 0 ? HandleCurtainCommand(name, params) : HandleXgimiCommand(name, params);
         cJSON_AddItemToObject(response, "result", result);
     } catch (const std::exception& e) {
@@ -59,6 +65,9 @@ extern "C" void app_main() {
     config.rx_buffer_size = 4096;
     config.tx_buffer_size = 4096;
     ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&config));
+#if CONFIG_IDF_TARGET_ESP32S3
+    StartHardwareVoice();
+#endif
     StartHardwareNetwork();
     std::string line;
     bool overflow = false;

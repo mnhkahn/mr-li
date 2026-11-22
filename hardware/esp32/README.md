@@ -3,8 +3,22 @@
 独立的 ESP-IDF 固件，用于让 Mac mini 通过 ESP32 控制附近硬件。目前提供
 极米 NEW Z6X 蓝牙开机，以及外接模块的 433 MHz 固定码窗帘发射路径。
 后者的接线、LONGSAM 兼容性边界和升/降/停工具见 [RF433.md](RF433.md)。
-它不包含智能体、语音、屏幕、摄像头或小智服务端，
-支持 Wi-Fi 本地 HTTP 接入 Home Assistant，也保留 USB MCP 适配器；均不需要云服务。
+硬件固件提供本地唤醒和设备控制，语音转写与智能体运行在 Mr-li 主机。
+设备支持 Wi-Fi 本地 HTTP 接入 Home Assistant，也保留 USB MCP 适配器。
+
+### ESP32-S3 本地语音唤醒
+
+S3-CAM 的 INMP441 麦克风沿用 GPIO1（WS）、GPIO2（SCK）、GPIO42（SD）、3V3 和 GND。
+构建时将支持“小李”唤醒的中文 MultiNet 模型打包到独立的 `model` 分区；首次升级须同时写入
+应用、分区表和模型。旧 S3 构建目录里的生成配置应移走后重新构建，以载入新的分区和 PSRAM 默认值。
+已保存的 Wi-Fi 和设备配对仍使用同一 NVS 分区。
+
+在 Mr-li 主机设置 `MR_LI_VOICE_ESP32_CONFIG=hardware/esp32/.local/connection.json` 后，
+用 `scripts/run.sh voice-check` 预检，重启已有的 Mr-li bridge 以启用内置监听。说“你好，小李”或“小李”，
+等主机用坐姿播报的音色说“我在，请说”，再说指令。板上只在主机确认提示播放完毕后录这一轮，
+最多约 8 秒，停顿会提前结束，静音不会生成录音。主机在家中局域网凭现有设备令牌
+读取该段音频，本地 ASR 转成文本。录音约 30 秒过期，每轮都需要重新唤醒。
+板载灯蓝色表示已识别唤醒词、正在等主机提示，绿色表示正在录音，结束后熄灭。
 
 主要调用链：`Home Assistant → 家庭 Wi-Fi / HTTP → ESP32 → 蓝牙 → 极米`。
 

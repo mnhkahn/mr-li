@@ -34,6 +34,12 @@ pub struct ProcessingReaction {
     pub message_id: String,
     pub reaction_id: String,
 }
+pub struct Reminder {
+    pub id: String,
+    pub due: i64,
+    pub text: String,
+    pub status: String,
+}
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let c = Connection::open(path)?;
@@ -56,6 +62,9 @@ impl Store {
           CREATE TABLE IF NOT EXISTS builtin_contexts (token TEXT PRIMARY KEY,job_id TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS runtime_meta (key TEXT PRIMARY KEY,value TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS processing_reactions (job_id TEXT PRIMARY KEY,message_id TEXT NOT NULL,reaction_id TEXT NOT NULL,due INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS reminders (id TEXT PRIMARY KEY,scope TEXT NOT NULL,origin_key TEXT NOT NULL,due INTEGER NOT NULL,text TEXT NOT NULL,queued INTEGER NOT NULL DEFAULT 0);
+          CREATE INDEX IF NOT EXISTS reminders_due ON reminders(due) WHERE queued=0;
+          CREATE INDEX IF NOT EXISTS reminders_scope ON reminders(scope,due);
           CREATE TABLE IF NOT EXISTS posture_watch (scope TEXT PRIMARY KEY,origin_key TEXT NOT NULL,message_id TEXT NOT NULL,interval_seconds INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,next_due INTEGER NOT NULL DEFAULT (unixepoch()),last_note TEXT NOT NULL DEFAULT '',last_at INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS posture_report_state (scope TEXT PRIMARY KEY,started INTEGER NOT NULL,next_due INTEGER NOT NULL,bad INTEGER NOT NULL DEFAULT 0,clear INTEGER NOT NULL DEFAULT 0,unknown INTEGER NOT NULL DEFAULT 0,speech_failures INTEGER NOT NULL DEFAULT 0,last_speech_error TEXT NOT NULL DEFAULT '',last_assessment INTEGER NOT NULL DEFAULT 2,away INTEGER NOT NULL DEFAULT 0,observe INTEGER NOT NULL DEFAULT 0);
           CREATE TABLE IF NOT EXISTS posture_samples (job_id TEXT PRIMARY KEY,scope TEXT NOT NULL,recorded_at INTEGER NOT NULL,assessment INTEGER NOT NULL,speech_failed INTEGER NOT NULL DEFAULT 0);
@@ -314,6 +323,81 @@ impl Store {
             .lock()
             .unwrap()
             .execute("UPDATE jobs SET status=?2 WHERE id=?1", params![id, status])?;
+        Ok(())
+    }
+    pub fn add_reminder(&self, job: &Job, scope: &str, due: i64, text: &str) -> Result<String> {
+        let id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            format!("reminder:{}", job.id).as_bytes(),
+        )
+        .simple()
+        .to_string();
+        self.0.lock().unwrap().execute(
+            "INSERT INTO reminders(id,scope,origin_key,due,text) VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(id) DO NOTHING",
+            params![id, scope, job.key, due, text],
+        )?;
+        Ok(id)
+    }
+    pub fn list_reminders(&self, scope: &str) -> Result<Vec<Reminder>> {
+        let c = self.0.lock().unwrap();
+        let mut q = c.prepare(
+            "SELECT r.id,r.due,r.text,CASE
+                WHEN r.queued=0 THEN '待提醒'
+                WHEN j.status='replying' AND j.sent=0 THEN '待送达'
+                ELSE '已送达'
+             END
+             FROM reminders r LEFT JOIN jobs j ON j.id='reminder:' || r.id
+             WHERE r.scope=?1 ORDER BY r.queued,r.due,r.id",
+        )?;
+        Ok(q.query_map([scope], |r| {
+            Ok(Reminder {
+                id: r.get(0)?,
+                due: r.get(1)?,
+                text: r.get(2)?,
+                status: r.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn delete_reminder(&self, scope: &str, id: &str) -> Result<bool> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        let deleted = tx.execute(
+            "DELETE FROM reminders WHERE id=?1 AND scope=?2",
+            params![id, scope],
+        )? > 0;
+        if deleted {
+            tx.execute(
+                "UPDATE jobs SET status='done' WHERE id='reminder:' || ?1 AND status='replying' AND sent=0",
+                [id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(deleted)
+    }
+    pub fn queue_due_reminder(&self, now: i64) -> Result<()> {
+        let mut c = self.0.lock().unwrap();
+        let tx = c.transaction()?;
+        let due = tx.query_row(
+            "SELECT id,origin_key,text FROM reminders WHERE queued=0 AND due<=?1 ORDER BY due,rowid LIMIT 1",
+            [now],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+        ).optional()?;
+        if let Some((id, key, text)) = due {
+            let pending: i64 =
+                tx.query_row("SELECT count(*) FROM jobs WHERE status!='done'", [], |r| {
+                    r.get(0)
+                })?;
+            if pending < 500 {
+                tx.execute(
+                    "INSERT INTO jobs(id,key,message_id,text,status,result) VALUES (?1,?2,'','/reminder','replying',?3)",
+                    params![format!("reminder:{id}"), key, format!("提醒：{text}")],
+                )?;
+                tx.execute("UPDATE reminders SET queued=1 WHERE id=?1", [id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn start_posture_watch(&self, j: &Job, seconds: u64) -> Result<()> {

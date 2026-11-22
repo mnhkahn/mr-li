@@ -19,7 +19,7 @@ impl Capture {
     pub fn parse(text: &str) -> Result<Self> {
         let words: Vec<_> = text.split_whitespace().collect();
         match words.as_slice() {
-            ["/photo"] | ["/posture"] => Ok(Self::Photo),
+            ["/photo"] | ["/posture"] | ["/cron", "run", "posture"] => Ok(Self::Photo),
             ["/video"] => Ok(Self::Video(10)),
             ["/video", seconds] => {
                 let seconds: u64 = seconds
@@ -33,7 +33,11 @@ impl Capture {
     }
 }
 pub fn is_capture(text: &str) -> bool {
-    matches!(text.split_whitespace().next(), Some("/photo" | "/video")) || text.trim() == "/posture"
+    matches!(text.split_whitespace().next(), Some("/photo" | "/video")) || is_posture_check(text)
+}
+pub fn is_posture_check(text: &str) -> bool {
+    let words = text.split_whitespace();
+    words.clone().eq(["/posture"]) || words.eq(["/cron", "run", "posture"])
 }
 pub struct Media {
     pub path: PathBuf,
@@ -243,6 +247,9 @@ mod tests {
     use serde_json::json;
     #[test]
     fn restrict_commands_and_homebridge_stream() -> Result<()> {
+        assert!(is_capture("/cron run posture"));
+        assert_eq!(Capture::parse("/cron  run posture")?, Capture::Photo);
+        assert!(!is_capture("/cron run unknown"));
         assert_eq!(Capture::parse("/video")?, Capture::Video(10));
         assert_eq!(Capture::parse("/video 30")?, Capture::Video(30));
         for text in [

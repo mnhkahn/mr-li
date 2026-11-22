@@ -6,12 +6,18 @@ on stdin. The Rust frontend resumes capture only after playback has finished.
 """
 import argparse
 from collections import deque
+import io
 import json
 import os
 from pathlib import Path
 import re
+import socket
 import sys
 import time
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
+import wave
 
 RATE = 16000
 PROTOCOL = None
@@ -60,11 +66,20 @@ def segment_with_preroll(segment, history, total, window, np):
     return np.concatenate(tuple(history))[start - start_of_history:end - start_of_history]
 
 
+def local_recognizer(root, sherpa):
+    for name in ("asr/model.int8.onnx", "asr/tokens.txt"):
+        if not (root / name).is_file():
+            raise FileNotFoundError(f"缺少语音模型：{name}；请先运行setup-voice.sh")
+    return sherpa.OfflineRecognizer.from_sense_voice(
+        model=str(root / "asr/model.int8.onnx"),
+        tokens=str(root / "asr/tokens.txt"),
+        num_threads=2, use_itn=True,
+    )
+
+
 def load_models(root, sherpa, recognizer=None):
     required = ["kws/tokens.txt", "kws/encoder.onnx", "kws/decoder.onnx",
                 "kws/joiner.onnx", "kws/keywords.txt", "silero_vad.onnx"]
-    if recognizer is None:
-        required += ["asr/model.int8.onnx", "asr/tokens.txt"]
     missing = [name for name in required if not (root / name).is_file()]
     if missing:
         raise FileNotFoundError(f"缺少语音模型：{', '.join(missing)}；请先运行setup-voice.sh")
@@ -79,11 +94,7 @@ def load_models(root, sherpa, recognizer=None):
         num_threads=2, provider="cpu",
     )
     if recognizer is None:
-        recognizer = sherpa.OfflineRecognizer.from_sense_voice(
-            model=str(root / "asr/model.int8.onnx"),
-            tokens=str(root / "asr/tokens.txt"),
-            num_threads=2, use_itn=True,
-        )
+        recognizer = local_recognizer(root, sherpa)
     return spotter, recognizer
 
 
@@ -168,10 +179,104 @@ def capture(sd, sherpa, np, root, device, spotter, recognizer, listening, notify
                 print("等待唤醒词：你好，李老师", file=sys.stderr, flush=True)
 
 
+def esp32_audio(config_path, recognizer, np, check):
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    config = json.loads(config_path.read_text())
+    base = config["base_url"].rstrip("/")
+    address = urlsplit(base)
+    local_host = address.hostname if address.scheme == "http" and address.hostname and address.hostname.endswith(".local") else None
+    resolved_base = None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+    def request_device(path, body=None):
+        nonlocal resolved_base
+        headers = {"Authorization": "Bearer " + config["api_token"]}
+        if local_host:
+            if resolved_base is None:
+                # Resolve mDNS once, rather than waiting on a lookup for every poll.
+                ip = socket.gethostbyname(local_host)
+                netloc = f"{ip}:{address.port}" if address.port else ip
+                resolved_base = address._replace(netloc=netloc).geturl()
+            headers["Host"] = address.netloc
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(body).encode()
+        request = urllib.request.Request(
+            (resolved_base or base) + path, data=body, headers=headers,
+        )
+        return opener.open(request, timeout=4)
+
+    def status():
+        with request_device("/api/voice/status") as response:
+            state = json.load(response)
+        if state["state"] == "error":
+            raise RuntimeError(f"ESP32 语音初始化失败：{state['error']}")
+        return state
+
+    state = status()
+    if check:
+        print(f"PASS: ESP32 唤醒词“{state['wake_word']}”，状态 {state['state']}")
+        return
+    emit("ready", wake_word=state["wake_word"])
+    announced = (state["boot_id"], state["wake_count"])
+    last = announced
+    while True:
+        try:
+            state = status()
+            pending = (state["boot_id"], state["pending_wake"])
+            if pending[1] and pending != announced:
+                announced = pending
+                emit("wake")
+                line = sys.stdin.readline(4096)
+                if not line:
+                    return
+                if json.loads(line).get("listen") is True:
+                    try:
+                        with request_device("/api/voice/listen", {"boot_id": pending[0], "wake": pending[1]}):
+                            pass
+                    except urllib.error.HTTPError as error:
+                        if error.code != 409:  # The wake can expire during playback.
+                            raise
+            wake = (state["boot_id"], state["recording_wake"])
+            if wake[1] and wake == announced and wake != last:
+                with request_device("/api/voice/recording.wav") as response:
+                    if response.status != 204 and response.headers.get("X-Mr-Li-Wake") == f"{wake[0]}-{wake[1]}":
+                        data = response.read(256_045)
+                        if len(data) > 256_044:
+                            raise ValueError("ESP32 录音超过长度限制")
+                        with wave.open(io.BytesIO(data)) as wav:
+                            if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (1, 2, RATE):
+                                raise ValueError("ESP32 录音格式不正确")
+                            expected = wav.getnframes()
+                            pcm = np.frombuffer(wav.readframes(expected), dtype="<i2")
+                        if len(pcm) != expected:
+                            raise ValueError("ESP32 录音不完整")
+                        last = wake
+                        stream = recognizer.create_stream()
+                        stream.accept_waveform(RATE, pcm.astype(np.float32) / 32768)
+                        recognizer.decode_stream(stream)
+                        text = stream.result.text.strip()
+                        if any(character.isalnum() for character in text):
+                            emit("text", text=text)
+                            if not sys.stdin.readline(4096):
+                                return
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError, TimeoutError, socket.gaierror):
+            resolved_base = None
+            time.sleep(2)
+            continue
+        time.sleep(0.4)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--models", type=Path, required=True)
     parser.add_argument("--device", default="")
+    parser.add_argument("--esp32-config", type=Path, help="ESP32 局域网连接配置")
     parser.add_argument("--check", action="store_true", help="检查模型和输入设备，不开启录音")
     backend = parser.add_mutually_exclusive_group()
     backend.add_argument("--local-asr", dest="local_asr", action="store_true", default=True, help="使用本地SenseVoice（默认，不消耗在线额度）")
@@ -181,6 +286,11 @@ def main():
         isolate_protocol()
     import numpy as np
     import sherpa_onnx as sherpa
+    if args.esp32_config:
+        if not args.local_asr:
+            raise ValueError("ESP32 输入使用本地 ASR")
+        esp32_audio(args.esp32_config, local_recognizer(args.models, sherpa), np, args.check)
+        return
     prefer_bundled_portaudio()
     import sounddevice as sd
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """No microphone/model downloads: exercise the capture state machine with fake audio."""
 import importlib.util
+import io
 from pathlib import Path
 from types import SimpleNamespace as NS
 import json
@@ -9,6 +10,7 @@ import sys
 import unittest
 from unittest.mock import patch
 import tempfile
+import wave
 
 spec = importlib.util.spec_from_file_location("voice_input", Path(__file__).with_name("voice-input.py"))
 voice = importlib.util.module_from_spec(spec)
@@ -16,6 +18,54 @@ spec.loader.exec_module(voice)
 
 
 class CaptureTest(unittest.TestCase):
+    def test_esp32_fetches_only_audio_from_a_new_acknowledged_wake(self):
+        ready = dict(state="listening", wake_word="小李", boot_id=7, wake_count=4,
+                     pending_wake=0, recording_wake=4)
+        pending = dict(ready, state="awaiting_host", wake_count=5, pending_wake=5, recording_wake=0)
+        recorded = dict(pending, state="listening", pending_wake=0, recording_wake=5)
+        requests = []
+        states = iter((ready, ready, pending, recorded))
+        data = io.BytesIO()
+        with wave.open(data, "wb") as wav:
+            wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+            wav.writeframes(b"\x01\x00")
+
+        def open_device(request, **_):
+            path = request.full_url.rsplit("/", 1)[1]
+            requests.append((path, request.data))
+            if path == "status":
+                return io.BytesIO(json.dumps(next(states)).encode())
+            if path == "listen":
+                return io.BytesIO()
+            response = io.BytesIO(data.getvalue())
+            response.status = 200
+            response.headers = {"X-Mr-Li-Wake": "7-5"}
+            return response
+
+        class PCM:
+            def __len__(self):
+                return 1
+
+            def astype(self, _):
+                return 1.0
+
+        stream = NS(accept_waveform=lambda *_: None, result=NS(text="测试语音"))
+        recognizer = NS(create_stream=lambda: stream, decode_stream=lambda _: None)
+        np = NS(frombuffer=lambda *_, **__: PCM(), float32=float)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "esp32.json"
+            config.write_text(json.dumps({"base_url": "http://esp32.local", "api_token": "fixture"}))
+            with patch.object(voice.urllib.request, "build_opener", return_value=NS(open=open_device)), \
+                 patch.object(voice.socket, "gethostbyname", return_value="192.0.2.1") as resolve, \
+                 patch.object(voice, "emit") as emit, patch.object(voice.time, "sleep"), \
+                 patch.object(voice.sys, "stdin", io.StringIO('{"listen":true}\n')):
+                voice.esp32_audio(config, recognizer, np, check=False)
+                resolve.assert_called_once_with("esp32.local")
+        self.assertEqual([path for path, _ in requests],
+                         ["status", "status", "status", "listen", "status", "recording.wav"])
+        self.assertEqual(json.loads(requests[3][1]), {"boot_id": 7, "wake": 5})
+        self.assertEqual([call.args for call in emit.call_args_list], [("ready",), ("wake",), ("text",)])
+
     def test_mac_selects_private_bundled_audio_library_before_global_library(self):
         with tempfile.TemporaryDirectory() as temporary:
             package=Path(temporary)

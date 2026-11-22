@@ -1,6 +1,7 @@
 #include "network.h"
 #include "xgimi_wake.h"
 #include "curtain.h"
+#include "voice.h"
 #include <atomic>
 #include <mutex>
 #include <stdexcept>
@@ -132,6 +133,10 @@ esp_err_t Request(httpd_req_t* request) {
     struct Params { cJSON* value = nullptr; ~Params() { cJSON_Delete(value); } } params;
     try {
         const std::string uri = request->uri;
+#if CONFIG_IDF_TARGET_ESP32S3
+        if (uri == "/api/voice/recording.wav") return SendWakeRecording(request);
+        if (uri == "/api/voice/status") return Json(request, "200 OK", HandleVoiceCommand("voice.status", nullptr));
+#endif
         if (request->method == HTTP_GET) {
             if (uri == "/api/curtain/status") return Json(request, "200 OK", HandleCurtainCommand("curtain.status", nullptr));
             auto result = cJSON_CreateObject();
@@ -155,6 +160,9 @@ esp_err_t Request(httpd_req_t* request) {
         }
         params.value = body.empty() ? cJSON_CreateObject() : cJSON_Parse(body.c_str());
         if (!cJSON_IsObject(params.value)) return Error(request, "400 Bad Request", "Expected JSON object");
+#if CONFIG_IDF_TARGET_ESP32S3
+        if (uri == "/api/voice/listen") return Json(request, "202 Accepted", HandleVoiceCommand("voice.listen", params.value));
+#endif
         if (uri == "/api/curtain/enable")
             return Json(request, "200 OK", HandleCurtainCommand("curtain.enable", params.value));
         const std::string learning = "/api/curtain/learn/";
@@ -230,6 +238,14 @@ void Start() {
         route.uri = rf_paths[i]; route.method = i == 0 ? HTTP_GET : HTTP_POST; route.handler = Request;
         Check(httpd_register_uri_handler(server, &route), "Register curtain API");
     }
+#if CONFIG_IDF_TARGET_ESP32S3
+    const httpd_uri_t voice_paths[] = {
+        {.uri = "/api/voice/status", .method = HTTP_GET, .handler = Request, .user_ctx = nullptr},
+        {.uri = "/api/voice/recording.wav", .method = HTTP_GET, .handler = Request, .user_ctx = nullptr},
+        {.uri = "/api/voice/listen", .method = HTTP_POST, .handler = Request, .user_ctx = nullptr},
+    };
+    for (const auto& route : voice_paths) Check(httpd_register_uri_handler(server, &route), "Register voice API");
+#endif
     esp_timer_create_args_t timer = {};
     timer.callback = [](void*) { if (!connected.load()) last_connect_result = esp_wifi_connect(); };
     timer.name = "wifi_reconnect";

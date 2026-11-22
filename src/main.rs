@@ -13,6 +13,7 @@ mod notices;
 mod opencode;
 mod posture;
 mod proxy;
+mod reminders;
 mod reply;
 mod service;
 mod speech;
@@ -157,6 +158,7 @@ async fn main() -> Result<()> {
         _=builtin::maintain(&bridge.cfg, &oc)=>{},
         r=feishu.run(store.clone())=>r?,
         r=bridge.clone().run()=>r?,
+        _=voice::maintain(bridge.cfg.clone())=>{},
         r=posture::follow_homework(&bridge.cfg, &store)=>r?,
         r=tablet.serve()=>r?,
         _=async {if let Some(ha)=&bridge.cfg.home_assistant {ha.maintain(&oc).await}else{std::future::pending::<()>().await}}=>{},

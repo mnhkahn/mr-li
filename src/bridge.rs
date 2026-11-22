@@ -51,8 +51,8 @@ fn capture_time(at: u64) -> String {
 fn destination(j: &Job) -> Result<String> {
     let values: Vec<String> = serde_json::from_str(&j.key).context("会话标识无效")?;
     ensure!(values.len() == 4, "会话标识无效");
-    // Nonempty root marks group input. Send directly to its chat, regardless of the source thread.
-    Ok(if !values[3].is_empty() {
+    // Group messages and scheduled reminders go directly to the chat.
+    Ok(if !values[3].is_empty() || j.id.starts_with("reminder:") {
         values[2].clone()
     } else {
         j.message_id.clone()
@@ -227,7 +227,7 @@ impl Bridge {
             crate::posture::archive_photo(&self.cfg, &j.id, &media.path).context("照片归档失败")?;
         }
         let mut assessment = crate::posture::Assessment::Unknown;
-        let note = if j.text.trim() == "/posture" {
+        let note = if camera::is_posture_check(&j.text) {
             let observation = crate::posture::analyze(&self.cfg, &media.path).await?;
             media.path = observation.image;
             assessment = observation.assessment;
@@ -448,15 +448,17 @@ impl Bridge {
                 Ok(text)
             }
             "/cron" => {
-                ensure!(
-                    args.is_empty() || args == "list",
-                    "当前支持 /cron list；手动检测用 /posture，启停监测用 /posture start 或 /posture stop"
-                );
-                Ok(format!(
-                    "当前聊天的定时任务：坐姿监测（每 10 分钟图文汇总）\n{}",
-                    self.store.posture_watch_status(&models::scope(&j.key)?)?
-                ))
+                let words: Vec<_> = args.split_whitespace().collect();
+                match words.as_slice() {
+                    [] | ["list"] => Ok(format!(
+                        "当前聊天的定时任务：坐姿监测（ID：posture，每 10 分钟图文汇总）\n{}\n/cron run posture 立即检测一次",
+                        self.store.posture_watch_status(&models::scope(&j.key)?)?
+                    )),
+                    ["run", id] => anyhow::bail!("未找到定时任务：{id}。用 /cron list 查看。"),
+                    _ => Ok("/cron list 查看定时任务\n/cron run <任务ID> 立即执行".into()),
+                }
             }
+            "/reminder" => crate::reminders::command(&self.store, j, args),
             "/baby" | "/notify" => {
                 let tablet = self.tablet.as_ref().context("平板网关未启用")?;
                 let now = crate::posture::now_epoch() as i64;
@@ -1451,6 +1453,7 @@ impl Bridge {
             }
             self.store.queue_due_posture_reports()?;
             self.store.queue_due_posture()?;
+            self.store.queue_due_reminder(crate::reminders::now())?;
             let queued = self.store.jobs("queued")?;
             if camera_active.is_none()
                 && let Some(j) = queued.iter().find(|j| camera::is_capture(&j.text))
@@ -2263,6 +2266,116 @@ mod tests {
     }
 
     use super::*;
+    #[tokio::test]
+    async fn reminder_survives_restart_and_retries_delivery_to_original_chat() -> Result<()> {
+        use axum::{Json, Router, extract::Query, routing::post};
+        use std::{collections::HashMap, sync::Mutex};
+
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let requests = calls.clone();
+        let app = Router::new()
+            .route(
+                "/open-apis/auth/v3/tenant_access_token/internal",
+                post(|| async {
+                    Json(json!({"code":0,"tenant_access_token":"test","expire":3600}))
+                }),
+            )
+            .route(
+                "/open-apis/im/v1/messages",
+                post(
+                    move |Query(query): Query<HashMap<String, String>>, Json(body): Json<Value>| {
+                        let requests = requests.clone();
+                        async move {
+                            assert_eq!(query["receive_id_type"], "chat_id");
+                            assert_eq!(body["receive_id"], "oc_original");
+                            let mut requests = requests.lock().unwrap();
+                            requests.push(body);
+                            Json(json!({"code": if requests.len()==1 {999} else {0}}))
+                        }
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let mut cfg = Config::fixture();
+        cfg.feishu_base_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let dir = std::env::temp_dir().join(format!("mr-li-reminder-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir)?;
+        let path = dir.join("state.db");
+        let cfg = Arc::new(cfg);
+        let mut bridge = Bridge {
+            cfg: cfg.clone(),
+            store: Arc::new(Store::open(&path)?),
+            feishu: Arc::new(Feishu::new(cfg.clone())?),
+            agents: Arc::new(AgentHub::new(cfg)?),
+            tablet: None,
+        };
+        let due = crate::reminders::now() + 60;
+        let timestamp = chrono::DateTime::from_timestamp(due, 0)
+            .unwrap()
+            .to_rfc3339();
+        let mut job = Job {
+            id: "reminder-add".into(),
+            key: json!(["workspace", "owner", "oc_original", ""]).to_string(),
+            message_id: "om_original".into(),
+            text: format!("/reminder add {timestamp} 交房租"),
+            result: String::new(),
+            sent: 0,
+        };
+        assert!(bridge.command(&job, None).await?.contains("已创建提醒"));
+        let scope = models::scope(&job.key)?;
+        let id = bridge.store.list_reminders(&scope)?[0].id.clone();
+        let mut other = Job {
+            key: json!(["workspace", "other", "oc_original", ""]).to_string(),
+            text: format!("/reminder del {id}"),
+            ..job.clone()
+        };
+        assert!(bridge.command(&other, None).await.is_err());
+        other.text = "/reminder list".into();
+        assert!(!bridge.command(&other, None).await?.contains("交房租"));
+
+        bridge.store.queue_due_reminder(due - 1)?;
+        assert!(bridge.store.jobs("replying")?.is_empty());
+        bridge.store = Arc::new(Store::open(&path)?);
+        bridge.store.queue_due_reminder(due)?;
+        bridge.store.queue_due_reminder(due + 1)?;
+        assert_eq!(bridge.store.jobs("replying")?.len(), 1);
+        assert!(bridge.deliver().await.is_err());
+        bridge.store = Arc::new(Store::open(&path)?);
+        job.text = "/reminder list".into();
+        assert!(bridge.command(&job, None).await?.contains("待送达"));
+        rusqlite::Connection::open(&path)?.execute("UPDATE delivery_retry SET due=0", [])?;
+        bridge.deliver().await?;
+        bridge.deliver().await?;
+        assert!(bridge.command(&job, None).await?.contains("已送达"));
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0]["uuid"], calls[1]["uuid"]);
+            assert_eq!(
+                serde_json::from_str::<Value>(calls[1]["content"].as_str().unwrap())?["text"],
+                "提醒：交房租"
+            );
+        }
+        job.text = format!("/reminder del {id}");
+        bridge.command(&job, None).await?;
+        assert!(bridge.store.list_reminders(&scope)?.is_empty());
+
+        job.id = "reminder-to-cancel".into();
+        job.text = format!("/reminder add {timestamp} 取消这条");
+        bridge.command(&job, None).await?;
+        let id = &bridge.store.list_reminders(&scope)?[0].id;
+        bridge.store.queue_due_reminder(due)?;
+        job.text = format!("/reminder del {id}");
+        bridge.command(&job, None).await?;
+        bridge.store.queue_due_reminder(due + 1)?;
+        assert!(bridge.store.jobs("replying")?.is_empty());
+        drop(bridge);
+        std::fs::remove_dir_all(dir)?;
+        server.abort();
+        Ok(())
+    }
+
     #[tokio::test]
     async fn slash_commands_use_workspace_metadata_and_cancel_only_owned_speech() -> Result<()> {
         use axum::{Json, Router, extract::Query, routing::get};

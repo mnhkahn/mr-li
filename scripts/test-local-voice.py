@@ -119,6 +119,29 @@ class WorkerTest(unittest.TestCase):
         self.assertNotEqual(*requests)
         self.assertEqual(*outputs)
 
+    def test_previous_cache_is_compacted_without_resynthesis(self):
+        def seed(program, args):
+            with wave.open(args[3], "wb") as output:
+                output.setparams((1, 2, 24000, 0, "NONE", "not compressed"))
+                output.writeframes(b"\0\0" * 100)
+            raise ExecIntercept()
+
+        with patch.object(os, "execv", seed), self.assertRaises(ExecIntercept):
+            self.invoke("我在，请说。", ["--cache-only"])
+
+        (self.root / "bin/mr-li-local-voice.lock-v2").touch()
+        (self.root / "bin/mr-li-local-voice.pause-v1").touch()
+        for cli_args, mode in (([], "compact-play"), (["--cache-only"], "compact-cache")):
+            with patch.object(os, "execv", side_effect=ExecIntercept) as execute, \
+                 patch.object(voice.fcntl, "flock") as lock, self.assertRaises(ExecIntercept):
+                self.invoke("我在，请说。", cli_args)
+            args = execute.call_args.args[1]
+            self.assertEqual(args[5], mode)
+            source = Path(args[2])
+            self.assertTrue(source.is_file())
+            self.assertEqual(Path(args[3]), source.with_suffix(".pause-v1.wav"))
+            lock.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

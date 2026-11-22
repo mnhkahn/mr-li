@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Read GitHub deployment results and play them through mr-li's local speech."""
+"""Receive GitHub deployment webhooks and play them through mr-li speech."""
 import argparse
-import fcntl
+from contextlib import closing
+import hashlib
+import hmac
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import shlex
+import shutil
+import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -21,18 +29,18 @@ OUTCOMES = {
     'action_required': '需要人工处理', 'stale': '已失效',
 }
 # Repository, spoken name, workflow file, production branch (blank for tags),
-# deployment job override, private repository.
+# deployment job override.
 WORKFLOWS = (
-    ('cyeam_admin', 'Cyeam 管理端', 'deploy.yml', 'main', 'deploy', True),
-    ('cyeam_web', 'Cyeam 主站', 'fly.yml', 'master', '', True),
-    ('homework-gateway', '作业网关', 'deploy.yml', 'main', '', True),
-    ('cnote', 'C Note', 'release.yml', '', '', False),
-    ('mi-clip', 'Mi Clip', 'release.yml', '', '', False),
-    ('cyeam-cli', 'Cyeam 命令行工具', 'release.yml', '', '', False),
-    ('homework', '作业平板', 'android-release.yml', '', '', False),
-    ('xiaoli', '小李服务', 'fly-deploy.yml', 'main', '', False),
-    ('xiaoli', '小李', 'release.yml', '', '', False),
-    ('seal', 'Seal', 'android-release.yml', '', '', True),
+    ('cyeam_admin', 'Cyeam 管理端', 'deploy.yml', 'main', 'deploy'),
+    ('cyeam_web', 'Cyeam 主站', 'fly.yml', 'master', ''),
+    ('homework-gateway', '作业网关', 'deploy.yml', 'main', ''),
+    ('cnote', 'C Note', 'release.yml', '', ''),
+    ('mi-clip', 'Mi Clip', 'release.yml', '', ''),
+    ('cyeam-cli', 'Cyeam 命令行工具', 'release.yml', '', ''),
+    ('homework', '作业平板', 'android-release.yml', '', ''),
+    ('xiaoli', '小李服务', 'fly-deploy.yml', 'main', ''),
+    ('xiaoli', '小李', 'release.yml', '', ''),
+    ('seal', 'Seal', 'android-release.yml', '', ''),
 )
 LOG_REASONS = (
     (r'undefined symbols for architecture', '链接失败，构建目标存在未解析的符号'),
@@ -120,7 +128,7 @@ def failure_detail(get, base, jobs):
 
 
 def announcement(get, target, run):
-    repo, label, _, branch, deployment_job, _ = target
+    repo, label, _, branch, deployment_job = target
     base = f'/repos/mnhkahn/{repo}'
     attempt = f'/attempts/{run["run_attempt"]}' if run.get('run_attempt') else ''
     jobs_path = f'{base}/actions/runs/{run["id"]}{attempt}/jobs?per_page=100'
@@ -150,84 +158,192 @@ def announcement(get, target, run):
     return f'{label}发布{OUTCOMES[conclusion]}。{version}。{reason}。'
 
 
-def save(path, state):
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(state, ensure_ascii=False) + '\n')
-    temporary.replace(path)
+def speak(root, message):
+    # The Intel deployment can take more than the CLI's 180-second limit to
+    # synthesize and play a long uncached utterance.
+    remaining = message.strip()
+    while remaining:
+        end = len(remaining)
+        if end > 60:
+            boundary = max(remaining.rfind(mark, 25, 60) for mark in ('。', '，', '、', ' '))
+            end = boundary + 1 if boundary >= 0 else 60
+        subprocess.run([str(root / 'scripts/run.sh'), 'speak', remaining[:end]], check=True,
+                       timeout=190, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        remaining = remaining[end:].lstrip()
 
 
-def poll(root, directory, state, get, authenticated):
-    path = directory / 'state.json'
-    pending = []
-    failures = False
-    for target in WORKFLOWS:
-        repo, _, workflow, _, _, private = target
-        if private and not authenticated:
-            continue
-        key = f'{repo}/{workflow}'
-        try:
-            response = get(f'/repos/mnhkahn/{repo}/actions/workflows/{workflow}/runs?per_page=30')
-            runs = [run for run in response['workflow_runs'] if eligible(target, run)]
-        except (RuntimeError, KeyError) as error:
-            print(f'{key}: {error}', file=sys.stderr)
-            failures = True
-            continue
-        events = [(f'{run["id"]}:{run.get("run_attempt") or 1}', run) for run in runs]
-        if key not in state:
-            state[key] = [event for event, _ in events]
-            save(path, state)
-            print(f'{key}: 已建立基线')
-            continue
-        pending.extend((run['updated_at'], target, event, run) for event, run in events if event not in state[key])
-
-    played = 0
-    for _, target, event, run in sorted(pending):
-        if played >= 3:
-            break
-        key = f'{target[0]}/{target[2]}'
-        try:
-            message = announcement(get, target, run)
-            if message:
-                played += 1
-                subprocess.run([str(root / 'scripts/run.sh'), 'speak', message], check=True, timeout=190,
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            state[key] = (state[key] + [event])[-1000:]
-            save(path, state)
-            print(f'{key}: {event} ' + ('已播报' if message else '已跳过'))
-        except (RuntimeError, subprocess.SubprocessError, OSError):
-            print(f'{key}: {event} 无法生成或播放，将在下次检查重试', file=sys.stderr)
-            failures = True
-    return int(failures)
+def workflow_target(repo, run):
+    return next((target for target in WORKFLOWS if repo == target[0] and eligible(target, run)), None)
 
 
-def install(root, directory):
-    result = subprocess.run(['/usr/bin/crontab', '-l'], capture_output=True, text=True)
+def serve(root, directory, port, secret, get):
+    db_path = directory / 'webhooks.sqlite3'
+    with closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS deliveries (
+                repository TEXT NOT NULL, run_id INTEGER NOT NULL, attempt INTEGER NOT NULL,
+                payload TEXT, failures INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (repository, run_id, attempt))
+        """)
+    state_path = directory / 'state.json'
+    previously_spoken = json.loads(state_path.read_text()) if state_path.exists() else {}
+    wake = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            self.connection.settimeout(6)
+
+        def log_message(self, *args):
+            pass
+
+        def reply(self, code):
+            self.send_response(code)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+
+        def do_GET(self):
+            self.reply(204 if self.path == '/healthz' else 404)
+
+        def do_POST(self):
+            if self.path != '/github':
+                self.reply(404)
+                return
+            try:
+                length = int(self.headers.get('Content-Length') or '')
+            except ValueError:
+                self.reply(400)
+                return
+            if not 0 < length <= 1048576:
+                self.reply(413)
+                return
+            try:
+                body = self.rfile.read(length)
+            except OSError:
+                self.reply(408)
+                return
+            signature = 'sha256=' + hmac.new(secret, body, hashlib.sha256).hexdigest()
+            provided = self.headers.get('X-Hub-Signature-256', '')
+            if not provided.isascii() or not hmac.compare_digest(signature, provided):
+                self.reply(401)
+                return
+            if self.headers.get('X-GitHub-Event') != 'workflow_run':
+                self.reply(204)
+                return
+            try:
+                event = json.loads(body)
+                if event['action'] != 'completed':
+                    self.reply(204)
+                    return
+                owner, repo = event['repository']['full_name'].split('/')
+                run = event['workflow_run']
+                target = workflow_target(repo, run) if owner == 'mnhkahn' else None
+                if not target:
+                    self.reply(204)
+                    return
+                run_id, attempt = run['id'], run.get('run_attempt') or 1
+                if not isinstance(run_id, int) or not isinstance(attempt, int):
+                    raise ValueError('invalid run id')
+            except (AttributeError, KeyError, TypeError, ValueError):
+                self.reply(400)
+                return
+            if f'{run_id}:{attempt}' in previously_spoken.get(f'{repo}/{target[2]}', []):
+                self.reply(204)
+                return
+            try:
+                with closing(sqlite3.connect(db_path)) as db, db:
+                    db.execute('INSERT OR IGNORE INTO deliveries(repository, run_id, attempt, payload) VALUES (?, ?, ?, ?)',
+                               (repo, run_id, attempt, json.dumps(run)))
+            except (sqlite3.Error, OverflowError):
+                self.reply(503)
+                return
+            wake.set()
+            self.reply(202)
+
+    def process():
+        with closing(sqlite3.connect(db_path)) as db:
+            while True:
+                wake.clear()
+                row = db.execute(
+                    """SELECT repository, run_id, attempt, payload, failures FROM deliveries
+                       WHERE payload IS NOT NULL AND next_attempt <= ? ORDER BY rowid LIMIT 1""",
+                    (int(time.time()),)).fetchone()
+                if row is None:
+                    next_attempt, = db.execute('SELECT MIN(next_attempt) FROM deliveries WHERE payload IS NOT NULL').fetchone()
+                    wake.wait(max(0, next_attempt - time.time()) if next_attempt is not None else None)
+                    continue
+                repo, run_id, attempt, payload, failures = row
+                try:
+                    run = json.loads(payload)
+                    target = workflow_target(repo, run)
+                    message = announcement(get, target, run) if target else None
+                    if message:
+                        speak(root, message)
+                    with db:
+                        db.execute('UPDATE deliveries SET payload = NULL WHERE repository = ? AND run_id = ? AND attempt = ?',
+                                   (repo, run_id, attempt))
+                    print(f'{repo}: {run_id}:{attempt} ' + ('已播报' if message else '已跳过'), flush=True)
+                except (KeyError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+                    delay = min(900, 30 * (2 ** min(failures, 5)))
+                    with db:
+                        db.execute("""UPDATE deliveries SET failures = ?, next_attempt = ?
+                                      WHERE repository = ? AND run_id = ? AND attempt = ?""",
+                                   (failures + 1, int(time.time()) + delay, repo, run_id, attempt))
+                    print(f'{repo}: {run_id}:{attempt} 播报失败，{delay} 秒后重试', file=sys.stderr, flush=True)
+
+    with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
+        threading.Thread(target=process, daemon=True).start()
+        print(f'GitHub Webhook listening on 127.0.0.1:{port}', flush=True)
+        server.serve_forever()
+
+
+def install(root, directory, port):
+    directory.mkdir(parents=True, exist_ok=True)
+    if not (directory / 'webhook-secret').is_file():
+        raise RuntimeError('请先将 GitHub Webhook 密钥保存到 .data/github-release-broadcast/webhook-secret')
+    logs = root / 'logs'
+    logs.mkdir(exist_ok=True)
+    worker = directory / 'worker.py'
+    temporary = worker.with_suffix('.tmp')
+    shutil.copyfile(__file__, temporary)
+    temporary.chmod(0o600)
+    temporary.replace(worker)
+    label = 'com.cyeam.github-release-broadcast'
+    domain = f'user/{os.getuid()}'
+    service = directory / f'{label}.plist'
+    service.write_bytes(plistlib.dumps({
+        'Label': label, 'LimitLoadToSessionType': 'Background',
+        'ProgramArguments': [sys.executable, str(worker), 'serve', '--root', str(root), '--port', str(port)],
+        'WorkingDirectory': str(root), 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 10,
+        'StandardOutPath': str(logs / 'github-release-broadcast.log'),
+        'StandardErrorPath': str(logs / 'github-release-broadcast.log'),
+    }))
+    launchctl = '/bin/launchctl'
+    subprocess.run([launchctl, 'bootout', f'{domain}/{label}'], capture_output=True)
+    subprocess.run([launchctl, 'bootstrap', domain, str(service)], check=True)
+    crontab = '/usr/bin/crontab'
+    result = subprocess.run([crontab, '-l'], capture_output=True, text=True)
     if result.returncode and 'no crontab for' not in result.stderr:
         raise RuntimeError('无法读取当前 crontab')
-    backup = directory / 'crontab.previous'
-    if not backup.exists():
-        backup.write_text(result.stdout)
     marker = '# MR-LI GITHUB RELEASE BROADCAST'
     lines = [line for line in result.stdout.splitlines() if not line.endswith(marker)]
-    (root / 'logs').mkdir(exist_ok=True)
-    command = ' '.join(shlex.quote(str(arg)) for arg in
-                       (sys.executable, root / 'scripts/github-release-broadcast.py', 'once'))
-    log = shlex.quote(str(root / 'logs/github-release-broadcast.log'))
-    lines.append(f'*/10 * * * * {command} >> {log} 2>&1 {marker}')
-    subprocess.run(['/usr/bin/crontab', '-'], text=True, input='\n'.join(lines) + '\n', check=True)
+    lines.append(f'@reboot {launchctl} bootstrap {domain} {shlex.quote(str(service))} {marker}')
+    subprocess.run([crontab, '-'], text=True, input='\n'.join(lines) + '\n', check=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['install', 'once', 'preview'])
+    parser.add_argument('action', choices=['install', 'serve', 'preview'])
     parser.add_argument('repo', nargs='?')
     parser.add_argument('run_id', type=int, nargs='?')
+    parser.add_argument('--root', type=Path, default=ROOT)
+    parser.add_argument('--port', type=int, default=17847)
     args = parser.parse_args()
     os.umask(0o077)
-    directory = ROOT / '.data/github-release-broadcast'
+    root = args.root.resolve()
+    directory = root / '.data/github-release-broadcast'
     if args.action == 'install':
-        directory.mkdir(parents=True, exist_ok=True)
-        install(ROOT, directory)
+        install(root, directory, args.port)
         return 0
     token_file = directory / 'token'
     token = os.environ.get('GH_TOKEN') or (token_file.read_text().strip() if token_file.is_file() else '')
@@ -244,15 +360,10 @@ def main():
         print(announcement(get, target, run) or '已跳过该发布')
         return 0
 
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / 'lock').open('a') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return 0
-        path = directory / 'state.json'
-        state = json.loads(path.read_text()) if path.exists() else {}
-        return poll(ROOT, directory, state, get, bool(token))
+    secret = (directory / 'webhook-secret').read_bytes().strip()
+    if not secret:
+        raise RuntimeError('GitHub Webhook 密钥为空')
+    return serve(root, directory, args.port, secret, get)
 
 
 if __name__ == '__main__':

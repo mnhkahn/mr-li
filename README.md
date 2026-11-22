@@ -410,108 +410,18 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ### GitHub 发布播报
 
-Mac mini 每 10 分钟检查已配置项目的 GitHub Actions 发布工作流，使用 `scripts/run.sh speak` 播放新完成的结果。首次检查每个工作流时建立基线。之后，每个 run ID 和尝试次数分别记账，播放失败会重试。每次检查最近 30 次运行。管理端以生产部署任务的结果为准。
+Mac mini 通过 HTTPS 入口接收 GitHub App 的 `workflow_run` Webhook。GitHub 在工作流完成时主动推送，空闲时不访问 GitHub API。服务验证 Webhook 签名，只接收 `WORKFLOWS` 中配置的发布流程，并按仓库、运行编号和尝试次数排重。事件落盘后才应答 GitHub，播报失败会重新尝试。
 
-发布成功时播报版本标签和 Release 正文摘要。正文缺失时采用本次提交说明，分支部署播报短提交号。发布失败时播报失败的任务和步骤，日志有可识别错误时补充原因。
+发布成功时播报版本标签和 Release 正文摘要。正文缺失时采用本次提交说明，分支部署播报短提交号。失败时补读 GitHub 的任务、步骤和错误日志，管理端以生产部署任务的结果为准。长文案在标点附近分段，用 `scripts/run.sh speak` 播放。
 
-发布脚本的 `WORKFLOWS` 列出监控项目和实际发布流程。私有仓库可以使用 GitHub 细粒度令牌，向选定仓库授予 Actions、Contents 和 Checks 的只读权限，将令牌保存在部署目录的 `.data/github-release-broadcast/token`，文件权限设为 `600`。
+在 GitHub App 中订阅 Workflow run，授予 Actions 只读权限，并安装到所需项目。将 Webhook 指向 `https://<入口>/github`。将 Webhook 密钥写到部署目录的 `.data/github-release-broadcast/webhook-secret` 并设为权限 `600`。补读 Release、任务和日志可使用向选定仓库授予 Actions、Contents 和 Checks 只读权限的细粒度令牌，令牌文件是同目录下的 `token`。
 
 ```sh
-/usr/bin/python3 scripts/github-release-broadcast.py once
 /usr/bin/python3 scripts/github-release-broadcast.py install
 /usr/bin/python3 scripts/github-release-broadcast.py preview mi-clip 44996695578
 ```
 
-`preview` 输出一条已有运行的播报文案。定时任务日志位于 `logs/github-release-broadcast.log`。删除 crontab 中标记为 `# MR-LI GITHUB RELEASE BROADCAST` 的一行即可停用。
-
-## 飞书自然回复与常见交互
-
-普通问答直接发送简短自然文字。每次模型请求会说明飞书支持的呈现方式，复杂回复由 Agent 输出受限的 `feishu_reply: 1` 语义结构，桥接校验后生成飞书原生消息，不直接执行模型提供的卡片 JSON。完整协议和例子见 `resource/feishu-replies.txt`。
-
-支持图文 post、Card 2.0 结果卡片、字段对、原生分页表格、折叠详情、图片、视频、链接按钮、操作/确认/取消按钮、更多操作菜单和单选下拉框。补充信息表单支持文本、多行文字、整数、数字、单选、多选、是非、日期和时间，统一提交、重置或取消；数字范围、必填和选项均在服务端再次校验。图片/视频只引用当前会话已上传的真实媒体任务，不能使用任意素材 key、URL 或本地路径。拍摄工具默认已经发送媒体，最终回答不应重复发送。
-
-卡片回调按用户、工作目录、聊天、实际消息 ID、注册操作和 30 分钟有效期校验。每张卡只接收一次操作，回调消费与新任务在同一 SQLite 事务中保存；相同事件重送不会重复执行，不同点击不能重复消费。按钮、菜单、下拉选择和表单提交都成为新的用户请求，重新获得本轮工具上下文，不复用原请求的临时 token。操作后原卡片显示已处理状态，表单取消不会启动模型或执行业务动作。日期/时间选择只收集信息，不表示创建了通用定时任务。
-
-结构无效、素材无权限或飞书明确拒绝富消息时退回正文文字；网络失败保留原消息和幂等标识重试，避免因发送状态不明而额外发一条降级回复。富消息和卡片绑定均持久化，服务重启后仍可继续发送或处理未过期卡片。
-
-验证：`cargo test --locked reply` 和 `cargo test --locked rich_outbox`，涵盖各类组件、回调隔离/去重/失效、表单校验、素材权限、发送降级及网络重试。实际客户端的按钮和表单交互需在飞书中点击验收。
-
-## Mac mini 麦克风语音对话
-
-新增独立的 `voice` 输入进程：说“你好，李老师”唤醒，停顿后会用配置的音色回答“我在，请说”；也支持唤醒词后直接接着说要求。本机 sherpa-onnx 负责关键词检测、Silero VAD 断句和离线 SenseVoice 转写，录音不落盘，转写后进入现有 bridge 队列。默认ASR不消耗在线额度；也保留了与xiaoli相同的硅基流动ASR接口作为显式可选后端。语音不选择 Agent：执行时读取绑定聊天当前 `/model` 设置，复用同一话题的会话、权限处理和内置工具。普通回复仅在本机显示并播报；Agent 的结构化补充提问仍通过绑定飞书聊天处理。
-
-```bash
-# 从源码运行时先编译；发布包已包含二进制。
-cargo build --locked --release
-# 需要 Python 3.10+；下载本地唤醒词、VAD和SenseVoice模型。
-bash scripts/setup-voice.sh
-# bridge 应已运行；目标飞书聊天至少发送过一次消息。
-scripts/run.sh voice-check
-# 在 Mac mini 本机桌面终端运行，先向 macOS 申请麦克风权限。
-bash scripts/voice-start.sh
-```
-
-如果有多个允许的用户或聊天，在 `.env` 指定 `MR_LI_VOICE_USER_ID` 和 `MR_LI_VOICE_CHAT_ID`；只有唯一候选时才自动绑定。启动时固定为该聊天最近收到消息的话题，后续 Agent 切换实时生效。`MR_LI_VOICE_INPUT_DEVICE` 可选设备名称或数字 ID，留空使用系统默认输入；`voice-check` 列出设备并加载模型检查，不录音。Mac mini 需要系统中实际存在的麦克风输入设备，没有输入时会报错。首次在部署用户的桌面终端前台运行 `voice-start.sh`，通过包含 `NSMicrophoneUsageDescription` 的原生授权程序调用苹果公开API申请麦克风权限，系统弹窗点“允许”后才启动监听。`voice-check` 只检查设备/格式，不会完成首次授权；没有“终端”条目时先运行启动脚本，不手动修改TCC权限库。被明确拒绝后，需在系统麦克风隐私列表中重新允许对应终端，再启动；该进程与现有无桌面登录的后台 bridge 分开启动，暂不自动安装开机录音服务。
-
-回复继续使用 `MR_LI_SPEECH_PROGRAM`、`MR_LI_SPEAK_VOICE` 和现有输出设备，不修改音色。语音任务失败会明确播报简短提示：429限流时说“我听到了，但当前模型限流了，请稍后再试。”，其他失败说“我听到了，但这次处理失败了，请稍后再试。”；本地克隆模式部署时提前缓存这两句，避免临时合成详细错误造成长时间无反馈。完整错误仍保留在任务记录中；正常回复中提到429不会被误改成错误提示。处理要求和播报期间关闭麦克风，播报结束后重新收音；15 秒内可继续说话，超时恢复等待唤醒，说“结束对话”“停止对话”或“再见”也会回到待唤醒状态。单段最长 30 秒，停顿约 0.8 秒提交。进程退出不重发已提交的任务，也不重播旧结果；需要停止正在执行的任务时，在绑定飞书聊天使用 `/stop`。语音进程和 bridge 必须使用相同 `.env`、工作目录与数据目录。
-
-可选云语音：`python3 scripts/import-xiaoli-speech.py ../xiaoli/server` 导入xiaoli的ASR/TTS模型配置与凭证，不修改xiaoli。语音API配置保存在私有 `.data/speech/config.json`，密钥在权限为600的独立 `api-key` 文件，不进入Agent提示词、命令行或示例配置。运行 `scripts/speech-api.sh --register-voice /absolute/path/to/reference.wav` 用原参考音频注册CosyVoice克隆，成功后才把 `MR_LI_SPEECH_PROGRAM` 指向部署目录 `scripts/speech-api.sh`；不会换成anna等演示音色。云ASR须显式给 `voice-input.py` 传 `--cloud-asr`；`setup-voice.sh --cloud-asr` 可以省略离线ASR模型。新文字可由硅基流动实时合成，缓存仅用于重复请求，不依赖HF公共Demo；云服务失败时不会悄悄切换音色。
-
-Mac mini（i5-4260U、4GB、macOS12.7.6）本地ASR实测：5.4秒系统中文测试音频，识别约0.48秒，含加载的进程峰值约780MB，首次模型加载约5.07秒。`setup-voice.sh` 为macOS15之前的系统选择兼容的sherpa-onnx 1.10.46，避免新轮子依赖不存在的CoreML符号。macOS录音固定优先使用sounddevice轮子自带的PortAudio19.7，避免`/usr/local/lib`中的旧19.6录音库抢先被加载，后者在现代Python上可能因旧Component Manager接口报`-66748`。Python及原生库的诊断统一走stderr，JSON事件使用独立文件描述符，避免底层错误误报成“语音输入协议无效”。收音使用0.5秒缓冲；偶发溢出时重置唤醒/断句状态并丢弃残缺要求，继续等待唤醒，10秒内连续8次丢帧才退出。“麦克风已就绪”仅在实际打开输入设备后显示。设备已安装离线普通话音色Ting-Ting，但当前部署按用户要求保留克隆说话人，使用下文的本地ZipVoice，不切换到系统音色。
-
-关键词模型参考 [sherpa-onnx 官方关键词检测](https://k2-fsa.github.io/sherpa/onnx/kws/pretrained_models/index.html)；在线语音参考硅基流动的[ASR](https://docs.siliconflow.cn/docs/api/audio-transcriptions-post)、[TTS](https://docs.siliconflow.cn/docs/api/audio-speech-post)和[克隆音色注册](https://docs.siliconflow.cn/docs/api/uploads-audio-voice-post)。ASR/TTS若返回HTTP402，表示当前账户余额不足；不自动更换密钥、充值或切换到其他音色。Mac mini尚未接入实体麦克风时可先部署，收音进程保持不启动。
-
-## Agent 调用李老师内置能力
-
-bridge 自动向 OpenCode 注册 `teacher` MCP；其他 ACP Agent 在创建/恢复会话时传入，TRAE 使用 thread 配置。内置 `builtin-mcp` 通过仅监听本机的接口调用同一套命令队列。可直接说“跟宝宝说该写作业了”“拍张照片给我看看”“录十秒视频”“检查一下坐姿”“开启坐姿提醒”“在平板首页提醒先写数学”“刚才的任务完成了吗”。原 slash 命令继续可用。
-
-| 工具 | 能力 |
-| --- | --- |
-| `teacher_speak` | Mac mini 喇叭播报、停止本会话语音，沿用现有音色，最多 500 字 |
-| `teacher_camera` | 摄像头照片、1–30 秒视频，直接发送到请求来源聊天 |
-| `teacher_image` | 发送工作目录内的 PNG、JPEG、GIF、WebP 图片，以原生图片消息展示，单张小于 10MB |
-| `teacher_file` | 发送工作目录内的 PDF、Word、表格、压缩包等普通文件，可指定中文文件名，单文件非空且不超过 30MB |
-| `teacher_posture` | 单次坐姿检测、开启或停止本聊天定时监测，保留原时段和采样间隔限制 |
-| `teacher_notice` | 平板首页通知、取消本用户在本聊天尚未送达的通知 |
-| `teacher_proxy` | 查询节点、按国家/地区筛选、测速排名、按用户要求切换节点或自动选择最低延迟节点 |
-| `teacher_query` | `/tasks`、`/task`、`/status`、`/channel`、`/cron list`、`/posture status`、`/notify list`、`/skills`、`/mcp`、`/help` |
-
-每次模型请求会附带一个临时上下文标识，工具只允许在该请求执行期间使用，用户、聊天和消息来源由桥接记录确定，不接受 Agent 自选用户/聊天。副作用操作使用 `operation_id` 去重，复用同一标识不会重复播报或拍摄；改变参数时不能复用同一标识。文本结果交回 Agent，照片/视频继续由现有媒体发送流程发送，避免重复文字回复。工具只回传拍摄状态和坐姿检测文字，未把摄像头画面交给 Agent，不能据此声称 Agent 已看过照片。
-
-长操作等待超时会返回任务 ID 和未确认状态，应查询原任务，不能换标识重做。通知排队不代表已送达，应查询通知状态。`/approve`、`/deny`、`/answer`、`/new`、`/model`（含兼容入口）和通用 `/stop` 不作为 Agent 工具；直接命令和卡片仍可使用。这里接入的是文字自然语言调用，飞书语音消息识别尚未接入。
-
-可以对任意 Agent 说“把报告生成 PDF 发给我”或“把这个目录压缩后发到聊天”。Agent 先把文件保存到 `MR_LI_WORKSPACE`，再用 `teacher_file` 提交 `path`（相对工作目录或目录内绝对路径），可选 `file_name` 设置接收者看到的名字。工具不接受收件人或聊天参数，附件发往原请求的聊天；目录本身不能直接发送，工作目录外路径、指向目录外的符号链接、空文件和超限文件会拒绝。
-
-发送已有图片用 `teacher_image`，参数与 `teacher_file` 相同，支持 PNG、JPEG、GIF、WebP，单张必须小于 10MB。图片根据内容识别格式，不依赖扩展名；其他格式可用 `teacher_file` 作为附件发送。图片与文件共用 `file_delivery` 状态、去重和持久化发送重试机制。
-
-桥接先制作有大小限制的临时副本，再通过飞书 [IM 文件上传接口](https://open.feishu.cn/document/server-docs/im-v1/file/create) 上传，使用原生 `file` 消息发送附件。需要应用的 `im:resource` 或 `im:resource:upload` 资源上传权限以及现有的发消息权限。`file_delivery=pending` 表示已上传、等待发送，只有 `sent` 表示消息接口已确认发送，不代表用户已阅读。上传后的文件标识会保存到任务结果，发送失败或桥接重启后可重试原消息，不重新上传；相同 `operation_id` 的调用复用原任务。上传中可 `/stop`，中断时结果未确认的操作不会自动重跑。本地路径和 Markdown 文件链接不会被当成附件。`/channel` 会显示文件发送入口，`teacher_query task` 可查询原任务状态。
-
-验证：`cargo test --locked builtin` 覆盖参数边界、请求失效、用户/会话隔离、去重、本机接口认证和查询。`scripts/smoke-builtin.py bin/mr-li` 检查 stdio 握手和真实工具目录，不播放声音或拍摄。
-
-## Home Assistant 内置命令与 Agent 工具
-
-在部署目录 `.env` 配置 `XIAOLI_HA_URL=http://127.0.0.1:8123` 和 `XIAOLI_HA_TOKEN`，或者用 `XIAOLI_HA_TOKEN_FILE` 指向权限为 `600` 的长期访问令牌文件。两者同时提供时优先使用直接配置的令牌。该地址是 Mac mini 同机地址，使用本地连接；远程 HA 可设置 HTTPS 地址。URL 查询参数会移除，`external_auth=1` 不能代替 API 认证。配置后重启 bridge。
-
-飞书命令（不消耗模型额度）：
-
-- `/ha devices`：返回物理设备、品牌型号、房间、实体类型、状态和属性；也可加名称、类型、房间或 ID 筛选，如 `/ha devices 客厅`。
-- `/ha commands <实体ID或设备ID>`：查询实际可用操作与参数。实体域（如 `light`、`sensor`、`remote`）作为类型，一个物理设备可以包含多种类型。只读传感器返回空操作。
-- `/ha control <实体ID> <domain.service> [JSON参数]`：控制一个明确实体，例如 `/ha control light.living_room light.turn_on {"brightness_pct":40}`。示例 ID 必须替换成查询实际返回的 ID。
-
-本机通过 `./scripts/run.sh ha devices`、`ha commands <ID>`、`ha control <ID> <domain.service> '{"参数":值}'` 使用同一实现，输出 JSON。命令入口也可独立运行，不需要飞书或 OpenCode 配置。
-
-程序自带 `ha-mcp` stdio MCP，工具名为 `ha_devices`、`ha_commands`、`ha_control`。bridge 会向 OpenCode 自动注册 `home_assistant` MCP，每 30 秒检查并恢复连接；其他 ACP Agent 在创建/恢复会话时传入 MCP，TRAE 在 thread 配置中传入。可对 Agent 说“查看家里有哪些设备”“投影仪支持哪些操作”“把客厅灯调到 40%”。名称有歧义时先澄清，不猜实体。切换 Agent 后需创建或恢复会话，才能加载新工具。
-
-MCP 配置仅传入程序路径、`ha-mcp` 子命令和私有 `.env` 路径，令牌由该工具进程读取，不进入模型参数、工具清单或错误响应。环境变量可覆盖 `.env`；给 Agent 自动接入时将 HA 配置保存在该 `.env` 或它引用的令牌文件中。`ha-mcp` 的 stdout 仅输出 JSON-RPC，运行日志走 stderr。
-
-Cline 3.0.74 会忽略 ACP 会话传入的 `mcpServers`（[上游问题 #15716](https://github.com/cline/cline/issues/15716)）。桥接在每次启动 Cline 时额外生成权限为 `600` 的 `.data/agents/cline/mcp-settings.json`，通过官方 `CLINE_MCP_SETTINGS_PATH` 入口加载 HA、平板和李老师内置工具；同时设置 `CLINE_SESSION_BACKEND_MODE=local`，避免复用未继承配置的后台 hub。不修改用户全局 Cline 配置。此文件只包含桥接管理的工具，HA 令牌仍由工具进程读取。升级桥接后重启服务即可，已有会话在恢复时也会加载工具，无需清除聊天记录。
-
-工具通过 HA WebSocket API 读取设备、实体、房间、状态和服务描述，按 HA target、supported_features、属性过滤操作与参数，检查必填参数和简单数值范围；不支持的 selector 约束保守处理，复杂参数最终由 HA 验证。跨集成域的操作需要显式匹配实体域。控制只允许单个实体，参数不能另传 `entity_id`、`device_id`、`area_id`、`label_id` 或 `target` 扩大控制范围。HA 的实体权限由令牌用户决定。
-
-控制返回的 `accepted` 表示 HA 服务调用成功，`observed_state` 是即时回读，不等同于物理动作证据（`physical_effect_confirmed` 固定 false）。设备可能稍后更新。回读失败保留 accepted 并返回 `state_readback_error`；控制超时或断线时结果可能未知，不自动重试。
-
-验证：`cargo test --locked home_assistant`。部署机可运行 `python3 scripts/smoke-home-assistant.py bin/mr-li` 检查真实设备、命令及 MCP；使用 HA 虚拟环境 Python 并加 `--control` 可创建临时开关，验证控制与回读后自动删除，不控制家里的电器。
-
+本机服务监听 `127.0.0.1:17847`，运行日志在 `logs/github-release-broadcast.log`。`preview` 读取指定历史运行并输出文案。
 
 ### 全局克隆音色
 
@@ -522,6 +432,8 @@ Cline 3.0.74 会忽略 ACP 会话传入的 `mcpServers`（[上游问题 #15716](
 兼容构建：`bash scripts/build-local-voice.sh` 为 Intel macOS12 编译 sherpa-onnx 1.13.8 C++ CPU 引擎，使用 ONNX Runtime 1.18.0（`MR_LI_ORT_ARCHIVE` 可指定项目坐姿模型已缓存的官方运行库压缩包，SHA256固定）。公开模型来自 [sherpa-onnx ZipVoice](https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models) 的 `sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2` 和 `vocos_24khz.onnx`；解压后目录分别为 `.data/local-tts/models/` 和 `.data/local-tts/vocos_24khz.onnx`。部署包含 `manifest.json` 校验记录。另需权限600的 `reference.wav`、对应 `reference.txt` 和 `config.json`（`model_id` 包含模型版本/哈希，`steps` 当前为8）。Python入口使用离线ASR的 `.data/voice/venv`。
 
 生成使用CPU两线程、每段最多20字并保留静音，控制旧Mac的内存峰值。缓存身份包含参考音频、参考文字、模型、分段配置、生成步数和文案，避免复用旧音色或旧参数。`local-voice.sh --cache-only` 从标准输入读取文字，只生成缓存，不播放；固定应答与坐姿提醒预先生成。新文案实时在本机生成，缓存只是重复播放的优化。合成到播放使用同一PID，取消会终止当前阶段并释放播放锁。播放沿用系统默认输出，未改变当前内建喇叭设置。
+
+新版合成引擎会缩短句中至少 480 毫秒的近静音区间，保留约 300 毫秒的停顿。旧缓存首次使用时生成处理后的副本，继续使用已经合成的音色。引擎在写完 WAV 后一次性发布到缓存，开始播放前才获取播放锁。已有安装需要更新 `.data/local-tts/bin/mr-li-local-voice` 才能启用这些行为，可用上述兼容构建脚本更新引擎。GitHub 自动部署会更新语音脚本，合成引擎由本机独立安装。
 
 实测设备为 i5-4260U、4GB、macOS12.7.6：默认8步，短句约14秒、较长一句约31秒后开始播放，进程峰值约530MB。4步较快，但一条短句首字转写出现偏差，因此默认采用8步。已核对短句、长句及否定指令；这些是合成后再由ASR核对的结果，音色听感仍以试听为准。冷启动需加载模型约3.4秒；这台机器能离线克隆，尚达不到即时语音响应。命中缓存时直接播放。
 

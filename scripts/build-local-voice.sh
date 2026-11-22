@@ -58,6 +58,7 @@ for p in libs+[root/'bin/mr-li-local-voice']:
     subprocess.run(['codesign','--force','--sign','-',str(p)],check=True,capture_output=True)
 PY
 touch "$STATE/bin/mr-li-local-voice.lock-v2"
+touch "$STATE/bin/mr-li-local-voice.pause-v1"
 mkdir -p "$STATE/licenses"
 cp "$STATE/source/LICENSE" "$STATE/licenses/sherpa-onnx-LICENSE"
 cp "$ROOT/.data/pose-runtime/lib/ONNXRUNTIME-"* "$STATE/licenses/" 2>/dev/null || true

@@ -69,6 +69,12 @@ def main():
     output = cache / (identity + ".wav")
     engine = STATE / "bin/mr-li-local-voice"
     if engine.with_suffix(".lock-v2").is_file():
+        if engine.with_suffix(".pause-v1").is_file():
+            previous = output
+            output = cache / (identity + ".pause-v1.wav")
+            if not valid_audio(output) and valid_audio(previous):
+                mode = "compact-cache" if args.cache_only else "compact-play"
+                os.execv(str(engine), [str(engine), str(STATE), str(previous), str(output), str(steps), mode])
         if valid_audio(output):
             play_cached(output, args.cache_only)
         else:

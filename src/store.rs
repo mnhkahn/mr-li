@@ -570,8 +570,14 @@ impl Store {
         };
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction()?;
-        // Exclude time between homework sessions from the next report.
-        tx.execute("UPDATE posture_report_state SET started=?1,next_due=?2 WHERE started<?3 AND bad+clear+unknown+away+observe=0",params![now,now + 600,start])?;
+        // Keep an open report window across reconnects. Start a fresh window
+        // when the first homework begins or monitoring resumes after an empty window expired.
+        tx.execute(
+            "UPDATE posture_report_state SET started=?1,next_due=?2
+             WHERE started<?3 AND bad+clear+unknown+away+observe=0
+             AND (next_due<=?1 OR scope IN (SELECT scope FROM posture_watch WHERE last_at=0))",
+            params![now, now + 600, start],
+        )?;
         // One camera job at a time, with no backlog when capture is slow or offline.
         let pending: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM jobs WHERE id LIKE 'posture-sample:%' AND status!='done')",
@@ -652,7 +658,16 @@ impl Store {
         let active = self.homework_active();
         let mut c = self.0.lock().unwrap();
         let tx = c.transaction()?;
-        let row=tx.query_row("SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,r.speech_failures,r.last_speech_error,max(1,((CASE WHEN ?2 THEN ?1 ELSE min(?1,max(w.last_at,r.started)) END)-r.started+59)/60),r.started FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND (r.next_due<=?1 OR NOT ?2) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done') ORDER BY r.next_due LIMIT 1",params![now,active],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?,r.get::<_,u64>(12)?))).optional()?;
+        let row=tx.query_row(
+            "SELECT r.scope,w.origin_key,w.message_id,r.last_assessment,r.bad,r.clear,r.unknown,r.away,r.observe,
+                    r.speech_failures,r.last_speech_error,max(1,(?1-r.started+59)/60),r.started
+             FROM posture_report_state r JOIN posture_watch w ON w.scope=r.scope
+             WHERE w.enabled=1 AND r.bad+r.clear+r.unknown+r.away+r.observe>0 AND r.next_due<=?1
+             AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.key=w.origin_key AND j.id LIKE 'posture-report:%' AND j.status!='done')
+             ORDER BY r.next_due LIMIT 1",
+            [now],
+            |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,u64>(4)?,r.get::<_,u64>(5)?,r.get::<_,u64>(6)?,r.get::<_,u64>(7)?,r.get::<_,u64>(8)?,r.get::<_,u64>(9)?,r.get::<_,String>(10)?,r.get::<_,u64>(11)?,r.get::<_,u64>(12)?))
+        ).optional()?;
         if let Some((
             scope,
             key,
@@ -1271,7 +1286,7 @@ mod tests {
     }
 
     #[test]
-    fn homework_watch_starts_stops_flushes_and_resumes() -> Result<()> {
+    fn homework_watch_resumes_without_sending_reports_early() -> Result<()> {
         let s = Store::open(Path::new(":memory:"))?;
         let j = Job {
             id: "start".into(),
@@ -1291,25 +1306,40 @@ mod tests {
         s.finish_posture_sample(&sample, "无法判断，静音")?;
         s.queue_due_posture_reports_at(start + 10)?;
         assert!(s.jobs("replying")?.is_empty());
-        s.set_homework_state(HomeworkState::Idle, start + 11)?;
+        s.set_homework_state(HomeworkState::Unavailable, start + 11)?;
+        s.queue_due_posture_at(start + 11)?;
         s.queue_due_posture_reports_at(start + 11)?;
+        assert!(s.jobs("queued")?.is_empty());
+        assert!(s.jobs("replying")?.is_empty());
+        s.set_homework_state(HomeworkState::ActiveSince(start + 40), start + 40)?;
+        s.queue_due_posture_at(start + 40)?;
+        assert_eq!(s.jobs("queued")?.len(), 1);
+        s.set_homework_state(HomeworkState::Idle, start + 41)?;
+        s.queue_due_posture_at(start + 41)?;
+        s.queue_due_posture_reports_at(start + 599)?;
+        assert!(s.jobs("queued")?.is_empty());
+        assert!(s.jobs("replying")?.is_empty());
+        s.queue_due_posture_reports_at(start + 600)?;
         let report = s.jobs("replying")?.remove(0);
+        assert!(report.result.contains("过去约 10 分钟"));
         assert!(report.result.contains("检查 1 次"));
         let report_payload: serde_json::Value = serde_json::from_str(&report.result)?;
         let capture_id = format!("{}:{start}", crate::models::scope(&j.key)?);
         assert_eq!(report_payload["capture_id"], capture_id);
         assert_eq!(report_payload["capture_tablet"], false);
         s.status(&report.id, "done")?;
-        s.queue_due_posture_at(start + 12)?;
-        s.queue_due_posture_reports_at(start + 12)?;
+        s.queue_due_posture_at(start + 601)?;
+        s.queue_due_posture_reports_at(start + 601)?;
         assert!(s.jobs("queued")?.is_empty());
         assert!(s.jobs("replying")?.is_empty());
-        s.set_homework_state(HomeworkState::ActiveSince(start + 13), start + 13)?;
-        s.queue_due_posture_at(start + 13)?;
-        assert_eq!(s.jobs("queued")?.len(), 1);
-        s.set_homework_state(HomeworkState::Unavailable, start + 14)?;
-        s.queue_due_posture_at(start + 14)?;
-        assert!(s.jobs("queued")?.is_empty());
+        s.set_homework_state(HomeworkState::ActiveSince(start + 640), start + 640)?;
+        s.queue_due_posture_at(start + 640)?;
+        let sample = s.jobs("queued")?.remove(0);
+        s.finish_posture_sample(&sample, "无法判断，静音")?;
+        s.queue_due_posture_reports_at(start + 1199)?;
+        assert!(s.jobs("replying")?.is_empty());
+        s.queue_due_posture_reports_at(start + 1200)?;
+        assert_eq!(s.jobs("replying")?.len(), 1);
         Ok(())
     }
     #[test]

@@ -108,6 +108,16 @@ async fn main() -> Result<()> {
     if mode.starts_with("tablet-") {
         return tablet::command(&cfg, &mode).await;
     }
+    if mode == "play-news-audio" {
+        let path = std::env::args_os().nth(2).context("缺少早间新闻音频")?;
+        let text = std::env::args().nth(3).context("缺少早间新闻稿")?;
+        if let speech::Delivery::Queued(id) =
+            speech::play_news_audio(&cfg, std::path::Path::new(&path), &text).await?
+        {
+            println!("queued {id}");
+        }
+        return Ok(());
+    }
     if mode == "speak" || mode == "speak-news" {
         let text = std::env::args().skip(2).collect::<Vec<_>>().join(" ");
         let delivery = if mode == "speak-news" {

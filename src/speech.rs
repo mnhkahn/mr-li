@@ -202,6 +202,31 @@ pub async fn speak(cfg: &Config, text: &str, scope: Option<&str>) -> Result<Deli
 pub async fn speak_news(cfg: &Config, text: &str) -> Result<Delivery> {
     broadcast(cfg, text, None, Duration::from_secs(360)).await
 }
+pub async fn play_news_audio(cfg: &Config, audio: &Path, text: &str) -> Result<Delivery> {
+    validate_text(text)?;
+    ensure!(audio.is_absolute() && audio.is_file(), "早间新闻音频不存在");
+    let queue = || inbox::enqueue(cfg, None, text).map(Delivery::Queued);
+    if !inbox::focus(cfg).allows_speech() {
+        return queue();
+    }
+    let _lock = match tokio::time::timeout(Duration::from_secs(3), audio_lock(cfg, true)).await {
+        Ok(result) => result?,
+        Err(_) => return queue(),
+    };
+    if !inbox::focus(cfg).allows_speech() {
+        return queue();
+    }
+    let mut child = tokio::process::Command::new("/usr/bin/afplay")
+        .arg(audio)
+        .kill_on_drop(true)
+        .spawn()
+        .context("无法播放早间新闻音频")?;
+    let status = tokio::time::timeout(Duration::from_secs(240), child.wait())
+        .await
+        .context("早间新闻播放超时")??;
+    ensure!(status.success(), "早间新闻播放器退出：{status}");
+    Ok(Delivery::Played)
+}
 pub async fn speak_progress(cfg: &Config, text: &str) -> Result<()> {
     speak_shared(cfg, text, Duration::from_secs(20)).await?;
     Ok(())

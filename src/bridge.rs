@@ -551,7 +551,7 @@ impl Bridge {
                 let words: Vec<_> = args.split_whitespace().collect();
                 match words.as_slice() {
                     [] | ["list"] => Ok(format!(
-                        "Mac mini 定时任务：早间新闻播报（ID：news，每天北京时间 08:30）\n{}\n\n当前聊天的定时任务：坐姿监测（ID：posture，每 10 分钟图文汇总）\n{}\n/cron run posture 立即检测一次",
+                        "Mac mini 定时任务：早间新闻播报（ID：news，每天北京时间 08:20 准备，08:30 播放）\n{}\n\n当前聊天的定时任务：坐姿监测（ID：posture，每 10 分钟图文汇总）\n{}\n/cron run posture 立即检测一次",
                         crate::news::status(&self.cfg),
                         self.store.posture_watch_status(&models::scope(&j.key)?)?
                     )),
@@ -2918,7 +2918,7 @@ mod tests {
         job.text = "/cron list".into();
         let cron = b.command(&job, None).await?;
         assert!(cron.contains("坐姿监测"));
-        assert!(cron.contains("早间新闻播报（ID：news，每天北京时间 08:30）"));
+        assert!(cron.contains("早间新闻播报（ID：news，每天北京时间 08:20 准备，08:30 播放）"));
         job.text = r#"/memory save ["名字","小李"]"#.into();
         b.command(&job, None).await?;
         job.text = "/memory".into();

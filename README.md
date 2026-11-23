@@ -457,13 +457,13 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ## Mac mini 每日早间新闻播报
 
-mr-li 每天北京时间 08:30 在 Mac mini 本机获取当天科技及 AI 新闻，经本机 OpenCode 免费模型整理为五条中文早间简报，复用 `/speak` 的声音和喇叭设置。`/cron list` 显示当天的运行状态。
+mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 的当天页面，用 `cyeam date holiday` 查询农历、节气和节日，用 `curl` 查询 Open-Meteo 的北京天气预报。Mac mini 使用本地 ZipVoice 参考音色提前合成开场和新闻。音频从三音起床提示开始，接着报日期、天气，再按网页顺序读 AI 前沿前三条和技术雷达前两条。某栏条目不足时，由另一栏按顺序补足。
 
-在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，然后重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。新闻获取依赖 `~/.local/bin/cyeam`、本机 OpenCode 服务与 `.env`。获取新闻时设置 `NO_PROXY=*`，避免依赖本机代理。
+在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，准备好本地克隆音色，再重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。
 
-`/usr/bin/python3 scripts/news-broadcast.py --preview` 获取并生成新闻稿但不播放。实际播报为 60–500 字，摘要优先使用配置中的 OpenCode 免费模型；配置的模型已下线时，从本机最新目录选取可用免费模型，不使用付费模型。当天新闻为空或获取失败时，每隔 5 分钟重试，最多重试两次；失败会写入 `logs/bridge.error.log`。新闻正文属于输入数据，不作为命令执行。
+`/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。任一新闻栏目尚未发布或读取失败时，间隔 20 秒重试，最多重试两次。天气查询失败时会在开场说明。
 
-状态与新闻稿保存在 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认位于 `.data/news-broadcast/`。任务开始时锁定并记录当天的运行，播放成功后标记 `done`，服务重启时不会重复运行当天已经启动的任务。Mac mini 的 mr-li 桥接服务需在 08:30 运行，错过时不补播。
+08:30 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。状态、稿件和音频位于 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认是 `.data/news-broadcast/`。`/cron list` 显示当天的运行状态。
 
 ### GitHub 发布播报
 

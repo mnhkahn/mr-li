@@ -5,10 +5,9 @@ import datetime as dt
 import fcntl
 from html.parser import HTMLParser
 import json
-import math
 import os
 from pathlib import Path
-import struct
+import re
 import subprocess
 import sys
 import time
@@ -17,6 +16,10 @@ import urllib.request
 import wave
 
 ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_MUSIC = 'morning-mood.wav'
+SNOW_CODES = {71, 73, 75, 77, 85, 86}
+RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 97, 99}
+WIND_GUST_THRESHOLD = 40  # km/h, used to choose music
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 GEEK_URL = "https://www.cyeam.com/geek"
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
@@ -28,6 +31,15 @@ WEATHER_CODES = {
     80: '有阵雨', 81: '有阵雨', 82: '有强阵雨', 85: '有阵雪', 86: '有强阵雪',
     95: '有雷暴', 96: '有雷暴和冰雹', 97: '有强雷暴', 99: '有雷暴和冰雹',
 }
+ARABIC_DIGITS = '0123456789'
+CHINESE_DIGITS = '零一二三四五六七八九'
+DIGIT_NAMES = str.maketrans(ARABIC_DIGITS, CHINESE_DIGITS)
+HALFWIDTH_NUMBERS = str.maketrans('０１２３４５６７８９％．＋－−', ARABIC_DIGITS + '%.+--')
+SPOKEN_NUMBER = re.compile(
+    r'(?P<sign>(?<![A-Za-z0-9])[+-])?'
+    r'(?P<number>(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)*)'
+    r'(?P<percent>[ \t]*%)?'
+)
 
 
 def save(path, value):
@@ -99,22 +111,50 @@ def fetch(date):
     return decode_news(page, date)
 
 
+def music_for_weather(code, snowfall, gust):
+    if snowfall > 0 or code in SNOW_CODES:
+        return 'morning-snow.wav'
+    if code in RAIN_CODES:
+        return 'morning-rain.wav'
+    if gust >= WIND_GUST_THRESHOLD:
+        return 'morning-wind.wav'
+    return DEFAULT_MUSIC
+
+
+def weather_response(url):
+    command = ['/usr/bin/curl', '-fsS', '--connect-timeout', '5', '--max-time', '10']
+    proxy = urllib.request.getproxies().get('https', '')
+    endpoint = urllib.parse.urlsplit(proxy)
+    if endpoint.hostname in ('127.0.0.1', 'localhost', '::1') and endpoint.username is None:
+        try:
+            return subprocess.check_output(
+                command + ['--noproxy', '', '--proxy', proxy, url], text=True, timeout=12,
+            )
+        except subprocess.SubprocessError:
+            pass
+    return subprocess.check_output(command + ['--retry', '1', url], text=True, timeout=24)
+
+
 def weather(date):
     params = urllib.parse.urlencode({
         'latitude': '39.9042', 'longitude': '116.4074', 'timezone': 'Asia/Shanghai',
-        'daily': 'weather_code,temperature_2m_min,temperature_2m_max', 'forecast_days': 1,
+        'daily': 'weather_code,temperature_2m_min,temperature_2m_max,snowfall_sum,wind_gusts_10m_max',
+        'wind_speed_unit': 'kmh', 'forecast_days': 1,
     })
-    raw = subprocess.check_output(
-        ['/usr/bin/curl', '-fsS', '--retry', '1', '--connect-timeout', '5',
-         '--max-time', '10', WEATHER_URL + '?' + params],
-        text=True, timeout=24,
-    )
+    raw = weather_response(WEATHER_URL + '?' + params)
     daily = json.loads(raw)['daily']
     index = daily['time'].index(date)
-    conditions = WEATHER_CODES[daily['weather_code'][index]]
+    code = daily['weather_code'][index]
+    conditions = WEATHER_CODES[code]
     low = round(daily['temperature_2m_min'][index])
     high = round(daily['temperature_2m_max'][index])
-    return f'北京今天{conditions}，最低{low}度，最高{high}度。'
+    missing = [None] * len(daily['time'])
+    gust = daily.get('wind_gusts_10m_max', missing)[index] or 0
+    snowfall = daily.get('snowfall_sum', missing)[index] or 0
+    text = f'北京今天{conditions}，最低{low}度，最高{high}度。'
+    if gust >= WIND_GUST_THRESHOLD:
+        text += f'最大阵风预计每小时{round(gust)}公里。'
+    return text, music_for_weather(code, snowfall, gust)
 
 
 def calendar(date):
@@ -143,11 +183,44 @@ def optional(read, date, fallback):
         return fallback
 
 
+def chinese_integer(value, leading=True):
+    if value < 10:
+        return CHINESE_DIGITS[value]
+    for scale, unit in ((10**12, '万亿'), (10**8, '亿'), (10**4, '万'),
+                        (1000, '千'), (100, '百'), (10, '十')):
+        if value >= scale:
+            head, tail = divmod(value, scale)
+            words = unit if leading and value < 20 else chinese_integer(head) + unit
+            if tail:
+                gap = '零' if tail < scale // 10 else ''
+                words += gap + chinese_integer(tail, leading=False)
+            return words
+
+
+def spoken_numbers(text):
+    text = text.translate(HALFWIDTH_NUMBERS)
+
+    def read(match):
+        integer, *fractions = match['number'].replace(',', '').split('.')
+        year = len(integer) == 4 and not fractions and text[match.end():].startswith('年')
+        if year or len(integer) > 16 or (len(integer) > 1 and integer.startswith('0')):
+            words = integer.translate(DIGIT_NAMES)
+        else:
+            words = chinese_integer(int(integer))
+        words += ''.join('点' + part.translate(DIGIT_NAMES) for part in fractions)
+        sign = {'-': '负', '+': '正', None: ''}[match['sign']]
+        return sign + ('百分之' if match['percent'] else '') + words
+
+    return SPOKEN_NUMBER.sub(read, text)
+
+
 def make_script(data, date, calendar_text='', weather_text=''):
     day = dt.date.fromisoformat(date)
     weekday = '一二三四五六日'[day.weekday()]
-    intro = (f'早上好，该起床啦。今天是{day.year}年{day.month}月{day.day}日，星期{weekday}。'
-             + calendar_text + weather_text)
+    intro = spoken_numbers(
+        f'早上好，该起床啦。今天是{day.year}年{day.month}月{day.day}日，星期{weekday}。'
+        + calendar_text + weather_text
+    )
     closing = '以上是今天的早间头条。'
     ai = data['ai_news']['news']
     tech = data['news']['news']
@@ -160,7 +233,7 @@ def make_script(data, date, calendar_text='', weather_text=''):
     for label, items in choices:
         headline = label + '。'
         for item in items:
-            title = item['title']
+            title = spoken_numbers(item['title'])
             punctuation = '' if title.endswith(('。', '！', '？', '!', '?')) else '。'
             line = headline + title + punctuation
             if length + len(line) + 1 <= 500:
@@ -172,25 +245,36 @@ def make_script(data, date, calendar_text='', weather_text=''):
     return '\n'.join(lines + [closing])
 
 
-def write_audio(speech, output):
+def music_frames(name, voice_format):
+    with wave.open(str(ROOT / 'resource' / name), 'rb') as music:
+        if voice_format != music.getparams()[:3] or not music.getnframes():
+            raise ValueError('起床音乐与克隆语音须为格式一致的非空 WAV')
+        frames = music.readframes(music.getnframes())
+        if len(frames) != music.getnframes() * music.getnchannels() * music.getsampwidth():
+            raise ValueError('起床音乐文件不完整')
+        return frames
+
+
+def write_audio(speech, output, music_name):
     with wave.open(str(speech), 'rb') as voice:
-        if voice.getnchannels() != 1 or voice.getsampwidth() != 2 or not voice.getnframes():
-            raise ValueError('本地克隆语音应为非空的 16 位单声道 WAV')
-        rate = voice.getframerate()
+        if not voice.getnframes():
+            raise ValueError('克隆语音为空')
+        voice_format = voice.getparams()[:3]
+        try:
+            music = music_frames(music_name, voice_format)
+        except (OSError, EOFError, wave.Error, ValueError) as error:
+            if music_name == DEFAULT_MUSIC:
+                raise
+            print(f'{music_name}: {error}，使用默认起床音乐', file=sys.stderr, flush=True)
+            music_name = DEFAULT_MUSIC
+            music = music_frames(music_name, voice_format)
         temp = output.with_suffix('.wav.tmp')
         with wave.open(str(temp), 'wb') as audio:
             audio.setparams(voice.getparams())
-            for freq in (523.25, 659.25, 783.99):
-                samples = bytearray()
-                for i in range(int(rate * 0.38)):
-                    t = i / rate
-                    envelope = min(t / 0.04, 1) * max(0, 1 - t / 0.38) ** 2
-                    value = math.sin(2 * math.pi * freq * t) * envelope
-                    samples.extend(struct.pack('<h', round(6200 * value)))
-                audio.writeframes(samples + bytes(int(rate * 0.08) * 2))
-            audio.writeframes(bytes(int(rate * 0.25) * 2))
+            audio.writeframes(music)
             audio.writeframes(voice.readframes(voice.getnframes()))
         os.replace(str(temp), str(output))
+    return music_name
 
 
 def prepare(state, date, preview):
@@ -216,7 +300,7 @@ def prepare(state, date, preview):
         suffix = '-preview' if preview else ''
         save(state / (date + suffix + '-news.json'), data)
         calendar_text = optional(calendar, date, '')
-        weather_text = optional(weather, date, '今天的天气暂时没有查到。')
+        weather_text, music_name = optional(weather, date, ('今天的天气暂时没有查到。', DEFAULT_MUSIC))
         text = make_script(data, date, calendar_text, weather_text)
         budget = 540 if preview else (deadline - dt.datetime.now(BEIJING)).total_seconds()
         if budget <= 0:
@@ -226,11 +310,11 @@ def prepare(state, date, preview):
             input=text, text=True, stdout=subprocess.PIPE, check=True, timeout=budget,
         )
         speech = Path(result.stdout.strip().splitlines()[-1])
-        write_audio(speech, state / (date + suffix + '.wav'))
+        music_name = write_audio(speech, state / (date + suffix + '.wav'), music_name)
         finished = dt.datetime.now(BEIJING)
         if not preview and finished >= deadline:
             raise TimeoutError('已到 8:30，未能提前完成备播')
-        record.update(status='ready', text=text, prepared_at=finished.isoformat())
+        record.update(status='ready', text=text, intro_music=music_name, prepared_at=finished.isoformat())
         save(state / (date + suffix + '.json'), record)
         if preview:
             print(text, flush=True)

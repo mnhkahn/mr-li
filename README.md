@@ -457,7 +457,16 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ## Mac mini 每日早间新闻播报
 
-mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 的当天页面，用 `cyeam date holiday` 查询农历、节气和节日，用 `curl` 查询 Open-Meteo 的北京天气预报。Mac mini 使用本地 ZipVoice 参考音色提前合成开场和新闻。音频从三音起床提示开始，接着报日期、天气，再按网页顺序读 AI 前沿前三条和技术雷达前两条。某栏条目不足时，由另一栏按顺序补足。
+mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 的当天页面，用 `cyeam date holiday` 查询农历、节气和节日，用 `curl` 查询 Open-Meteo 的北京天气预报。Mac mini 使用本地 ZipVoice 参考音色提前合成开场和新闻。音频从一段 12 秒的音乐开始，接着报日期、天气，再按网页顺序读 AI 前沿前三条和技术雷达前两条。播报稿中的数字转换为中文读法，新闻快照保留网页标题原文。某栏条目不足时，由另一栏按顺序补足。
+
+前奏按当天预报选择，优先级为雪、雨或雷暴、最大阵风达到每小时 40 公里。其他天气或查询失败时用《晨景》。以下录音剪成 12 秒，统一响度并加淡入淡出。
+
+| 天气 | 前奏 | 录音与授权 |
+| --- | --- | --- |
+| 雪 | 柴可夫斯基《十一月·雪橇》 | Bernd Krueger，[原录音](https://commons.wikimedia.org/wiki/File:Tchaikovsky_the_Seasons_November.ogg)，片段沿用 [CC BY-SA 2.0 德国](https://creativecommons.org/licenses/by-sa/2.0/de/) |
+| 雨、雷暴 | 肖邦《雨滴前奏曲》 | Giorgi Latsabidze，[公有领域录音](https://commons.wikimedia.org/wiki/File:Chopin_Prelude_Op_28_N_15_Giorgi_Latsabidze_performs.ogg) |
+| 大风 | 维瓦尔第《四季·冬》第一乐章 | John Harrison（小提琴）、Robert Turizziani（指挥）、Wichita State University Chamber Players，[原录音](https://commons.wikimedia.org/wiki/File:Vivaldi_-_Four_Seasons_4_Winter_mvt_1_Allegro_non_molto_-_John_Harrison_violin.oga)，片段沿用 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) |
+| 默认 | 格里格《晨景》 | Musopen Symphony Orchestra（捷克国家交响乐团），[公有领域录音](https://commons.wikimedia.org/wiki/File:Musopen_-_Morning.ogg) |
 
 在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，准备好本地克隆音色，再重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。
 

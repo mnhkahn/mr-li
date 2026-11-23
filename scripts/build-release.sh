@@ -43,6 +43,7 @@ if [[ "${MR_LI_BUILD_POSE:-0}" == 1 ]]; then
 fi
 mkdir -p "$DEST/resource"
 cp resource/feishu-replies.txt "$DEST/resource/"
+cp resource/morning-mood.wav resource/morning-rain.wav resource/morning-snow.wav resource/morning-wind.wav "$DEST/resource/"
 cp scripts/smoke-builtin.py "$DEST/scripts/"
 cp scripts/smoke-home-assistant.py "$DEST/scripts/"
 cp scripts/voice-clone.py scripts/voice-clone.sh "$DEST/scripts/"

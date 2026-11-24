@@ -470,7 +470,7 @@ mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 
 
 在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，准备好本地克隆音色，再重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。
 
-`/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。任一新闻栏目尚未发布或读取失败时，间隔 20 秒重试，最多重试两次。天气查询失败时会在开场说明。
+`/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。定时取稿遇到栏目未发布或读取失败时，按 20 秒、40 秒、最多 60 秒的间隔退避重试，最晚 08:27 截止。距离 08:30 不足 4 分半时，同一 ZipVoice 音色的合成步数上限设为 4，以便完成备播。天气查询失败时会在开场说明。
 
 08:30 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。状态、稿件和音频位于 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认是 `.data/news-broadcast/`。`/cron list` 显示当天的运行状态。
 

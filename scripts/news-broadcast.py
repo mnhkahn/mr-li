@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import fcntl
 from html.parser import HTMLParser
+from http.client import HTTPException
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,8 @@ RAIN_CODES = {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82, 95, 96, 97, 99
 WIND_GUST_THRESHOLD = 40  # km/h, used to choose music
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 GEEK_URL = "https://www.cyeam.com/geek"
+GEEK_FETCH_TIMEOUT = 30
+STANDARD_SYNTH_BUDGET = 270  # seconds
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CODES = {
     0: '晴', 1: '以晴为主', 2: '多云', 3: '阴', 45: '有雾', 48: '有雾',
@@ -103,12 +106,37 @@ def decode_news(page, date):
     return {'date': date, **{section: {'news': items} for section, items in parser.items.items()}}
 
 
-def fetch(date):
+def fetch(date, timeout=GEEK_FETCH_TIMEOUT):
     url = GEEK_URL + '?' + urllib.parse.urlencode({'d': date})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(url, timeout=30) as response:
+    with opener.open(url, timeout=timeout) as response:
         page = response.read().decode('utf-8')
     return decode_news(page, date)
+
+
+def fetch_with_backoff(date, deadline):
+    delay = 20
+    final_probe = deadline - dt.timedelta(seconds=15)
+    while True:
+        started = dt.datetime.now(BEIJING)
+        remaining = (deadline - started).total_seconds()
+        if remaining <= 0:
+            break
+        try:
+            data = fetch(date, timeout=min(GEEK_FETCH_TIMEOUT, remaining))
+        except (OSError, HTTPException, UnicodeError, RuntimeError):
+            now = dt.datetime.now(BEIJING)
+            if started >= final_probe or now >= deadline:
+                raise
+            # Make one last request near the cutoff even if the next backoff
+            # would otherwise push it outside the window.
+            time.sleep(max(0, min(delay, (final_probe - now).total_seconds())))
+            delay = min(delay * 2, 60)
+        else:
+            if dt.datetime.now(BEIJING) <= deadline:
+                return data
+            break
+    raise TimeoutError('已到取稿截止时间，未能取得当天 Geek 头条')
 
 
 def music_for_weather(code, snowfall, gust):
@@ -289,14 +317,8 @@ def prepare(state, date, preview):
     try:
         now = dt.datetime.now(BEIJING)
         deadline = now.replace(hour=8, minute=30, second=0, microsecond=0)
-        for attempt in range(3):
-            try:
-                data = fetch(date)
-                break
-            except Exception:
-                if preview or attempt == 2:
-                    raise
-                time.sleep(20)
+        fetch_deadline = deadline - dt.timedelta(minutes=3)
+        data = fetch(date) if preview else fetch_with_backoff(date, fetch_deadline)
         suffix = '-preview' if preview else ''
         save(state / (date + suffix + '-news.json'), data)
         calendar_text = optional(calendar, date, '')
@@ -305,9 +327,12 @@ def prepare(state, date, preview):
         budget = 540 if preview else (deadline - dt.datetime.now(BEIJING)).total_seconds()
         if budget <= 0:
             raise TimeoutError('已到 8:30，未能提前完成备播')
+        command = [str(ROOT / 'scripts/local-voice.sh'), '--cache-only']
+        if budget < STANDARD_SYNTH_BUDGET:
+            command += ['--max-steps', '4']
+            record['tts_max_steps'] = 4
         result = subprocess.run(
-            [str(ROOT / 'scripts/local-voice.sh'), '--cache-only'],
-            input=text, text=True, stdout=subprocess.PIPE, check=True, timeout=budget,
+            command, input=text, text=True, stdout=subprocess.PIPE, check=True, timeout=budget,
         )
         speech = Path(result.stdout.strip().splitlines()[-1])
         music_name = write_audio(speech, state / (date + suffix + '.wav'), music_name)

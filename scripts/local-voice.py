@@ -49,7 +49,9 @@ def main():
     parser.add_argument("-a", default="")
     parser.add_argument("-r", default="180")
     parser.add_argument("--cache-only", action="store_true")
-    parser.add_argument("--steps", type=int)
+    generation = parser.add_mutually_exclusive_group()
+    generation.add_argument("--steps", type=int)
+    generation.add_argument("--max-steps", type=int, choices=range(1, 17))
     args = parser.parse_args()
     text = sys.stdin.read().strip()
     if not text or len(text) > 500 or "\0" in text:
@@ -59,6 +61,8 @@ def main():
     steps = args.steps if args.steps is not None else cfg.get("steps", 8)
     if not 1 <= steps <= 16:
         raise ValueError("本地克隆步数需为1–16")
+    if args.max_steps is not None:
+        steps = min(steps, args.max_steps)
     reference = STATE / "reference.wav"
     if not valid_audio(reference):
         raise ValueError("本地克隆参考音频无效")

@@ -69,6 +69,13 @@ class WorkerTest(unittest.TestCase):
             with self.assertRaises(ExecIntercept):self.invoke("新文案",["--steps","4"])
         self.assertEqual(len(set(paths)),3)
 
+    def test_generation_budget_caps_steps_without_raising_lower_settings(self):
+        for configured, expected in ((8, 4), (2, 2)):
+            (self.root / "config.json").write_text(json.dumps({"model_id": "zipvoice-test", "steps": configured}))
+            with patch.object(os, "execv", side_effect=ExecIntercept) as execute, self.assertRaises(ExecIntercept):
+                self.invoke("早上好。", ["--cache-only", "--max-steps", "4"])
+            self.assertEqual(execute.call_args.args[1][4], str(expected))
+
     def test_invalid_text_and_missing_reference_are_rejected(self):
         for text in ("", "字"*501, "内容\0"):
             with self.assertRaises(ValueError):self.invoke(text)

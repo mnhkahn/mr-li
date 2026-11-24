@@ -13,8 +13,8 @@ retry = runpy.run_path(str(Path(__file__).with_name('news-broadcast.py')))['fetc
 
 class NewsRetryTest(unittest.TestCase):
     date = '2026-11-24'
-    start = dt.datetime.fromisoformat(date + 'T08:20:00+08:00')
-    deadline = start.replace(minute=27)
+    start = dt.datetime.fromisoformat(date + 'T07:10:00+08:00')
+    deadline = start.replace(minute=57)
 
     def setUp(self):
         self.now = self.start
@@ -34,8 +34,8 @@ class NewsRetryTest(unittest.TestCase):
                         time=SimpleNamespace(sleep=self.advance), fetch=record_fetch):
             return retry(self.date, self.deadline)
 
-    def test_picks_up_news_published_at_082639(self):
-        published = self.start.replace(minute=26, second=39)
+    def test_picks_up_news_published_at_075639(self):
+        published = self.start.replace(minute=56, second=39)
 
         def fetch(timeout):
             if self.now < published:
@@ -46,7 +46,7 @@ class NewsRetryTest(unittest.TestCase):
         initial_attempts = [at for at, _ in self.attempts[:4]]
         delays = [(right - left).total_seconds() for left, right in zip(initial_attempts, initial_attempts[1:])]
         self.assertEqual(delays, [20, 40, 60])
-        self.assertEqual(self.attempts[-1][0], self.start.replace(minute=26, second=45))
+        self.assertEqual(self.attempts[-1][0], self.start.replace(minute=56, second=45))
 
     def test_final_probe_has_shorter_timeout_and_surfaces_last_error(self):
         def fetch(timeout):
@@ -54,10 +54,10 @@ class NewsRetryTest(unittest.TestCase):
 
         with self.assertRaisesRegex(OSError, '网络不可用'):
             self.run_retry(fetch)
-        self.assertEqual(self.attempts[-1], (self.start.replace(minute=26, second=45), 15))
+        self.assertEqual(self.attempts[-1], (self.start.replace(minute=56, second=45), 15))
 
     def test_late_result_does_not_take_synthesis_time(self):
-        self.now = self.start.replace(minute=26, second=45)
+        self.now = self.start.replace(minute=56, second=45)
 
         def fetch(timeout):
             self.advance(timeout + 1)
@@ -71,8 +71,8 @@ class NewsRetryTest(unittest.TestCase):
         prepare = retry.__globals__['prepare']
         for fetched_at, preview, expected in (
             (self.start, False, []),
-            (self.start.replace(minute=26, second=45), False, ['--max-steps', '4']),
-            (self.start.replace(minute=26, second=45), True, []),
+            (self.start.replace(minute=56, second=45), False, ['--max-steps', '4']),
+            (self.start.replace(minute=56, second=45), True, []),
         ):
             with self.subTest(fetched_at=fetched_at, preview=preview), TemporaryDirectory() as tmp:
                 self.now = self.start
@@ -84,7 +84,7 @@ class NewsRetryTest(unittest.TestCase):
                 def synthesize(command, **kwargs):
                     self.assertEqual(command[1:], ['--cache-only'] + expected)
                     self.assertEqual(kwargs['timeout'], 540 if preview else
-                                     (self.start.replace(minute=30) - fetched_at).total_seconds())
+                                     (self.start.replace(hour=8, minute=0) - fetched_at).total_seconds())
                     return SimpleNamespace(stdout='/tmp/speech.wav\n')
 
                 clock = SimpleNamespace(now=lambda tz: self.now)

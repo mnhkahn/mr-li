@@ -457,7 +457,7 @@ MR_LI_TABLET_PUBLIC_URL=https://你的网关域名
 
 ## Mac mini 每日早间新闻播报
 
-mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 的当天页面，用 `cyeam date holiday` 查询农历、节气和节日，用 `curl` 查询 Open-Meteo 的北京天气预报。Mac mini 使用本地 ZipVoice 参考音色提前合成开场和新闻。音频从一段 12 秒的音乐开始，接着报日期、天气，再按网页顺序读 AI 前沿前三条和技术雷达前两条。播报稿中的数字转换为中文读法，新闻快照保留网页标题原文。某栏条目不足时，由另一栏按顺序补足。
+mr-li 每天北京时间 07:10 读取 [Geek 头条](https://www.cyeam.com/geek) 的当天页面，用 `cyeam date holiday` 查询农历、节气和节日，用 `curl` 查询 Open-Meteo 的北京天气预报。Mac mini 使用本地 ZipVoice 参考音色提前合成开场和新闻。音频从一段 12 秒的音乐开始，接着报日期、天气，再按网页顺序读 AI 前沿前三条和技术雷达前两条。播报稿中的数字转换为中文读法，新闻快照保留网页标题原文。某栏条目不足时，由另一栏按顺序补足。
 
 前奏按当天预报选择，优先级为雪、雨或雷暴、最大阵风达到每小时 40 公里。其他天气或查询失败时用《晨景》。以下录音剪成 12 秒，统一响度并加淡入淡出。
 
@@ -470,9 +470,9 @@ mr-li 每天北京时间 08:20 读取 [Geek 头条](https://www.cyeam.com/geek) 
 
 在部署目录的 `.env` 中设定 `MR_LI_NEWS_ENABLED=true`，准备好本地克隆音色，再重启桥接服务。从旧版本迁移时，确认 `/cron list` 显示新闻任务已启用，然后备份 `crontab` 并移除 `# BEGIN MR-LI NEWS` 至 `# END MR-LI NEWS` 的旧条目。
 
-`/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。定时取稿遇到栏目未发布或读取失败时，按 20 秒、40 秒、最多 60 秒的间隔退避重试，最晚 08:27 截止。距离 08:30 不足 4 分半时，同一 ZipVoice 音色的合成步数上限设为 4，以便完成备播。天气查询失败时会在开场说明。
+`/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。定时取稿遇到栏目未发布或读取失败时，按 20 秒、40 秒、最多 60 秒的间隔退避重试，最晚 07:57 截止。距离 08:00 不足 4 分半时，同一 ZipVoice 音色的合成步数上限设为 4，以便完成备播。天气查询失败时会在开场说明。
 
-08:30 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。状态、稿件和音频位于 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认是 `.data/news-broadcast/`。`/cron list` 显示当天的运行状态。
+08:00 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。状态、稿件和音频位于 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认是 `.data/news-broadcast/`。`/cron list` 显示当天的运行状态。
 
 ### GitHub 发布播报
 

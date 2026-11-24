@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a cloned-voice morning bulletin and play the saved audio at 08:30."""
+"""Prepare a cloned-voice morning bulletin and play the saved audio at 08:00."""
 import argparse
 import datetime as dt
 import fcntl
@@ -24,6 +24,8 @@ WIND_GUST_THRESHOLD = 40  # km/h, used to choose music
 BEIJING = dt.timezone(dt.timedelta(hours=8))
 GEEK_URL = "https://www.cyeam.com/geek"
 GEEK_FETCH_TIMEOUT = 30
+PLAYBACK_HOUR = 8
+PLAYBACK_LABEL = f'{PLAYBACK_HOUR:02d}:00'
 STANDARD_SYNTH_BUDGET = 270  # seconds
 WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 WEATHER_CODES = {
@@ -316,7 +318,7 @@ def prepare(state, date, preview):
         save(record_path, record)
     try:
         now = dt.datetime.now(BEIJING)
-        deadline = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        deadline = now.replace(hour=PLAYBACK_HOUR, minute=0, second=0, microsecond=0)
         fetch_deadline = deadline - dt.timedelta(minutes=3)
         data = fetch(date) if preview else fetch_with_backoff(date, fetch_deadline)
         suffix = '-preview' if preview else ''
@@ -326,7 +328,7 @@ def prepare(state, date, preview):
         text = make_script(data, date, calendar_text, weather_text)
         budget = 540 if preview else (deadline - dt.datetime.now(BEIJING)).total_seconds()
         if budget <= 0:
-            raise TimeoutError('已到 8:30，未能提前完成备播')
+            raise TimeoutError(f'已到 {PLAYBACK_LABEL}，未能提前完成备播')
         command = [str(ROOT / 'scripts/local-voice.sh'), '--cache-only']
         if budget < STANDARD_SYNTH_BUDGET:
             command += ['--max-steps', '4']
@@ -338,7 +340,7 @@ def prepare(state, date, preview):
         music_name = write_audio(speech, state / (date + suffix + '.wav'), music_name)
         finished = dt.datetime.now(BEIJING)
         if not preview and finished >= deadline:
-            raise TimeoutError('已到 8:30，未能提前完成备播')
+            raise TimeoutError(f'已到 {PLAYBACK_LABEL}，未能提前完成备播')
         record.update(status='ready', text=text, intro_music=music_name, prepared_at=finished.isoformat())
         save(state / (date + suffix + '.json'), record)
         if preview:
@@ -359,8 +361,8 @@ def play(state, date):
         return
     if record.get('status') != 'ready' or not audio.is_file():
         if record.get('status') != 'failed':
-            save(path, dict(record, status='failed', error='8:30 未找到当天准备好的音频'))
-        raise RuntimeError('8:30 未找到当天准备好的音频')
+            save(path, dict(record, status='failed', error=f'{PLAYBACK_LABEL} 未找到当天准备好的音频'))
+        raise RuntimeError(f'{PLAYBACK_LABEL} 未找到当天准备好的音频')
     record.update(status='sending', started_at=dt.datetime.now(BEIJING).isoformat())
     save(path, record)
     try:
@@ -383,7 +385,7 @@ def main():
     parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument('--preview', action='store_true', help='prepare a preview WAV without playback')
-    mode.add_argument('--prepare', action='store_true', help='prepare the scheduled 08:30 WAV')
+    mode.add_argument('--prepare', action='store_true', help=f'prepare the scheduled {PLAYBACK_LABEL} WAV')
     mode.add_argument('--play', action='store_true', help='play only the prepared WAV')
     parser.add_argument('--state-dir', type=Path, default=ROOT / '.data/news-broadcast')
     args = parser.parse_args()

@@ -18,8 +18,8 @@ enum Job {
 
 fn scheduled_job(now: DateTime<FixedOffset>) -> Option<(NaiveDate, Job)> {
     let job = match (now.hour(), now.minute(), now.second()) {
-        (8, 20..=29, _) => Job::Prepare,
-        (8, 30, 0..=4) => Job::Play,
+        (7, 10..=59, _) => Job::Prepare,
+        (8, 0, 0..=4) => Job::Play,
         _ => return None,
     };
     Some((now.date_naive(), job))
@@ -41,7 +41,7 @@ pub fn status(cfg: &Config) -> &'static str {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(record) => match record["status"].as_str() {
                 Some("preparing") => "今日正在准备日期、天气和新闻音频",
-                Some("ready") => "今日音频已就绪，等待 08:30 播放",
+                Some("ready") => "今日音频已就绪，等待 08:00 播放",
                 Some("sending") => "今日已开始播报",
                 Some("done") => "今日已播报",
                 Some("queued") => {
@@ -114,12 +114,12 @@ mod tests {
     #[test]
     fn prepares_before_playback_and_does_not_play_late() {
         for (time, expected) in [
-            ("08:19:59", None),
-            ("08:20:00", Some(Job::Prepare)),
-            ("08:29:59", Some(Job::Prepare)),
-            ("08:30:00", Some(Job::Play)),
-            ("08:30:04", Some(Job::Play)),
-            ("08:30:05", None),
+            ("07:09:59", None),
+            ("07:10:00", Some(Job::Prepare)),
+            ("07:59:59", Some(Job::Prepare)),
+            ("08:00:00", Some(Job::Play)),
+            ("08:00:04", Some(Job::Play)),
+            ("08:00:05", None),
         ] {
             let timestamp =
                 DateTime::parse_from_rfc3339(&format!("2026-11-23T{time}+08:00")).unwrap();

@@ -86,8 +86,15 @@ HA 提供 `script.mr_li_xgimi_power_on`、名为“极米蓝牙开机”的按�
 
 极米学习和配网仍仅通过 USB。窗帘已增加认证 HTTP 学习、启用及升/降/停接口，
 见 [RF433.md](RF433.md)；实物接线见 [RF433_WIRING.md](RF433_WIRING.md)。mDNS 主机名由芯片 MAC
-后六位生成，形如 `mr-li-esp32-8ceff4.local`；如果 HA 主机无法解析 `.local`，
-可将两个 URL 改为路由器分配的 IP，并在路由器设置 DHCP 地址保留。
+后六位生成，形如 `mr-li-esp32-8ceff4.local`。macOS 上的 Home Assistant 如遇
+`.local` 解析不稳定，可使用仓库中的 `home-assistant/custom_components/mr_li_esp32_lan`。
+
+1. 将该目录复制到 HA 配置目录下的 `custom_components/`，并在
+   `configuration.yaml` 的顶层添加 `mr_li_esp32_lan: {mac: "板子的完整 Wi-Fi MAC"}`。
+2. 在 `secrets.yaml` 中把 `mr_li_esp32_status_url`、`mr_li_esp32_wake_url` 和
+   `mr_li_rf_command_url_template` 的主机部分改为 `127.0.0.1:18320`，保留原路径和 Authorization。
+3. 检查配置并重启 HA。组件随 HA 启动，通过默认网络接口的 ARP 表定位板子，并用认证状态接口核对设备名。
+   若当前地址不可用，在最多 1024 个地址的同一 IPv4 子网内触发 ARP 重新发现。
 HTTP 接口用于可信家庭局域网，令牌通过 HTTP 传输，不应映射到公网。
 已启用 Wi-Fi/BLE 共存；上电先初始化蓝牙控制器但不发送开机广播，再连接 Wi-Fi，
 配网轮询保持 USB 串口连接，避免反复打开串口影响启动。断线约每 10 秒尝试重连。

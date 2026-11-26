@@ -64,6 +64,7 @@ class GeekHeadlines(HTMLParser):
         super().__init__()
         self.date = date
         self.items = {'ai_news': [], 'news': []}
+        self.wrong_date = False
         self.article = None
         self.title_parts = []
 
@@ -78,7 +79,8 @@ class GeekHeadlines(HTMLParser):
         if section is None:
             return
         if query.get('d') != [self.date]:
-            raise RuntimeError('Geek 头条日期与播报日期不一致')
+            self.wrong_date = True
+            return
         self.article = (section, href)
         self.title_parts = []
 
@@ -103,8 +105,10 @@ def decode_news(page, date):
     parser = GeekHeadlines(date)
     parser.feed(page)
     parser.close()
-    if not all(parser.items.values()):
-        raise RuntimeError('当天 Geek 头条的 AI 前沿或技术雷达尚未发布')
+    if not any(parser.items.values()):
+        if parser.wrong_date:
+            raise RuntimeError('Geek 头条日期与播报日期不一致')
+        raise RuntimeError('当天 Geek 头条尚未发布')
     return {'date': date, **{section: {'news': items} for section, items in parser.items.items()}}
 
 
@@ -119,6 +123,8 @@ def fetch(date, timeout=GEEK_FETCH_TIMEOUT):
 def fetch_with_backoff(date, deadline):
     delay = 20
     final_probe = deadline - dt.timedelta(seconds=15)
+    partial = None
+    last_error = TimeoutError('已到取稿截止时间，未能取得当天 Geek 头条')
     while True:
         started = dt.datetime.now(BEIJING)
         remaining = (deadline - started).total_seconds()
@@ -126,19 +132,28 @@ def fetch_with_backoff(date, deadline):
             break
         try:
             data = fetch(date, timeout=min(GEEK_FETCH_TIMEOUT, remaining))
-        except (OSError, HTTPException, UnicodeError, RuntimeError):
-            now = dt.datetime.now(BEIJING)
-            if started >= final_probe or now >= deadline:
-                raise
-            # Make one last request near the cutoff even if the next backoff
-            # would otherwise push it outside the window.
-            time.sleep(max(0, min(delay, (final_probe - now).total_seconds())))
-            delay = min(delay * 2, 60)
+        except (OSError, HTTPException, ValueError, RuntimeError) as error:
+            last_error = error
         else:
-            if dt.datetime.now(BEIJING) <= deadline:
-                return data
+            if dt.datetime.now(BEIJING) > deadline:
+                break
+            if partial is None:
+                partial = data
+            else:
+                for section in ('ai_news', 'news'):
+                    if data[section]['news']:
+                        partial[section] = data[section]
+            if partial['ai_news']['news'] and partial['news']['news']:
+                return partial
+        now = dt.datetime.now(BEIJING)
+        if started >= final_probe or now >= deadline:
             break
-    raise TimeoutError('已到取稿截止时间，未能取得当天 Geek 头条')
+        # Keep a final request near the cutoff without spending synthesis time.
+        time.sleep(max(0, min(delay, (final_probe - now).total_seconds())))
+        delay = min(delay * 2, 60)
+    if partial is not None:
+        return partial
+    raise last_error
 
 
 def music_for_weather(code, snowfall, gust):
@@ -205,10 +220,11 @@ def calendar(date):
     return '，'.join(parts) + '。' if parts else ''
 
 
-def optional(read, date, fallback):
+def optional(read, date, fallback, *args):
     try:
-        return read(date)
-    except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as error:
+        return read(date, *args)
+    except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError,
+            RuntimeError, subprocess.SubprocessError) as error:
         print(f'{date}: {read.__name__}: {error}', file=sys.stderr, flush=True)
         return fallback
 
@@ -252,8 +268,8 @@ def make_script(data, date, calendar_text='', weather_text=''):
         + calendar_text + weather_text
     )
     closing = '以上是今天的早间头条。'
-    ai = data['ai_news']['news']
-    tech = data['news']['news']
+    ai = data['ai_news']['news'] if data else []
+    tech = data['news']['news'] if data else []
     choices = (
         ('AI 前沿', ai[:max(3, 5 - len(tech))]),
         ('技术雷达', tech[:max(2, 5 - len(ai))]),
@@ -271,7 +287,7 @@ def make_script(data, date, calendar_text='', weather_text=''):
                 length += len(line) + 1
                 headline = ''
     if len(lines) == 2:
-        raise RuntimeError('Geek 头条标题超出播报字数上限')
+        return intro
     return '\n'.join(lines + [closing])
 
 
@@ -320,11 +336,12 @@ def prepare(state, date, preview):
         now = dt.datetime.now(BEIJING)
         deadline = now.replace(hour=PLAYBACK_HOUR, minute=0, second=0, microsecond=0)
         fetch_deadline = deadline - dt.timedelta(minutes=3)
-        data = fetch(date) if preview else fetch_with_backoff(date, fetch_deadline)
-        suffix = '-preview' if preview else ''
-        save(state / (date + suffix + '-news.json'), data)
         calendar_text = optional(calendar, date, '')
-        weather_text, music_name = optional(weather, date, ('今天的天气暂时没有查到。', DEFAULT_MUSIC))
+        weather_text, music_name = optional(weather, date, ('', DEFAULT_MUSIC))
+        data = optional(fetch, date, None) if preview else optional(fetch_with_backoff, date, None, fetch_deadline)
+        suffix = '-preview' if preview else ''
+        save(state / (date + suffix + '-news.json'),
+             data or {'date': date, 'ai_news': {'news': []}, 'news': {'news': []}})
         text = make_script(data, date, calendar_text, weather_text)
         budget = 540 if preview else (deadline - dt.datetime.now(BEIJING)).total_seconds()
         if budget <= 0:

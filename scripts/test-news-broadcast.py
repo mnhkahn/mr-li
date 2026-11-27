@@ -2,6 +2,7 @@ import datetime as dt
 import json
 from pathlib import Path
 import runpy
+import wave
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -112,13 +113,16 @@ class NewsRetryTest(unittest.TestCase):
         for preview in (False, True):
             with self.subTest(preview=preview), TemporaryDirectory() as tmp:
                 state = Path(tmp)
+                speech = state / 'speech.wav'
+                with wave.open(str(speech), 'wb') as voice:
+                    voice.setparams((1, 2, 24000, 0, 'NONE', 'not compressed'))
+                    voice.writeframes(b'\0\0' * 2400)
                 clock = SimpleNamespace(now=lambda tz: self.start)
                 with patch.dict(prepare.__globals__,
                                 dt=SimpleNamespace(date=dt.date, datetime=clock, timedelta=dt.timedelta),
                                 calendar=unavailable, weather=unavailable,
                                 fetch=unavailable, fetch_with_backoff=unavailable), \
-                     patch('subprocess.run', return_value=SimpleNamespace(stdout='/tmp/speech.wav\n')) as synthesize, \
-                     patch.dict(prepare.__globals__, write_audio=lambda speech, output, music: music), \
+                     patch('subprocess.run', return_value=SimpleNamespace(stdout=str(speech))) as synthesize, \
                      patch('builtins.print'):
                     prepare(state, self.date, preview)
                 suffix = '-preview' if preview else ''
@@ -127,6 +131,28 @@ class NewsRetryTest(unittest.TestCase):
                 self.assertEqual(record['intro_music'], script['DEFAULT_MUSIC'])
                 self.assertEqual(record['text'], '早上好，该起床啦。今天是二零二六年十一月二十四日，星期二。')
                 self.assertEqual(synthesize.call_args.kwargs['input'], record['text'])
+                directory = state / 'audio' / 'previews' if preview else state / 'audio'
+                audio = directory / (self.date + suffix + '.wav')
+                with wave.open(str(audio), 'rb') as saved:
+                    self.assertGreater(saved.getnframes(), 2400)
+
+    def test_play_resolves_archived_and_legacy_recordings(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy), TemporaryDirectory() as tmp:
+                state = Path(tmp)
+                archived = state / 'audio' / (self.date + '.wav')
+                source = state / archived.name if legacy else archived
+                source.parent.mkdir(exist_ok=True)
+                source.write_bytes(b'saved audio')
+                path = state / (self.date + '.json')
+                script['save'](path, {'status': 'ready', 'text': '早上好'})
+                with patch('subprocess.run', return_value=SimpleNamespace(stdout='')) as player:
+                    script['play'](state, self.date)
+                    script['play'](state, self.date)
+                player.assert_called_once()
+                self.assertEqual(player.call_args.args[0][-2], str(archived.resolve()))
+                self.assertEqual(archived.read_bytes(), b'saved audio')
+                self.assertEqual(json.loads(path.read_text())['status'], 'done')
 
     def test_only_late_scheduled_synthesis_uses_the_faster_setting(self):
         prepare = retry.__globals__['prepare']

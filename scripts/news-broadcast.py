@@ -354,7 +354,11 @@ def prepare(state, date, preview):
             command, input=text, text=True, stdout=subprocess.PIPE, check=True, timeout=budget,
         )
         speech = Path(result.stdout.strip().splitlines()[-1])
-        music_name = write_audio(speech, state / (date + suffix + '.wav'), music_name)
+        audio_dir = state / 'audio'
+        if preview:
+            audio_dir = audio_dir / 'previews'
+        audio_dir.mkdir(parents=True, exist_ok=True)
+        music_name = write_audio(speech, audio_dir / (date + suffix + '.wav'), music_name)
         finished = dt.datetime.now(BEIJING)
         if not preview and finished >= deadline:
             raise TimeoutError(f'已到 {PLAYBACK_LABEL}，未能提前完成备播')
@@ -372,10 +376,14 @@ def prepare(state, date, preview):
 
 def play(state, date):
     path = state / (date + '.json')
-    audio = state / (date + '.wav')
+    audio = state / 'audio' / (date + '.wav')
     record = json.loads(path.read_text()) if path.exists() else {'date': date}
     if record.get('status') in ('sending', 'done', 'queued', 'uncertain'):
         return
+    legacy_audio = state / (date + '.wav')
+    if record.get('status') == 'ready' and not audio.exists() and legacy_audio.is_file():
+        audio.parent.mkdir(parents=True, exist_ok=True)
+        legacy_audio.rename(audio)
     if record.get('status') != 'ready' or not audio.is_file():
         if record.get('status') != 'failed':
             save(path, dict(record, status='failed', error=f'{PLAYBACK_LABEL} 未找到当天准备好的音频'))
@@ -404,7 +412,8 @@ def main():
     mode.add_argument('--preview', action='store_true', help='prepare a preview WAV without playback')
     mode.add_argument('--prepare', action='store_true', help=f'prepare the scheduled {PLAYBACK_LABEL} WAV')
     mode.add_argument('--play', action='store_true', help='play only the prepared WAV')
-    parser.add_argument('--state-dir', type=Path, default=ROOT / '.data/news-broadcast')
+    data_dir = Path(os.environ.get('MR_LI_DATA_DIR') or ROOT / '.data')
+    parser.add_argument('--state-dir', type=Path, default=data_dir / 'news-broadcast')
     args = parser.parse_args()
     os.umask(0o077)
     state = args.state_dir

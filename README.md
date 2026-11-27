@@ -472,7 +472,9 @@ mr-li 每天北京时间 07:10 读取 [Geek 头条](https://www.cyeam.com/geek) 
 
 `/usr/bin/python3 scripts/news-broadcast.py --preview` 生成当天预览稿和预览 WAV。播报稿上限为 500 字。定时取稿遇到栏目未发布或读取失败时，按 20 秒、40 秒、最多 60 秒的间隔退避重试，最晚 07:57 截止。距离 08:00 不足 4 分半时，同一 ZipVoice 音色的合成步数上限设为 4，以便完成备播。农历、天气和头条各自按可用内容播报。缺天气时用默认前奏，两个新闻栏都未取到时仍合成起床问候和日期。
 
-08:00 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。状态、稿件和音频位于 `MR_LI_DATA_DIR` 下的 `news-broadcast/`，默认是 `.data/news-broadcast/`。`/cron list` 显示当天的运行状态。
+08:00 通过 Mac mini 默认音频输出播放当天备好的 WAV。专注模式限制播报或语音设备忙时，新闻稿存入播报收件箱。错过播放窗口或当日音频未备好时，定时任务会跳过现场播放。`/cron list` 显示当天的运行状态。
+
+Mac mini 的媒体归档目录是 `~/Services/mr-li/media/`。坐姿照片位于 `photos/`，按拍摄日期分目录。每日播报和补播位于同级的 `broadcasts/`，文件名为 `YYYY-MM-DD.wav`，预览及排练录音位于 `broadcasts/previews/`。服务通过原照片目录和 `MR_LI_DATA_DIR/news-broadcast/audio/` 的符号链接写入这两个归档目录。稿件和状态记录保存在 `MR_LI_DATA_DIR/news-broadcast/`。
 
 ### GitHub 发布播报
 

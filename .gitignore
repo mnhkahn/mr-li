@@ -3,6 +3,7 @@
 /artifacts/
 /bin/
 /photos/
+/media/
 
 .env
 .env.*

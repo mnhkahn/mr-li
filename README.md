@@ -511,8 +511,8 @@ Mac mini 通过 HTTPS 入口接收 GitHub App 的 `workflow_run` Webhook。GitHu
 
 ## ESP32 硬件控制
 
-独立固件位于 [hardware/esp32](hardware/esp32/README.md)，通过 Wi-Fi 本地 HTTP
-接入 Home Assistant，并保留 USB stdio MCP 适配器。支持极米投影的蓝牙学习、
-保存与开机，不包含小智或智能体运行时。
+Mr-li 主机通过局域网 HTTP 接入 ESP32。固件、接线图、配网工具和 USB MCP
+适配器由 ESP32 Toolbox 维护。已有的语音配置继续通过
+`MR_LI_VOICE_ESP32_CONFIG` 指向本机连接文件。 [主机接入与迁移](hardware/esp32/README.md)
 
 代理 Agent 工具 `teacher_proxy` 与 `/proxy` 共用实现。可直接说“看看现在用的代理”“测一下日本节点速度”“切到香港最快节点”“比较全部节点，选最快的”。支持中文国家/地区、英文名称、JP/HK/US 等代码和旗帜；按订阅节点名称识别，不验证出口地理位置。批量测速每节点测试三次 Google 204 HTTP 延迟，至少两次成功才排名，以成功样本中位数排序（两次成功取较慢一次），不是下载带宽。最多并发8个节点，单次超时4秒，超过64个候选需先按国家筛选。`test`只测速，`auto`测速后切换并回读；所有候选失败时保留原节点。Agent 切换走带请求上下文和 operation_id 去重的原命令队列。

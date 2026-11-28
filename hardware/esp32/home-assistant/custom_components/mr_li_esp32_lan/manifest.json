@@ -1,9 +1,0 @@
-{
-  "domain": "mr_li_esp32_lan",
-  "name": "Mr-li ESP32 LAN",
-  "dependencies": [],
-  "documentation": "https://github.com/mnhkahn/mr-li/tree/main/hardware/esp32",
-  "iot_class": "local_polling",
-  "requirements": [],
-  "version": "1.0.0"
-}

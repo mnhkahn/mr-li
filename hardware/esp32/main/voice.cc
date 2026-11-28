@@ -1,5 +1,6 @@
 #include "voice.h"
 
+#include "light_ring.h"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -142,6 +143,7 @@ bool Read(AudioChannel& mic, int32_t* raw, int16_t* pcm, size_t samples) {
         peak = std::max(peak, static_cast<unsigned>(std::abs(static_cast<int>(pcm[i]))));
     }
     mic_peak = peak;
+    PushLightRingAudio(pcm, samples);
     return true;
 }
 

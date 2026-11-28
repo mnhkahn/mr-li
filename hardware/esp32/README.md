@@ -1,8 +1,8 @@
 # ESP32 硬件控制
 
 独立的 ESP-IDF 固件，用于让 Mac mini 通过 ESP32 控制附近硬件。目前提供
-极米 NEW Z6X 蓝牙开机，以及外接模块的 433 MHz 固定码窗帘发射路径。
-后者的接线、LONGSAM 兼容性边界和升/降/停工具见 [RF433.md](RF433.md)。
+极米 NEW Z6X 蓝牙开机、外接模块的 433 MHz 固定码窗帘控制，以及 S3 的 GPIO14 灯环控制。
+窗帘的接线、LONGSAM 兼容性边界和升/降/停工具见 [RF433.md](RF433.md)。
 硬件固件提供本地唤醒和设备控制，语音转写与智能体运行在 Mr-li 主机。
 设备支持 Wi-Fi 本地 HTTP 接入 Home Assistant，也保留 USB MCP 适配器。
 
@@ -26,6 +26,71 @@ S3-CAM 的 INMP441 麦克风沿用 GPIO1（WS）、GPIO2（SCK）、GPIO42（SD�
 
 可选调用链：`MCP 客户端 → Mac 上的 mcp_bridge.py → USB → ESP32 → 蓝牙 → 极米`。
 
+## GPIO14 灯环（ESP32-S3）
+
+使用 35 颗 WS2812B，默认色序为 GRB。固件上电会发送熄灯帧，不控制供电继电器。
+实物灯珠数不同时，修改 `main/light_ring.cc` 中的 `kLedCount` 后重新构建。
+GOOUUU ESP32-S3-CAM V1.5 的 GPIO8 接摄像头 D2。改接 GPIO14 后可以保留摄像头排线。
+
+下图是 5 V 共地直连调试方案。一个 5 V / 3 A 电源给 ESP32、灯环和 FS1000A 并联供电，
+所有设备共地。GPIO14 直连灯环 `DIN`，GPIO21 直连发射板 `DATA`，`ANT` 接约 17.3 cm 导线。
+麦克风从 ESP32 的 `3V3` 取电。
+
+![5 V 共地直连调试图](esp32-direct-breadboard.interactive.svg)
+
+[下载交互 SVG](esp32-direct-breadboard.interactive.svg) · [下载 Fritzing 源文件](esp32-direct-breadboard.fzz) · [编辑和导出接线图](#编辑和导出接线图)
+
+下载 SVG 后用 Chrome 单独打开。点导线或端子会高亮相连线路并显示端点，点空白或按 `Esc` 清除。
+
+灯环采用 [ESP-IDF LED Strip RMT 驱动](https://components.espressif.com/components/espressif/led_strip/versions/3.0.3/examples/led_strip_rmt_ws2812)，
+流动彩虹沿用 [ESP-IDF 的三通道相位动画](https://github.com/espressif/esp-idf/tree/release/v5.5/examples/peripherals/rmt/led_strip_simple_encoder)。
+音乐律动使用 [ESP-DSP FFT](https://components.espressif.com/components/espressif/esp-dsp/versions/1.7.0/examples/fft)
+把板上麦克风采到的声音映射为七个频段的彩色灯条。麦克风采样和语音唤醒共用，频谱计算在灯环任务执行。
+
+| 模式 | 效果 |
+|---|---|
+| `0` | 关闭，上电默认 |
+| `1` | 全亮白灯 |
+| `2` | 低亮度暖黄夜灯 |
+| `3` | 流动彩虹 |
+| `4` | 彩虹闪烁，每 250 ms 亮灭交替 |
+| `5` | 音乐律动，灯环随低频到高频的强度变化 |
+
+通过板子的局域网 HTTP 接口查询 `GET /api/light/status`，或向 `POST /api/light/mode`
+发送 JSON，例如 `{"mode":2}`。两者沿用 `Authorization: Bearer <api_token>`。
+若红绿看起来对调，可以测试 `{"mode":2,"color_order":"RGB"}`。色序会保存到板上，
+支持 RGB 三个通道的六种排列。也可以通过 USB 串口逐行发送：
+
+```json
+{"id":"light-status","method":"light.status"}
+{"id":"light-warm","method":"light.set_mode","params":{"mode":2}}
+```
+
+通过 `/api/status` 的 `light` 字段也可读取灯环状态。`frames_sent` 记录发帧次数，
+`color_order` 显示当前色序，`music_windows` 记录已经处理的音频窗口数。
+若已有窗帘配置占用 GPIO14，将窗帘改接其他引脚并重启后再用灯环。
+
+### 编辑和导出接线图
+
+`esp32-direct-breadboard.fzz` 保存元件和接线，已打包自定义元件。
+`esp32-direct-breadboard.interactive.svg` 用于 README 预览和浏览器交互。接线修改后，把这两个文件一起同步。
+
+1. **改元件或接线**时，在 [Fritzing 桌面版](https://fritzing.org/download/) 打开 `.fzz`，编辑后保存。
+2. **只预览或导出**时，把 `.fzz` 拖到 [fritzing-render 网页的 Sketches](https://leonfedotov.github.io/fritzing-render/)，
+   选择 **Breadboard** 或 **Schematic**，然后下载 SVG 或 PNG。
+3. **更新交互 SVG** 时，在 `hardware/esp32` 运行下面的命令。可加 `--base-svg` 复用同一草图导出并整理过标题、图例和接线备注的底图。
+
+```sh
+cyeam wiring render esp32-direct-breadboard.fzz -o esp32-direct-breadboard.interactive.svg
+```
+
+装有 Docker 时，可以在 `hardware/esp32` 用下面的命令生成面包板预览。
+
+```sh
+docker run --rm -v "$PWD:/work" ghcr.io/leonfedotov/fritzing-render \
+  render esp32-direct-breadboard.fzz --view breadboard -o esp32-direct-breadboard.preview.svg
+```
+
 ## 构建与烧录
 
 使用 ESP-IDF 5.5.x，先在当前终端运行所安装 SDK 的 `export.sh`。
@@ -41,9 +106,8 @@ S3-CAM 的 INMP441 麦克风沿用 GPIO1（WS）、GPIO2（SCK）、GPIO42（SD�
 构建结果为 `build/c3/mr_li_hardware.bin` 或 `build/s3/mr_li_hardware.bin`。
 烧录命令使用 ESP-IDF 生成的分区、bootloader 和应用地址。
 
-需要 ESP32-C3 或 ESP32-S3 的**原生 USB Serial/JTAG 数据口**；仅外接
-CH340/CP210x 的 UART 口不能作为当前固件的控制通道。板子若有两个 USB
-口，应使用连接芯片原生 USB 的那个。固件不驱动原板的屏幕、音频等外设。
+C3 使用原生 USB Serial/JTAG。GOOUUU S3-CAM 的原生 USB 口和 UART 烧录口都支持同一套
+JSON 命令。UART0 使用 115200 8N1，GPIO43/44 分别为 TX/RX。两种串口的响应都返回命令发出的端口。
 
 这是替换原固件的独立程序，不是给小智加插件。首次烧录前请备份原固件；
 新项目使用 ESP-IDF 的单应用分区表，可能与设备上的旧分区不同。
@@ -61,11 +125,20 @@ MCP 适配器不必运行。板子仍应放在投影附近。无需 MQTT broker 
 .venv/bin/python configure_wifi.py --port /dev/cu.usbmodem实际编号 --use-saved-wifi
 ```
 
-若无旧凭据，将 `{"ssid":"家里的 2.4G SSID","password":"密码"}` 写入
-本地私密 JSON 文件，限制权限，再传入 `--credentials-file /绝对路径/wifi.json`。
-不要将凭据写入命令参数或提交到 Git。脚本保存新的随机 API 令牌、重启板子并
-等待联网；如果联网失败，修正配网后重试。`network.configure` 本身只保存，
-调用 `network.restart` 后新配置才生效。`network.status` 不返回密码或令牌。
+添加一个 2.4 GHz Wi-Fi 时，在终端隐藏输入密码：
+
+```sh
+.venv/bin/python configure_wifi.py --port /dev/cu.usbserial实际编号 --ssid '另一个路由器的网络名'
+```
+
+板上 NVS 最多保存 8 个网络，升级会沿用原来已配置的 Wi-Fi。不同 SSID 按添加次序保存，
+重复添加同一 SSID 会更新该网络的密码。启动先尝试第一个网络，未连通时约每 10 秒尝试下一个。
+如果要从文件导入，可在仓库根目录的 `.data/esp32-wifi.json` 保存含 `ssid` 和 `password` 的 JSON，
+权限设为 `600`，通过 `--credentials-file /绝对路径/.data/esp32-wifi.json` 导入。该目录由 Git 忽略。
+隐藏输入模式直接把密码写入 ESP32 的 NVS。脚本复用已有 API 令牌、重启板子并等待联网。
+`network.configure` 本身只保存，调用 `network.restart` 后新配置才生效。
+`network.status` 的 Wi-Fi 字段包括当前 SSID 和已保存的 `saved_ssids`。
+可经 USB 发送 `network.forget`，参数为 `{"ssid":"要删除的网络名"}`，重启后生效。
 
 脚本生成 `.local/connection.json` 与 `.local/ha-secrets.yaml`（权限 600，Git
 忽略）。在 HA 配置中启用 `homeassistant.packages: !include_dir_named packages`，
@@ -81,7 +154,7 @@ HA 提供 `script.mr_li_xgimi_power_on`、名为“极米蓝牙开机”的按�
 
 | 请求 | 行为 |
 |---|---|
-| `GET /api/status` | 返回 network、xgimi 与 curtain 状态，不暴露唤醒 token 或网络密码 |
+| `GET /api/status` | 返回 network、xgimi、curtain 状态，S3 另含 light 状态 |
 | `POST /api/xgimi/power_on`（空 body） | 202 + accepted，异步发送；忙碌时 409 |
 
 极米学习和配网仍仅通过 USB。窗帘已增加认证 HTTP 学习、启用及升/降/停接口，
@@ -97,7 +170,7 @@ HA 提供 `script.mr_li_xgimi_power_on`、名为“极米蓝牙开机”的按�
    若当前地址不可用，在最多 1024 个地址的同一 IPv4 子网内触发 ARP 重新发现。
 HTTP 接口用于可信家庭局域网，令牌通过 HTTP 传输，不应映射到公网。
 已启用 Wi-Fi/BLE 共存；上电先初始化蓝牙控制器但不发送开机广播，再连接 Wi-Fi，
-配网轮询保持 USB 串口连接，避免反复打开串口影响启动。断线约每 10 秒尝试重连。
+配网轮询保持 USB 串口连接，避免反复打开串口影响启动。
 学习数据独立保存在
 `xgimi_wake` NVS 命名空间，配网不会覆盖它。
 
@@ -138,6 +211,9 @@ python3 -m venv .venv
 | `self.xgimi.learn` | `{}` | 扫描原遥控器开机广播，最长 20 秒并保存 |
 | `self.xgimi.power_on` | `{}` | 发送保存的蓝牙唤醒信号约 3 秒 |
 | `self.xgimi.configure` | `{"token":"自己的十六进制数据"}` | 手工保存已抓取的唤醒数据 |
+| `self.hardware.command` | `{"method":"light.set_mode","params":{"mode":2}}` | 透传固件的灯环、网络、语音、窗帘和投影 JSON 命令 |
+
+通过 MCP 调用 `network.status` 可查看 Wi-Fi 状态。配置密码使用终端中的 `configure_wifi.py`。
 
 学习步骤：投影接电但关机、ESP32 靠近原装遥控器；调用 `learn` 后查询
 `status`，等 `initializing` 变成 `learning` 再按原遥控器电源键。

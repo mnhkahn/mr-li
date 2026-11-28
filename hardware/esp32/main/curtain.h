@@ -3,3 +3,4 @@
 #include <cJSON.h>
 
 cJSON* HandleCurtainCommand(const std::string& method, const cJSON* params);
+bool CurtainUsesGpio(int pin);

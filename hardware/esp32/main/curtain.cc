@@ -1,5 +1,6 @@
 #include "curtain.h"
 #include "curtain_protocol.h"
+#include "light_ring.h"
 #include "rf_learning.h"
 #include <cmath>
 #include <mutex>
@@ -42,6 +43,13 @@ void Pin(int pin, bool rx = false) {
 #endif
     if (!allowed || !GPIO_IS_VALID_GPIO(pin) || (!rx && !GPIO_IS_VALID_OUTPUT_GPIO(pin)))
         throw std::runtime_error("Unsupported RF GPIO; S3 wiring uses TX21/RX47; verify board pin use");
+}
+void CheckNewRfPin([[maybe_unused]] int pin) {
+#if CONFIG_IDF_TARGET_ESP32S3
+    if (pin == kLightRingGpio) {
+        throw std::runtime_error("GPIO" + std::to_string(pin) + " is reserved for the light ring");
+    }
+#endif
 }
 struct Config {
     int pin = -1, rx = -1, repeat = 6;
@@ -234,6 +242,13 @@ class Curtain {
     }
 public:
     static Curtain& Instance() { static Curtain value; return value; }
+#if CONFIG_IDF_TARGET_ESP32S3
+    bool UsesGpio(int pin) {
+        std::lock_guard lock(mutex_);
+        auto config = Load();
+        return config.pin == pin || config.rx == pin;
+    }
+#endif
     cJSON* Status() {
         std::lock_guard<std::mutex> lock(mutex_);
         auto config = Load();
@@ -334,6 +349,7 @@ public:
         return result;
     }
     cJSON* ProbeInput() {
+#if CONFIG_SOC_PCNT_SUPPORTED
         std::lock_guard<std::mutex> lock(mutex_);
         if (busy_) throw std::runtime_error("RF busy");
         auto config = Load();
@@ -383,10 +399,14 @@ public:
         cJSON_AddNumberToObject(result, "sample_ms", 100);
         cJSON_AddItemToObject(result, "rising_edges", cJSON_CreateIntArray(counts, 10));
         return result;
+#else
+        throw std::runtime_error("RF pulse counter is unavailable on this ESP32 target");
+#endif
     }
     cJSON* Setup(const cJSON* params) {
         int tx = Integer(params, "tx_gpio", 0, 48), rx = Integer(params, "rx_gpio", 0, 48);
         Pin(tx); Pin(rx, true);
+        CheckNewRfPin(tx); CheckNewRfPin(rx);
         if (tx == rx) throw std::runtime_error("RX and TX must use separate GPIOs");
         int repeat = cJSON_HasObjectItem(params, "repeat") ? Integer(params, "repeat", 1, 10) : 6;
         { std::lock_guard<std::mutex> lock(mutex_);
@@ -397,6 +417,7 @@ public:
     }
     cJSON* Configure(const cJSON* params) {
         auto config = Parse(params);
+        CheckNewRfPin(config.pin);
         { std::lock_guard<std::mutex> lock(mutex_);
           if (busy_) throw std::runtime_error("RF busy");
           config.rx = Load().rx; config.enabled = false;
@@ -463,6 +484,11 @@ public:
     }
 };
 }
+#if CONFIG_IDF_TARGET_ESP32S3
+bool CurtainUsesGpio(int pin) {
+    return Curtain::Instance().UsesGpio(pin);
+}
+#endif
 cJSON* HandleCurtainCommand(const std::string& method, const cJSON* params) {
     auto& curtain = Curtain::Instance();
     if (method == "curtain.status") return curtain.Status();

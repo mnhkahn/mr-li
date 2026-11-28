@@ -1,0 +1,582 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="841" viewBox="0 0 1000 841" role="img"><title>ESP32-S3-CAM 灯环、麦克风和 433 MHz 发射接线图</title><desc>HW-131 中间排针第 2 行给5 V 供电。右下角的 3.3 V 给麦克风供电。麦克风 WS 接 G1，SCK 接 G2，SD 接 G42。433 MHz 发射板 DATA 接 G21，VCC 按 HW-131 的 5 V 输出分支绘制，ANT 接独立导线天线。</desc><rect width="1000" height="841" fill="#ffffff"/><rect x="24" y="24" width="4" height="30" rx="2" fill="#00857a"/><text x="43" y="48" fill="#223249" font-size="26" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700">ESP32 灯环、麦克风与 433 MHz 发射</text><line x1="28" y1="68" x2="972" y2="68" stroke="#e3e9f0"/><svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" x="28" y="75" width="944" height="671.3347920915537" viewBox="0 0 10155.6 7222.22">
+<g id="HW-131" transform="matrix(1 0 0 1 366.667 1266.67)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+ <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+  <path xmlns="http://www.w3.org/2000/svg" d="M33.3333,66.6667L1555.56,66.6667L1555.56,1011.11L1466.67,1100L1300,1100L1222.22,1022.22L377.778,1022.22L288.889,1100L122.222,1100L33.3333,1011.11Z" fill="#202b31" stroke="#44545e" stroke-width="16.6667"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#172024" height="488.889" rx="33.3333" stroke="#5b6972" stroke-width="11.1111" width="322.222" x="111.111" y="88.8889"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#2d373a" height="111.111" rx="22.2222" stroke="none" stroke-width="11.1111" width="255.556" x="144.444" y="88.8889"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="272.222" cy="355.556" fill="#0d161c" r="72.2222" stroke="#737d82" stroke-width="11.1111"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#4c575e" height="255.556" rx="22.2222" stroke="#87959a" stroke-width="11.1111" width="244.444" x="466.667" y="111.111"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#e1e6e9" height="155.556" rx="22.2222" stroke="none" stroke-width="11.1111" width="177.778" x="500" y="155.556"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="844.444" cy="177.778" fill="#4b9561" r="44.4444" stroke="#b6e0a7" stroke-width="11.1111"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="844.444" cy="411.111" fill="#131f27" r="77.7778" stroke="#b5bec1" stroke-width="11.1111"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#c1cbd2" height="466.667" rx="33.3333" stroke="#e3edf0" stroke-width="11.1111" width="388.889" x="1055.56" y="88.8889"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#3d515f" height="44.4444" rx="11.1111" stroke="none" stroke-width="11.1111" width="344.444" x="1077.78" y="122.222"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#738894" height="111.111" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="1122.22" y="311.111"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#738894" height="111.111" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="1288.89" y="311.111"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="122.222" cy="633.333" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="200" cy="633.333" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="122.222" cy="988.889" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="200" cy="988.889" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1355.56" cy="633.333" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1433.33" cy="633.333" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1355.56" cy="988.889" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1433.33" cy="988.889" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#6f5b32" height="100" rx="11.1111" stroke="none" stroke-width="11.1111" width="344.444" x="77.7778" y="800"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#6f5b32" height="100" rx="11.1111" stroke="none" stroke-width="11.1111" width="333.333" x="1155.56" y="800"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="122.222" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="200" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="277.778" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="355.556" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1200" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1277.78" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1355.56" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1433.33" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#d4e0e5" font-family="Arial, sans-serif" font-size="53.3333" font-weight="400" text-anchor="start" x="77.7778" y="766.667">5V / OFF / 3.3</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#d4e0e5" font-family="Arial, sans-serif" font-size="53.3333" font-weight="400" text-anchor="start" x="1155.56" y="766.667">5V / OFF / 3.3</text>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#152025" height="422.222" rx="11.1111" stroke="#818f95" stroke-width="6.66667" width="188.889" x="522.222" y="600"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="566.667" cy="644.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="655.556" cy="644.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="566.667" cy="744.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="655.556" cy="744.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="566.667" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="655.556" cy="844.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="566.667" cy="944.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="655.556" cy="944.444" fill="#1e2931" r="31.1111" stroke="#c9a456" stroke-width="14.4444"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="104.444" rx="16.6667" stroke="#87decf" stroke-width="10" width="193.333" x="514.444" y="692.222"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ffbdbe" font-family="Arial, sans-serif" font-size="63.3333" font-weight="700" text-anchor="end" x="433.333" y="677.778">5V</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#e1e7ed" font-family="Arial, sans-serif" font-size="63.3333" font-weight="700" text-anchor="end" x="500" y="922.222">3.3V</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#e1e7ed" font-family="Arial, sans-serif" font-size="58.8889" font-weight="700" text-anchor="start" x="727.778" y="661.111">GND</text>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#101b22" height="211.111" rx="22.2222" stroke="#859098" stroke-width="8.33333" width="122.222" x="888.889" y="688.889"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#101b22" height="211.111" rx="22.2222" stroke="#859098" stroke-width="8.33333" width="100" x="1033.33" y="688.889"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#293749" font-family="Arial, sans-serif" font-size="144.444" font-weight="700" text-anchor="middle" x="822.222" y="1233.33">HW-131</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#3f6470" font-family="Arial, sans-serif" font-size="80" font-weight="700" text-anchor="middle" x="822.222" y="1377.78">Center header · row 2</text>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="96.6667" rx="13.8889" stroke="#87decf" stroke-width="10" width="168.889" x="1308.89" y="941.111"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ffb3b9" font-family="Arial, sans-serif" font-size="62.2222" font-weight="700" text-anchor="end" x="1294.44" y="972.222">+</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#e2eefe" font-family="Arial, sans-serif" font-size="61.1111" font-weight="700" text-anchor="start" x="1488.89" y="977.778">−</text>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="566.667" cy="744.444" fill="#ffa6a8" id="connector0pin" r="36.1111" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="566.111" y="743.889"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="655.556" cy="744.444" fill="#b8c5ce" id="connector1pin" r="36.1111" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="655" y="743.889"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1355.56" cy="988.889" fill="#ffd4ac" id="connector2pin" r="36.1111" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector2terminal" stroke="none" width="1.11111" x="1355" y="988.333"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1433.33" cy="988.889" fill="#b8c5ce" id="connector3pin" r="36.1111" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector3terminal" stroke="none" width="1.11111" x="1432.78" y="988.333"/>
+ </g>
+</g>
+</g>
+<g id="GOOUUU ESP32-S3-CAM" transform="matrix(1 0 0 1 3100 655.556)"><g id="breadboard">
+ <g id="breadboard">
+  <g transform="matrix(1, 0, 0, 1, 311.111, 0)">
+   <g>
+    <rect fill="#151e27" height="2622.22" rx="66.6667" stroke="#34434f" stroke-width="17.2222" width="1233.33" x="22.2222" y="22.2222"/>
+    <rect fill="#1d2a34" height="322.222" rx="22.2222" stroke="#344954" stroke-width="7.77778" width="855.556" x="211.111" y="22.2222"/>
+    <path d="M311.111,244.444L311.111,100L433.333,100L433.333,244.444L477.778,244.444L477.778,100L566.667,100L566.667,244.444L611.111,244.444L611.111,100L711.111,100L711.111,244.444L766.667,244.444L766.667,100L877.778,100L877.778,255.556L944.444,255.556" fill="none" stroke="#4d6268" stroke-width="15.5556"/>
+    <circle cx="88.8889" cy="355.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="455.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="555.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="655.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="755.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="855.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="955.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1055.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1155.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1255.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1355.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1455.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1555.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1655.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1755.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1855.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="1955.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="2055.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="2155.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="88.8889" cy="2255.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="355.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="455.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="555.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="655.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="755.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="855.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="955.556" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1055.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1155.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1255.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1355.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1455.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1555.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1655.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1755.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1855.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="1955.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="2055.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="2155.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="2255.56" fill="#abb5b7" r="28.3333" stroke="#62716c" stroke-width="7.77778"/>
+    <rect fill="#acb4b1" height="777.778" rx="44.4444" stroke="#e1e5df" stroke-width="14.4444" width="733.333" x="266.667" y="333.333"/>
+    <circle cx="911.111" cy="411.111" fill="#c2a66e" r="48.8889" stroke="#e8e7d5" stroke-width="11.1111"/>
+    <rect fill="#b37732" height="700" rx="22.2222" stroke="#7e4d28" stroke-width="8.88889" width="211.111" x="488.889" y="677.778"/>
+    <path d="M544.444,1000L544.444,1333.33M588.889,1000L588.889,1333.33M633.333,1000L633.333,1333.33" fill="none" stroke="#dfad5b" stroke-width="6.11111"/>
+    <rect fill="#172026" height="377.778" rx="44.4444" stroke="#53616a" stroke-width="11.1111" width="344.444" x="433.333" y="622.222"/>
+    <circle cx="607.778" cy="805.556" fill="#1c2329" r="122.222" stroke="#394b59" stroke-width="13.3333"/>
+    <circle cx="607.778" cy="805.556" fill="#29233e" r="57.7778" stroke="#525474" stroke-width="11.1111"/>
+    <circle cx="592.222" cy="785.556" fill="#886884" r="16.6667" stroke="none" stroke-width="11.1111"/>
+    <rect fill="#d6d5c7" height="177.778" rx="22.2222" stroke="#657074" stroke-width="11.1111" width="711.111" x="277.778" y="1388.89"/>
+    <rect fill="#323b43" height="66.6667" rx="11.1111" stroke="none" stroke-width="11.1111" width="644.444" x="311.111" y="1411.11"/>
+    <text fill="#cad4dc" font-family="Arial, sans-serif" font-size="94.4444" font-weight="700" text-anchor="middle" x="638.889" y="1655.56">GOOUUU V1.5</text>
+    <text fill="#eaf1f6" font-family="Arial, sans-serif" font-size="111.111" font-weight="700" text-anchor="middle" x="638.889" y="1777.78">ESP32-S3-CAM</text>
+    <rect fill="#101a23" height="211.111" rx="33.3333" stroke="#67747e" stroke-width="8.88889" width="500" x="377.778" y="1955.56"/>
+    <rect fill="#6d777e" height="122.222" rx="22.2222" stroke="none" stroke-width="11.1111" width="100" x="211.111" y="2077.78"/>
+    <rect fill="#6d777e" height="122.222" rx="22.2222" stroke="none" stroke-width="11.1111" width="100" x="966.667" y="2077.78"/>
+    <text fill="#aab8c0" font-family="Arial, sans-serif" font-size="56.6667" font-weight="700" text-anchor="middle" x="261.111" y="2055.56">RST</text>
+    <text fill="#aab8c0" font-family="Arial, sans-serif" font-size="56.6667" font-weight="700" text-anchor="middle" x="1016.67" y="2055.56">BOOT</text>
+    <text fill="#a8f2e6" font-family="Arial, sans-serif" font-size="73.3333" font-weight="700" text-anchor="start" x="183.333" y="2174.44">G14</text>
+    <text fill="#e6ebf1" font-family="Arial, sans-serif" font-size="64.4444" font-weight="700" text-anchor="start" x="183.333" y="2283.33">5V</text>
+    <text fill="#e6ebf1" font-family="Arial, sans-serif" font-size="64.4444" font-weight="700" text-anchor="start" x="211.111" y="372.222">3V3</text>
+    <text fill="#b5dcff" font-family="Arial, sans-serif" font-size="68.8889" font-weight="700" text-anchor="end" x="1077.78" y="575.556">G1</text>
+    <text fill="#dacadf" font-family="Arial, sans-serif" font-size="68.8889" font-weight="700" text-anchor="end" x="1077.78" y="675.556">G2</text>
+    <text fill="#f9d4c0" font-family="Arial, sans-serif" font-size="68.8889" font-weight="700" text-anchor="end" x="1077.78" y="775.556">G42</text>
+    <text fill="#f1b2d7" font-family="Arial, sans-serif" font-size="68.8889" font-weight="700" text-anchor="end" x="1077.78" y="1977.78">G21</text>
+    <text fill="#e2eefe" font-family="Arial, sans-serif" font-size="73.3333" font-weight="700" text-anchor="end" x="1088.89" y="2283.33">GND</text>
+    <circle cx="88.8889" cy="2566.67" fill="#f1f6f7" r="46.6667" stroke="#a08b5f" stroke-width="7.77778"/>
+    <circle cx="1188.89" cy="2566.67" fill="#f1f6f7" r="46.6667" stroke="#a08b5f" stroke-width="7.77778"/>
+    <rect fill="#aeb9be" height="322.222" rx="33.3333" stroke="#d6dee1" stroke-width="11.1111" width="400" x="188.889" y="2388.89"/>
+    <rect fill="#aeb9be" height="322.222" rx="33.3333" stroke="#d6dee1" stroke-width="11.1111" width="400" x="700" y="2388.89"/>
+    <rect fill="#293943" height="77.7778" rx="17.7778" stroke="none" stroke-width="11.1111" width="288.889" x="244.444" y="2611.11"/>
+    <rect fill="#293943" height="77.7778" rx="17.7778" stroke="none" stroke-width="11.1111" width="288.889" x="755.556" y="2611.11"/>
+    <text fill="#303b43" font-family="Arial, sans-serif" font-size="77.7778" font-weight="700" text-anchor="middle" x="388.889" y="2522.22">OTG</text>
+    <text fill="#303b43" font-family="Arial, sans-serif" font-size="77.7778" font-weight="700" text-anchor="middle" x="900" y="2522.22">TTL</text>
+   </g>
+  </g>
+  <rect fill="#fffaf0" height="188.889" rx="33.3333" stroke="#b25e23" stroke-dasharray="22.2222, 16.6667" stroke-width="10" width="255.556" x="5.55556" y="2255.56"/>
+  <text fill="#934b23" font-family="Arial, sans-serif" font-size="51.1111" font-weight="700" text-anchor="start" x="133.333" y="2373.33">PWR</text>
+  <circle cx="55.5556" cy="2344.44" fill="#ffd4ac" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="55" y="2343.89"/>
+  <circle cx="1500" cy="2255.56" fill="#b8c5ce" id="connector1pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="1499.44" y="2255"/>
+  <circle cx="400" cy="2155.56" fill="#84e8da" id="connector2pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector2terminal" stroke="none" width="1.11111" x="399.444" y="2155"/>
+  <circle cx="1500" cy="555.556" fill="#b5dcff" id="connector3pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector3terminal" stroke="none" width="1.11111" x="1499.44" y="555"/>
+  <circle cx="1500" cy="655.556" fill="#dacadf" id="connector4pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector4terminal" stroke="none" width="1.11111" x="1499.44" y="655"/>
+  <circle cx="1500" cy="755.556" fill="#f9d4c0" id="connector5pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector5terminal" stroke="none" width="1.11111" x="1499.44" y="755"/>
+  <circle cx="1500" cy="1955.56" fill="#dacadf" id="connector6pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector6terminal" stroke="none" width="1.11111" x="1499.44" y="1955"/>
+ </g>
+</g>
+</g>
+<g id="WS2812B 35 LED Ring" transform="matrix(1 0 0 1 5766.67 200)"><g id="breadboard">
+ <g id="breadboard">
+  <circle cx="2200" cy="1355.56" fill="#20252b" r="1322.22" stroke="#535b62" stroke-width="16.6667"/>
+  <circle cx="2200" cy="1355.56" fill="#ffffff" r="1076.86" stroke="#697782" stroke-width="11.1111"/>
+  <g transform="matrix(-0.0896418, 0.995974, -0.995974, -0.0896418, 3395.17, 1463.12)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.266044, 0.963961, -0.963961, -0.266044, 3356.76, 1674.8)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.433879, 0.900971, -0.900971, -0.433879, 3281.17, 1876.21)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.587785, 0.809017, -0.809017, -0.587785, 3170.82, 2060.9)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.722798, 0.691059, -0.691059, -0.722798, 3029.28, 2222.91)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.834569, 0.550903, -0.550903, -0.834569, 2861.08, 2357.04)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.919527, 0.393027, -0.393027, -0.919527, 2671.63, 2458.99)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.974928, 0.222519, -0.222519, -0.974928, 2467.02, 2525.47)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.998993, 0.0448574, -0.0448574, -0.998993, 2253.83, 2554.34)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.99095, -0.134228, 0.134228, -0.99095, 2038.92, 2544.7)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.951057, -0.309017, 0.309017, -0.951057, 1829.18, 2496.82)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.880593, -0.473873, 0.473873, -0.880593, 1631.36, 2412.27)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.781836, -0.623484, 0.623484, -0.781836, 1451.81, 2293.76)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.657941, -0.75307, 0.75307, -0.657941, 1296.31, 2145.08)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.512897, -0.85845, 0.85845, -0.512897, 1169.87, 1971.03)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.351368, -0.936237, 0.936237, -0.351368, 1076.52, 1777.2)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-0.178562, -0.983929, 0.983929, -0.178562, 1019.29, 1569.82)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(-1.83697e-16, -1, 1, -1.83697e-16, 1000, 1355.56)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.178562, -0.983929, 0.983929, 0.178562, 1019.29, 1141.29)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.351368, -0.936237, 0.936237, 0.351368, 1076.52, 933.911)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.512897, -0.85845, 0.85845, 0.512897, 1169.87, 740.078)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.657941, -0.75307, 0.75307, 0.657941, 1296.31, 566.033)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.781836, -0.623484, 0.623484, 0.781836, 1451.81, 417.356)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.880593, -0.473873, 0.473873, 0.880593, 1631.36, 298.844)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.951057, -0.309017, 0.309017, 0.951057, 1829.18, 214.289)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.99095, -0.134228, 0.134228, 0.99095, 2038.92, 166.411)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.998993, 0.0448574, -0.0448574, 0.998993, 2253.83, 156.767)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.974928, 0.222519, -0.222519, 0.974928, 2467.02, 185.644)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.919527, 0.393027, -0.393027, 0.919527, 2671.63, 252.122)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.834569, 0.550903, -0.550903, 0.834569, 2861.08, 354.067)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.722798, 0.691059, -0.691059, 0.722798, 3029.28, 488.2)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.587785, 0.809017, -0.809017, 0.587785, 3170.82, 650.211)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.433879, 0.900971, -0.900971, 0.433879, 3281.17, 834.9)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.266044, 0.963961, -0.963961, 0.266044, 3356.76, 1036.31)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <g transform="matrix(0.0896418, 0.995974, -0.995974, 0.0896418, 3395.17, 1247.99)">
+   <g>
+    <rect fill="#e9ede7" height="133.333" rx="15.5556" stroke="#acb4ae" stroke-width="7.22222" width="133.333" x="-66.6667" y="-66.6667"/>
+    <rect fill="#c6cec6" height="77.7778" rx="11.1111" stroke="none" stroke-width="11.1111" width="77.7778" x="-38.8889" y="-38.8889"/>
+    <rect fill="#808180" height="75.5556" rx="5.55556" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="-38.8889"/>
+    <rect fill="#cdd0ca" height="14.4444" rx="3.33333" stroke="none" stroke-width="11.1111" width="40" x="82.2222" y="21.1111"/>
+   </g>
+  </g>
+  <path d="M122.222,888.889L766.667,888.889L766.667,1822.22L122.222,1822.22ZM766.667,1355.56L877.778,1355.56" fill="none" stroke="#9dabb7" stroke-dasharray="3 2.5" stroke-width="13.3333"/>
+  <text fill="#a8313e" font-family="Arial, sans-serif" font-size="122.222" font-weight="700" text-anchor="start" x="444.444" y="1088.89">5V</text>
+  <text fill="#00746a" font-family="Arial, sans-serif" font-size="122.222" font-weight="700" text-anchor="start" x="444.444" y="1400">DIN</text>
+  <text fill="#293749" font-family="Arial, sans-serif" font-size="122.222" font-weight="700" text-anchor="start" x="444.444" y="1711.11">GND</text>
+  <text fill="#22374c" font-family="Arial, sans-serif" font-size="233.333" font-weight="700" text-anchor="middle" x="2200" y="1277.78">WS2812B</text>
+  <text fill="#526a81" font-family="Arial, sans-serif" font-size="144.444" font-weight="700" text-anchor="middle" x="2200" y="1544.44">35 LEDs</text>
+  <text fill="#526a81" font-family="Arial, sans-serif" font-size="111.111" font-weight="400" text-anchor="middle" x="2200" y="1733.33">Ø97 / Ø79 mm</text>
+  <circle cx="255.556" cy="1044.44" fill="#ffa6a8" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="255" y="1043.89"/>
+  <circle cx="255.556" cy="1355.56" fill="#84e8da" id="connector1pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="255" y="1355"/>
+  <circle cx="255.556" cy="1666.67" fill="#b8c5ce" id="connector2pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect fill="none" height="1.11111" id="connector2terminal" stroke="none" width="1.11111" x="255" y="1666.11"/>
+ </g>
+</g>
+</g>
+<g id="INMP441 I2S microphone" transform="matrix(1 0 0 1 6155.56 3255.56)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+ <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+  <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="688.889" fill="#182a2c" r="600" stroke="#536863" stroke-width="16.6667"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="688.889" fill="none" r="533.333" stroke="#c1a45e" stroke-width="15.5556"/>
+  <path xmlns="http://www.w3.org/2000/svg" d="M311.111,400L433.333,400Q500,400,500,466.667M311.111,688.889L533.333,688.889M311.111,977.778L422.222,977.778Q500,977.778,500,877.778M1133.33,400L1011.11,400Q944.444,400,944.444,466.667M1133.33,688.889L911.111,688.889M1133.33,977.778L1011.11,977.778Q944.444,977.778,944.444,877.778" fill="none" stroke="#38524a" stroke-width="11.1111"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="666.667" fill="#242b2d" r="127.778" stroke="#bda76f" stroke-width="19.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="666.667" fill="#0a1418" r="66.6667" stroke="#d3bc7e" stroke-width="11.6667"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="666.667" fill="#29373b" r="31.1111" stroke="none" stroke-width="11.1111"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#eaf1f5" font-family="Arial, sans-serif" font-size="104.444" font-weight="700" text-anchor="middle" x="722.222" y="1155.56">INMP441</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#d0dddc" font-family="Arial, sans-serif" font-size="74.4444" font-weight="700" text-anchor="middle" x="722.222" y="277.778">I2S MIC</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="start" x="311.111" y="428.889">L/R</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="start" x="311.111" y="717.778">WS</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="start" x="311.111" y="1006.67">SCK</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="end" x="1133.33" y="428.889">GND</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="end" x="1133.33" y="717.778">VDD</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#f2edda" font-family="Arial, sans-serif" font-size="84.4444" font-weight="700" text-anchor="end" x="1133.33" y="1006.67">SD</text>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="222.222" cy="688.889" fill="#b5dcff" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="221.667" y="688.333"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="222.222" cy="977.778" fill="#dacadf" id="connector1pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="221.667" y="977.222"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1222.22" cy="977.778" fill="#f9d4c0" id="connector2pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector2terminal" stroke="none" width="1.11111" x="1221.67" y="977.222"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1222.22" cy="400" fill="#b8c5ce" id="connector3pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector3terminal" stroke="none" width="1.11111" x="1221.67" y="399.444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1222.22" cy="688.889" fill="#ffd4ac" id="connector4pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector4terminal" stroke="none" width="1.11111" x="1221.67" y="688.333"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="222.222" cy="400" fill="#d0c7a7" id="connector5pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector5terminal" stroke="none" width="1.11111" x="221.667" y="399.444"/>
+ </g>
+</g>
+</g>
+<g id="FS1000A / MX-FS-03V 433 MHz transmitter" transform="matrix(1 0 0 1 3988.89 5788.89)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+ <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#25453a" height="1155.56" rx="55.5556" stroke="#5c816e" stroke-width="16.6667" width="1222.22" x="33.3333" y="33.3333"/>
+  <path xmlns="http://www.w3.org/2000/svg" d="M177.778,688.889L266.667,688.889L266.667,822.222L488.889,822.222M800,811.111L1122.22,811.111L1122.22,622.222M566.667,544.444L533.333,544.444L533.333,344.444L755.556,344.444" fill="none" stroke="#607755" stroke-width="13.8889"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#333e31" height="211.111" rx="22.2222" stroke="none" stroke-width="11.1111" width="322.222" x="155.556" y="466.667"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="177.778" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="211.111" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="244.444" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="277.778" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="311.111" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="344.444" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="377.778" y="477.778"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#d29b5f" height="188.889" rx="5.55556" stroke="none" stroke-width="11.1111" width="16.6667" x="411.111" y="477.778"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="744.444" cy="600" fill="#abb7b3" r="200" stroke="#e0e6d7" stroke-width="15.5556"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="744.444" cy="600" fill="#bec8c0" r="150" stroke="#919f93" stroke-width="7.77778"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#40584c" font-family="Arial, sans-serif" font-size="82.2222" font-weight="700" text-anchor="middle" x="744.444" y="625.556">R433</text>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#162821" height="55.5556" rx="11.1111" stroke="#9a9a7a" stroke-width="6.66667" width="100" x="477.778" y="766.667"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#152620" height="66.6667" rx="11.1111" stroke="#9a9a7a" stroke-width="6.66667" width="111.111" x="1000" y="788.889"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ecedda" font-family="Arial, sans-serif" font-size="75.5556" font-weight="700" text-anchor="middle" x="177.778" y="255.556">GND</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ecedda" font-family="Arial, sans-serif" font-size="75.5556" font-weight="700" text-anchor="middle" x="622.222" y="255.556">VCC</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ecedda" font-family="Arial, sans-serif" font-size="75.5556" font-weight="700" text-anchor="middle" x="1055.56" y="255.556">DATA</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#ecedda" font-family="Arial, sans-serif" font-size="67.7778" font-weight="700" text-anchor="end" x="1122.22" y="611.111">ANT</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#edeee5" font-family="Arial, sans-serif" font-size="126.667" font-weight="700" text-anchor="middle" x="644.444" y="1000">FS1000A</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#cad9ce" font-family="Arial, sans-serif" font-size="74.4444" font-weight="700" text-anchor="middle" x="644.444" y="1122.22">433 MHz TX</text>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="177.778" cy="100" fill="#b8c5ce" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="177.222" y="99.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="622.222" cy="100" fill="#ffa6a8" id="connector1pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="621.667" y="99.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1055.56" cy="100" fill="#f1b2d7" id="connector2pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector2terminal" stroke="none" width="1.11111" x="1055" y="99.4444"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1200" cy="588.889" fill="#b6cc9a" id="connector3pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector3terminal" stroke="none" width="1.11111" x="1199.44" y="588.333"/>
+ </g>
+</g>
+</g>
+<g id="433 MHz wire antenna" transform="matrix(1 0 0 1 5933.33 6222.22)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+ <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+  <path xmlns="http://www.w3.org/2000/svg" d="M66.6667,155.556L1711.11,155.556" fill="none" stroke="#304a35" stroke-width="43.3333"/>
+  <path xmlns="http://www.w3.org/2000/svg" d="M66.6667,155.556L1711.11,155.556" fill="none" stroke="#77936a" stroke-width="22.2222"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="1711.11" cy="155.556" fill="#31533e" r="20" stroke="none" stroke-width="11.1111"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#314f3b" font-family="Arial, sans-serif" font-size="105.556" font-weight="700" text-anchor="middle" x="911.111" y="355.556">ANT · ≈17.3 cm</text>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="66.6667" cy="155.556" fill="#b6cc9a" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="66.1111" y="155"/>
+ </g>
+</g>
+</g>
+<g id="wires">
+<line stroke-linecap="round" stroke="#83272e" x1="933.333" y1="2011.11" x2="844.444" y2="1922.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1922.22" x2="844.444" y2="1077.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1077.78" x2="2466.67" y2="1077.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="2466.67" y1="1077.78" x2="2466.67" y2="277.778" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="2466.67" y1="277.778" x2="5488.89" y2="277.778" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="5488.89" y1="277.778" x2="5488.89" y2="1244.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="5488.89" y1="1244.44" x2="6022.22" y2="1244.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1922.22" x2="233.333" y2="1922.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="233.333" y1="1922.22" x2="233.333" y2="5466.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="233.333" y1="5466.67" x2="4611.11" y2="5466.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="4611.11" y1="5466.67" x2="4611.11" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1022.22" y1="2011.11" x2="1133.33" y2="2122.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1133.33" y1="2122.22" x2="1133.33" y2="2333.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1133.33" y1="2333.33" x2="1877.78" y2="2333.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1877.78" y1="2333.33" x2="2055.56" y2="2511.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2055.56" y1="2511.11" x2="2055.56" y2="5188.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2055.56" y1="5188.89" x2="9922.22" y2="5188.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="9922.22" y1="5188.89" x2="9922.22" y2="3066.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="9922.22" y1="3066.67" x2="5488.89" y2="3066.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="5488.89" y1="3066.67" x2="5488.89" y2="1866.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="5488.89" y1="1866.67" x2="6022.22" y2="1866.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="1722.22" y1="2255.56" x2="1677.78" y2="2177.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="1677.78" y1="2177.78" x2="2522.22" y2="2177.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="2177.78" x2="2522.22" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="4744.44" x2="2900" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="4744.44" x2="4600" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="4800" y1="4744.44" x2="8200" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="8200" y1="4744.44" x2="8200" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="8200" y1="3944.44" x2="7377.78" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="4744.44" x2="2900" y2="3000" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="3000" x2="3155.56" y2="3000" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1800" y1="2255.56" x2="2255.56" y2="2255.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2255.56" y1="2255.56" x2="2300" y2="2300" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2300" y1="2300" x2="2300" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2300" y1="4966.67" x2="4166.67" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="4966.67" x2="4700" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="4966.67" x2="8533.33" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="4966.67" x2="8533.33" y2="3655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="3655.56" x2="7377.78" y2="3655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="4966.67" x2="4166.67" y2="5111.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5266.67" x2="4166.67" y2="5388.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5544.44" x2="4166.67" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="4966.67" x2="4700" y2="2911.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="2911.11" x2="4600" y2="2911.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="3500" y1="2811.11" x2="2866.67" y2="2811.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="2866.67" y1="2811.11" x2="2866.67" y2="433.333" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="2866.67" y1="433.333" x2="5211.11" y2="433.333" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="5211.11" y1="433.333" x2="5211.11" y2="1555.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="5211.11" y1="1555.56" x2="6022.22" y2="1555.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="4600" y1="1211.11" x2="5122.22" y2="1211.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="5122.22" y1="1211.11" x2="5122.22" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="5122.22" y1="3944.44" x2="6377.78" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="4600" y1="1311.11" x2="5000" y2="1311.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="5000" y1="1311.11" x2="5000" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="5000" y1="4233.33" x2="6377.78" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7377.78" y1="4233.33" x2="7711.11" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="4233.33" x2="7711.11" y2="4633.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="4633.33" x2="4877.78" y2="4633.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="4633.33" x2="4877.78" y2="1411.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="1411.11" x2="4600" y2="1411.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4600" y1="2611.11" x2="4788.89" y2="2611.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="2611.11" x2="4788.89" y2="4655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5044.44" x2="4788.89" y2="5111.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5266.67" x2="4788.89" y2="5666.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5666.67" x2="5044.44" y2="5666.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="5044.44" y1="5666.67" x2="5044.44" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#374c2b" x1="5188.89" y1="6377.78" x2="6000" y2="6377.78" stroke-width="56.2222"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#773f17" d="M4600,4744.44C4644.44,4833.33, 4755.56,4833.33 4800,4744.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#1b2531" d="M4166.67,5111.11C4077.78,5144.44, 4077.78,5233.33 4166.67,5266.67"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#1b2531" d="M4166.67,5388.89C4077.78,5422.22, 4077.78,5511.11 4166.67,5544.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,4655.56C4911.11,4700, 4911.11,4855.56 4788.89,4900"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,4900C4888.89,4933.33, 4888.89,5011.11 4788.89,5044.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,5111.11C4888.89,5144.44, 4888.89,5233.33 4788.89,5266.67"/><line stroke-linecap="round" stroke="#c43b45" x1="933.333" y1="2011.11" x2="844.444" y2="1922.22" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1922.22" x2="844.444" y2="1077.78" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1077.78" x2="2466.67" y2="1077.78" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="2466.67" y1="1077.78" x2="2466.67" y2="277.778" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="2466.67" y1="277.778" x2="5488.89" y2="277.778" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="5488.89" y1="277.778" x2="5488.89" y2="1244.44" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="5488.89" y1="1244.44" x2="6022.22" y2="1244.44" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1922.22" x2="233.333" y2="1922.22" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="1922.22" x2="233.333" y2="5466.67" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="5466.67" x2="4611.11" y2="5466.67" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="4611.11" y1="5466.67" x2="4611.11" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1022.22" y1="2011.11" x2="1133.33" y2="2122.22" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1133.33" y1="2122.22" x2="1133.33" y2="2333.33" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1133.33" y1="2333.33" x2="1877.78" y2="2333.33" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1877.78" y1="2333.33" x2="2055.56" y2="2511.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2055.56" y1="2511.11" x2="2055.56" y2="5188.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2055.56" y1="5188.89" x2="9922.22" y2="5188.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="9922.22" y1="5188.89" x2="9922.22" y2="3066.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="9922.22" y1="3066.67" x2="5488.89" y2="3066.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="5488.89" y1="3066.67" x2="5488.89" y2="1866.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="5488.89" y1="1866.67" x2="6022.22" y2="1866.67" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="1722.22" y1="2255.56" x2="1677.78" y2="2177.78" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="1677.78" y1="2177.78" x2="2522.22" y2="2177.78" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="2177.78" x2="2522.22" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="4744.44" x2="2900" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="4744.44" x2="4600" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="4800" y1="4744.44" x2="8200" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="8200" y1="4744.44" x2="8200" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="8200" y1="3944.44" x2="7377.78" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="4744.44" x2="2900" y2="3000" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="3000" x2="3155.56" y2="3000" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1800" y1="2255.56" x2="2255.56" y2="2255.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2255.56" y1="2255.56" x2="2300" y2="2300" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2300" y1="2300" x2="2300" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2300" y1="4966.67" x2="4166.67" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="4966.67" x2="4700" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="4966.67" x2="8533.33" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="8533.33" y1="4966.67" x2="8533.33" y2="3655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="8533.33" y1="3655.56" x2="7377.78" y2="3655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="4966.67" x2="4166.67" y2="5111.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5266.67" x2="4166.67" y2="5388.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5544.44" x2="4166.67" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="4966.67" x2="4700" y2="2911.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="2911.11" x2="4600" y2="2911.11" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="3500" y1="2811.11" x2="2866.67" y2="2811.11" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="2811.11" x2="2866.67" y2="433.333" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="433.333" x2="5211.11" y2="433.333" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="433.333" x2="5211.11" y2="1555.56" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="1555.56" x2="6022.22" y2="1555.56" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="4600" y1="1211.11" x2="5122.22" y2="1211.11" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="1211.11" x2="5122.22" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="3944.44" x2="6377.78" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="4600" y1="1311.11" x2="5000" y2="1311.11" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="5000" y1="1311.11" x2="5000" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="5000" y1="4233.33" x2="6377.78" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7377.78" y1="4233.33" x2="7711.11" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="4233.33" x2="7711.11" y2="4633.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="4633.33" x2="4877.78" y2="4633.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="4633.33" x2="4877.78" y2="1411.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="1411.11" x2="4600" y2="1411.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4600" y1="2611.11" x2="4788.89" y2="2611.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="2611.11" x2="4788.89" y2="4655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5044.44" x2="4788.89" y2="5111.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5266.67" x2="4788.89" y2="5666.67" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5666.67" x2="5044.44" y2="5666.67" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="5044.44" y1="5666.67" x2="5044.44" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#537241" x1="5188.89" y1="6377.78" x2="6000" y2="6377.78" stroke-width="34"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#b25e23" d="M4600,4744.44C4644.44,4833.33, 4755.56,4833.33 4800,4744.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#293749" d="M4166.67,5111.11C4077.78,5144.44, 4077.78,5233.33 4166.67,5266.67"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#293749" d="M4166.67,5388.89C4077.78,5422.22, 4077.78,5511.11 4166.67,5544.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,4655.56C4911.11,4700, 4911.11,4855.56 4788.89,4900"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,4900C4888.89,4933.33, 4888.89,5011.11 4788.89,5044.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,5111.11C4888.89,5144.44, 4888.89,5233.33 4788.89,5266.67"/><circle fill="black" cx="844.444" cy="1922.22" r="9.72222" stroke="none"/><circle fill="black" cx="2900" cy="4744.44" r="9.72222" stroke="none"/><circle fill="black" cx="4166.67" cy="4966.67" r="9.72222" stroke="none"/><circle fill="black" cx="4700" cy="4966.67" r="9.72222" stroke="none"/></g>
+</svg><line x1="28" y1="767" x2="972" y2="767" stroke="#e3e9f0"/><line x1="36" y1="789" x2="62" y2="789" stroke="#c43b45" stroke-width="4" stroke-linecap="round"/><text x="71" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">5 V 供电</text><line x1="160" y1="789" x2="186" y2="789" stroke="#b25e23" stroke-width="4" stroke-linecap="round"/><text x="195" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">面包板 3.3 V</text><line x1="330" y1="789" x2="356" y2="789" stroke="#293749" stroke-width="4" stroke-linecap="round"/><text x="365" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">GND</text><line x1="430" y1="789" x2="456" y2="789" stroke="#00857a" stroke-width="4" stroke-linecap="round"/><text x="465" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">灯环数据</text><line x1="570" y1="789" x2="596" y2="789" stroke="#306caa" stroke-width="4" stroke-linecap="round"/><text x="605" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">麦克风 I²S</text><line x1="725" y1="789" x2="751" y2="789" stroke="#8c376d" stroke-width="4" stroke-linecap="round"/><text x="760" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">G21 → RF DATA</text><text x="36" y="818" fill="#54677b" font-size="13" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">发射 VCC 按 HW‑131 的 5 V 支路绘制。ESP32 供电正线接脚和麦克风 L/R 仍待实物确认。</text></svg>

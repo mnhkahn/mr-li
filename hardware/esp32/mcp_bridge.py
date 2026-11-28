@@ -2,12 +2,18 @@
 """stdio MCP adapter for the standalone mr-li ESP32 USB hardware controller."""
 import argparse
 import json
+import re
 import sys
 import time
 import uuid
 
 PREFIX = b"MRLI_HW_RESULT "
+COMMAND_PATTERN = r"^(network|light|voice|curtain|xgimi)\.[a-z][a-z0-9_]*$"
 TOOLS = [
+    {"name": "self.hardware.command", "description": "Send any supported USB hardware command to the ESP32. Use configure_wifi.py for passwords. Network, light, voice, curtain, and XGIMI commands are routed to firmware.",
+     "inputSchema": {"type": "object", "properties": {
+         "method": {"type": "string", "pattern": COMMAND_PATTERN},
+         "params": {"type": "object"}}, "required": ["method"], "additionalProperties": False}},
     {"name": "self.xgimi.status", "description": "Query XGIMI BLE configuration and operation status. transmitted does not confirm projector power-on.",
      "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
      "annotations": {"readOnlyHint": True}},
@@ -127,7 +133,9 @@ class Hardware:
             if written != len(request):
                 raise RuntimeError("USB write incomplete; outcome is unknown, do not retry automatically")
             self.connection.flush()
-            deadline = time.monotonic() + self.timeout
+            duration = arguments.get("seconds")
+            extra = duration if method == "curtain.trace_input" and type(duration) is int and 1 <= duration <= 45 else 0
+            deadline = time.monotonic() + self.timeout + extra
             while time.monotonic() < deadline:
                 chunk = self.connection.read_until(b"\n", 4096)
                 self.buffer.extend(chunk)
@@ -186,7 +194,15 @@ def handle(request, hardware):
             arguments = params.get("arguments", {})
             if not isinstance(arguments, dict):
                 raise ValueError("arguments must be an object")
-            if name == "self.xgimi.configure":
+            target = name.removeprefix("self.")
+            if name == "self.hardware.command":
+                target = arguments.get("method")
+                if not isinstance(target, str) or not re.fullmatch(COMMAND_PATTERN, target):
+                    raise ValueError("Expected an ESP32 hardware command")
+                if set(arguments) - {"method", "params"} or not isinstance(arguments.get("params", {}), dict):
+                    raise ValueError("Expected method and optional params object")
+                arguments = arguments.get("params", {})
+            elif name == "self.xgimi.configure":
                 if set(arguments) != {"token"} or not isinstance(arguments["token"], str) or len(arguments["token"]) not in (30, 32):
                     raise ValueError("configure requires a 30 or 32 character token")
             elif name == "self.curtain.configure":
@@ -195,7 +211,7 @@ def handle(request, hardware):
                 validate_rf_settings(name.removeprefix("self.curtain."), arguments)
             elif arguments:
                 raise ValueError("This tool takes no arguments")
-            result = hardware.call(name.removeprefix("self."), arguments)
+            result = hardware.call(target, arguments)
             response["result"] = {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}],
                                   "structuredContent": result, "isError": False}
         except Exception as error:
@@ -207,7 +223,7 @@ def handle(request, hardware):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", required=True, help="Native ESP32 USB serial device, e.g. /dev/cu.usbmodem...")
+    parser.add_argument("--port", required=True, help="ESP32 USB serial device, e.g. /dev/cu.usbmodem... or /dev/cu.usbserial...")
     args = parser.parse_args()
     hardware = Hardware(args.port)
     try:

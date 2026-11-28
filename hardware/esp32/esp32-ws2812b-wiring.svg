@@ -1,5 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="841" viewBox="0 0 1000 841" role="img"><title>ESP32-S3-CAM 灯环、麦克风和 433 MHz 发射接线图</title><desc>HW-131 中间排针第 2 行给5 V 供电。右下角的 3.3 V 给麦克风供电。麦克风 WS 接 G1，SCK 接 G2，SD 接 G42。433 MHz 发射板 DATA 接 G21，VCC 按 HW-131 的 5 V 输出分支绘制，ANT 接独立导线天线。</desc><rect width="1000" height="841" fill="#ffffff"/><rect x="24" y="24" width="4" height="30" rx="2" fill="#00857a"/><text x="43" y="48" fill="#223249" font-size="26" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700">ESP32 灯环、麦克风与 433 MHz 发射</text><line x1="28" y1="68" x2="972" y2="68" stroke="#e3e9f0"/><svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" x="28" y="75" width="944" height="671.3347920915537" viewBox="0 0 10155.6 7222.22">
-<g id="HW-131" transform="matrix(1 0 0 1 366.667 1266.67)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="965" viewBox="0 0 1000 965" role="img"><title>ESP32-S3-CAM 灯环、麦克风和 433 MHz 发射接线图</title><desc>USB 5 V / 2 A 电源的正负线 直接接灯环。USB GND 与 ESP32 GND 未连接。HW-131 右下角的 3.3 V 给麦克风供电。麦克风 WS 接 G1，SCK 接 G2，SD 接 G42。433 MHz 发射板 DATA 接 G21，VCC 按 HW-131 的 5 V 输出分支绘制，ANT 接独立导线天线。</desc>
+<metadata id="wiring">
+{"layer":"wires","nets":[
+{"id":"usb-5v","name":"USB 灯环供电","endpoints":[{"device":"WS2812B 灯环","pin":"5V","x":625.022,"y":258.953},{"device":"USB 5 V / 2 A 电源","pin":"USB 5V","x":628.327,"y":155.411}]},
+{"id":"usb-gnd","name":"USB 灯环地线","endpoints":[{"device":"WS2812B 灯环","pin":"GND","x":625.022,"y":320.638},{"device":"USB 5 V / 2 A 电源","pin":"USB GND","x":707.636,"y":155.411}]},
+{"id":"rf-5v","name":"发射板 5 V 供电","endpoints":[{"device":"HW-131","pin":"5 V（中排第 2 孔）","x":120.527,"y":334.958},{"device":"FS1000A 发射板","pin":"VCC (5 V)","x":485.13,"y":719.388}]},
+{"id":"board-3v3","name":"面包板 3.3 V","endpoints":[{"device":"HW-131","pin":"3.3 V（右下 +）","x":198.735,"y":359.191},{"device":"ESP32-S3-CAM","pin":"供电正线（引脚待确认）","x":340.831,"y":432.993},{"device":"INMP441 麦克风","pin":"VDD","x":759.407,"y":526.622}]},
+{"id":"board-gnd","name":"面包板共地","endpoints":[{"device":"HW-131","pin":"GND（右下 −）","x":206.446,"y":359.191},{"device":"ESP32-S3-CAM","pin":"GND","x":484.028,"y":424.181},{"device":"INMP441 麦克风","pin":"GND","x":759.407,"y":497.983},{"device":"FS1000A 发射板","pin":"GND","x":441.069,"y":719.388}]},
+{"id":"ring-data","name":"灯环数据","endpoints":[{"device":"ESP32-S3-CAM","pin":"GPIO14","x":374.978,"y":414.267},{"device":"WS2812B 灯环","pin":"DIN","x":625.022,"y":289.796}]},
+{"id":"mic-ws","name":"麦克风 WS","endpoints":[{"device":"ESP32-S3-CAM","pin":"GPIO1","x":484.028,"y":255.649},{"device":"INMP441 麦克风","pin":"WS","x":660.271,"y":526.622}]},
+{"id":"mic-sck","name":"麦克风 SCK","endpoints":[{"device":"ESP32-S3-CAM","pin":"GPIO2","x":484.028,"y":265.562},{"device":"INMP441 麦克风","pin":"SCK","x":660.271,"y":555.261}]},
+{"id":"mic-sd","name":"麦克风 SD","endpoints":[{"device":"ESP32-S3-CAM","pin":"GPIO42","x":484.028,"y":275.476},{"device":"INMP441 麦克风","pin":"SD","x":759.407,"y":555.261}]},
+{"id":"rf-data","name":"发射板数据","endpoints":[{"device":"ESP32-S3-CAM","pin":"GPIO21","x":484.028,"y":394.44},{"device":"FS1000A 发射板","pin":"DATA","x":528.089,"y":719.388}]},
+{"id":"rf-antenna","name":"发射板天线","endpoints":[{"device":"FS1000A 发射板","pin":"ANT","x":542.409,"y":767.854},{"device":"433 MHz 导线天线","pin":"ANT","x":622.819,"y":767.854}]}
+]}
+</metadata>
+<rect width="1000" height="965" fill="#ffffff"/><rect x="24" y="24" width="4" height="30" rx="2" fill="#00857a"/><text x="43" y="48" fill="#223249" font-size="26" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-weight="700">ESP32 灯环、麦克风与 433 MHz 发射</text><line x1="28" y1="68" x2="972" y2="68" stroke="#e3e9f0"/><svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg" version="1.2" baseProfile="tiny" x="28" y="75" width="944" height="776.5694281687482" viewBox="0 0 9522.22 7833.33">
+<g id="HW-131" transform="matrix(1 0 0 1 366.667 1877.78)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
  <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
   <path xmlns="http://www.w3.org/2000/svg" d="M33.3333,66.6667L1555.56,66.6667L1555.56,1011.11L1466.67,1100L1300,1100L1222.22,1022.22L377.778,1022.22L288.889,1100L122.222,1100L33.3333,1011.11Z" fill="#202b31" stroke="#44545e" stroke-width="16.6667"/>
   <rect xmlns="http://www.w3.org/2000/svg" fill="#172024" height="488.889" rx="33.3333" stroke="#5b6972" stroke-width="11.1111" width="322.222" x="111.111" y="88.8889"/>
@@ -64,7 +80,7 @@
  </g>
 </g>
 </g>
-<g id="GOOUUU ESP32-S3-CAM" transform="matrix(1 0 0 1 3100 655.556)"><g id="breadboard">
+<g id="GOOUUU ESP32-S3-CAM" transform="matrix(1 0 0 1 3100 1266.67)"><g id="breadboard">
  <g id="breadboard">
   <g transform="matrix(1, 0, 0, 1, 311.111, 0)">
    <g>
@@ -165,7 +181,7 @@
  </g>
 </g>
 </g>
-<g id="WS2812B 35 LED Ring" transform="matrix(1 0 0 1 5766.67 200)"><g id="breadboard">
+<g id="WS2812B 35 LED Ring" transform="matrix(1 0 0 1 5766.67 811.111)"><g id="breadboard">
  <g id="breadboard">
   <circle cx="2200" cy="1355.56" fill="#20252b" r="1322.22" stroke="#535b62" stroke-width="16.6667"/>
   <circle cx="2200" cy="1355.56" fill="#ffffff" r="1076.86" stroke="#697782" stroke-width="11.1111"/>
@@ -500,7 +516,7 @@
  </g>
 </g>
 </g>
-<g id="INMP441 I2S microphone" transform="matrix(1 0 0 1 6155.56 3255.56)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+<g id="INMP441 I2S microphone" transform="matrix(1 0 0 1 6155.56 3866.67)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
  <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
   <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="688.889" fill="#182a2c" r="600" stroke="#536863" stroke-width="16.6667"/>
   <circle xmlns="http://www.w3.org/2000/svg" cx="722.222" cy="688.889" fill="none" r="533.333" stroke="#c1a45e" stroke-width="15.5556"/>
@@ -531,7 +547,7 @@
  </g>
 </g>
 </g>
-<g id="FS1000A / MX-FS-03V 433 MHz transmitter" transform="matrix(1 0 0 1 3988.89 5788.89)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+<g id="FS1000A / MX-FS-03V 433 MHz transmitter" transform="matrix(1 0 0 1 3988.89 6400)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
  <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
   <rect xmlns="http://www.w3.org/2000/svg" fill="#25453a" height="1155.56" rx="55.5556" stroke="#5c816e" stroke-width="16.6667" width="1222.22" x="33.3333" y="33.3333"/>
   <path xmlns="http://www.w3.org/2000/svg" d="M177.778,688.889L266.667,688.889L266.667,822.222L488.889,822.222M800,811.111L1122.22,811.111L1122.22,622.222M566.667,544.444L533.333,544.444L533.333,344.444L755.556,344.444" fill="none" stroke="#607755" stroke-width="13.8889"/>
@@ -566,7 +582,7 @@
  </g>
 </g>
 </g>
-<g id="433 MHz wire antenna" transform="matrix(1 0 0 1 5933.33 6222.22)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+<g id="433 MHz wire antenna" transform="matrix(1 0 0 1 5933.33 6833.33)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
  <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
   <path xmlns="http://www.w3.org/2000/svg" d="M66.6667,155.556L1711.11,155.556" fill="none" stroke="#304a35" stroke-width="43.3333"/>
   <path xmlns="http://www.w3.org/2000/svg" d="M66.6667,155.556L1711.11,155.556" fill="none" stroke="#77936a" stroke-width="22.2222"/>
@@ -577,6 +593,233 @@
  </g>
 </g>
 </g>
+<g id="USB 5 V / 2 A supply cable" transform="matrix(1 0 0 1 5877.78 200)"><g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+ <g xmlns="http://www.w3.org/2000/svg" id="breadboard">
+  <rect xmlns="http://www.w3.org/2000/svg" fill="#edf3f9" height="655.556" rx="100" stroke="#8092a7" stroke-width="17.2222" width="1155.56" x="22.2222" y="33.3333"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="244.444" cy="244.444" fill="#ffffff" r="105.556" stroke="#acbbc9" stroke-width="10"/>
+  <path xmlns="http://www.w3.org/2000/svg" d="M177.778,244.444L300,244.444M233.333,244.444L233.333,188.889L277.778,188.889M233.333,244.444L233.333,300L266.667,300M300,222.222L322.222,244.444L300,266.667" fill="none" stroke="#48637d" stroke-width="12.2222"/>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#29465e" font-family="Arial, sans-serif" font-size="120" font-weight="700" text-anchor="start" x="388.889" y="288.889">USB 5 V / 2 A</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#a6313d" font-family="Arial, sans-serif" font-size="86.6667" font-weight="700" text-anchor="middle" x="177.778" y="522.222">+5V</text>
+  <text xmlns="http://www.w3.org/2000/svg" fill="#293749" font-family="Arial, sans-serif" font-size="86.6667" font-weight="700" text-anchor="middle" x="977.778" y="522.222">GND</text>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="177.778" cy="611.111" fill="#ffa6a8" id="connector0pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector0terminal" stroke="none" width="1.11111" x="177.222" y="610.556"/>
+  <circle xmlns="http://www.w3.org/2000/svg" cx="977.778" cy="611.111" fill="#b8c5ce" id="connector1pin" r="43.3333" stroke="#102733" stroke-width="15.5556"/>
+  <rect xmlns="http://www.w3.org/2000/svg" fill="none" height="1.11111" id="connector1terminal" stroke="none" width="1.11111" x="977.222" y="610.556"/>
+ </g>
+</g>
+</g>
 <g id="wires">
-<line stroke-linecap="round" stroke="#83272e" x1="933.333" y1="2011.11" x2="844.444" y2="1922.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1922.22" x2="844.444" y2="1077.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1077.78" x2="2466.67" y2="1077.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="2466.67" y1="1077.78" x2="2466.67" y2="277.778" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="2466.67" y1="277.778" x2="5488.89" y2="277.778" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="5488.89" y1="277.778" x2="5488.89" y2="1244.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="5488.89" y1="1244.44" x2="6022.22" y2="1244.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="844.444" y1="1922.22" x2="233.333" y2="1922.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="233.333" y1="1922.22" x2="233.333" y2="5466.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="233.333" y1="5466.67" x2="4611.11" y2="5466.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#83272e" x1="4611.11" y1="5466.67" x2="4611.11" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1022.22" y1="2011.11" x2="1133.33" y2="2122.22" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1133.33" y1="2122.22" x2="1133.33" y2="2333.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1133.33" y1="2333.33" x2="1877.78" y2="2333.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1877.78" y1="2333.33" x2="2055.56" y2="2511.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2055.56" y1="2511.11" x2="2055.56" y2="5188.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2055.56" y1="5188.89" x2="9922.22" y2="5188.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="9922.22" y1="5188.89" x2="9922.22" y2="3066.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="9922.22" y1="3066.67" x2="5488.89" y2="3066.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="5488.89" y1="3066.67" x2="5488.89" y2="1866.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="5488.89" y1="1866.67" x2="6022.22" y2="1866.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="1722.22" y1="2255.56" x2="1677.78" y2="2177.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="1677.78" y1="2177.78" x2="2522.22" y2="2177.78" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="2177.78" x2="2522.22" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="4744.44" x2="2900" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="4744.44" x2="4600" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="4800" y1="4744.44" x2="8200" y2="4744.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="8200" y1="4744.44" x2="8200" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="8200" y1="3944.44" x2="7377.78" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="4744.44" x2="2900" y2="3000" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#773f17" x1="2900" y1="3000" x2="3155.56" y2="3000" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="1800" y1="2255.56" x2="2255.56" y2="2255.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2255.56" y1="2255.56" x2="2300" y2="2300" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2300" y1="2300" x2="2300" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="2300" y1="4966.67" x2="4166.67" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="4966.67" x2="4700" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="4966.67" x2="8533.33" y2="4966.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="4966.67" x2="8533.33" y2="3655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="3655.56" x2="7377.78" y2="3655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="4966.67" x2="4166.67" y2="5111.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5266.67" x2="4166.67" y2="5388.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5544.44" x2="4166.67" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="4966.67" x2="4700" y2="2911.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#1b2531" x1="4700" y1="2911.11" x2="4600" y2="2911.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="3500" y1="2811.11" x2="2866.67" y2="2811.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="2866.67" y1="2811.11" x2="2866.67" y2="433.333" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="2866.67" y1="433.333" x2="5211.11" y2="433.333" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="5211.11" y1="433.333" x2="5211.11" y2="1555.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#005951" x1="5211.11" y1="1555.56" x2="6022.22" y2="1555.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="4600" y1="1211.11" x2="5122.22" y2="1211.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="5122.22" y1="1211.11" x2="5122.22" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#204871" x1="5122.22" y1="3944.44" x2="6377.78" y2="3944.44" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="4600" y1="1311.11" x2="5000" y2="1311.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="5000" y1="1311.11" x2="5000" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#4c396f" x1="5000" y1="4233.33" x2="6377.78" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7377.78" y1="4233.33" x2="7711.11" y2="4233.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="4233.33" x2="7711.11" y2="4633.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="4633.33" x2="4877.78" y2="4633.33" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="4633.33" x2="4877.78" y2="1411.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="1411.11" x2="4600" y2="1411.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4600" y1="2611.11" x2="4788.89" y2="2611.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="2611.11" x2="4788.89" y2="4655.56" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5044.44" x2="4788.89" y2="5111.11" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5266.67" x2="4788.89" y2="5666.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5666.67" x2="5044.44" y2="5666.67" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#5d2549" x1="5044.44" y1="5666.67" x2="5044.44" y2="5888.89" stroke-width="56.2222"/><line stroke-linecap="round" stroke="#374c2b" x1="5188.89" y1="6377.78" x2="6000" y2="6377.78" stroke-width="56.2222"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#773f17" d="M4600,4744.44C4644.44,4833.33, 4755.56,4833.33 4800,4744.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#1b2531" d="M4166.67,5111.11C4077.78,5144.44, 4077.78,5233.33 4166.67,5266.67"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#1b2531" d="M4166.67,5388.89C4077.78,5422.22, 4077.78,5511.11 4166.67,5544.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,4655.56C4911.11,4700, 4911.11,4855.56 4788.89,4900"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,4900C4888.89,4933.33, 4888.89,5011.11 4788.89,5044.44"/><path stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,5111.11C4888.89,5144.44, 4888.89,5233.33 4788.89,5266.67"/><line stroke-linecap="round" stroke="#c43b45" x1="933.333" y1="2011.11" x2="844.444" y2="1922.22" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1922.22" x2="844.444" y2="1077.78" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1077.78" x2="2466.67" y2="1077.78" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="2466.67" y1="1077.78" x2="2466.67" y2="277.778" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="2466.67" y1="277.778" x2="5488.89" y2="277.778" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="5488.89" y1="277.778" x2="5488.89" y2="1244.44" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="5488.89" y1="1244.44" x2="6022.22" y2="1244.44" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="1922.22" x2="233.333" y2="1922.22" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="1922.22" x2="233.333" y2="5466.67" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="5466.67" x2="4611.11" y2="5466.67" stroke-width="34"/><line stroke-linecap="round" stroke="#c43b45" x1="4611.11" y1="5466.67" x2="4611.11" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1022.22" y1="2011.11" x2="1133.33" y2="2122.22" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1133.33" y1="2122.22" x2="1133.33" y2="2333.33" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1133.33" y1="2333.33" x2="1877.78" y2="2333.33" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1877.78" y1="2333.33" x2="2055.56" y2="2511.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2055.56" y1="2511.11" x2="2055.56" y2="5188.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2055.56" y1="5188.89" x2="9922.22" y2="5188.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="9922.22" y1="5188.89" x2="9922.22" y2="3066.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="9922.22" y1="3066.67" x2="5488.89" y2="3066.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="5488.89" y1="3066.67" x2="5488.89" y2="1866.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="5488.89" y1="1866.67" x2="6022.22" y2="1866.67" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="1722.22" y1="2255.56" x2="1677.78" y2="2177.78" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="1677.78" y1="2177.78" x2="2522.22" y2="2177.78" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="2177.78" x2="2522.22" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="4744.44" x2="2900" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="4744.44" x2="4600" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="4800" y1="4744.44" x2="8200" y2="4744.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="8200" y1="4744.44" x2="8200" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="8200" y1="3944.44" x2="7377.78" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="4744.44" x2="2900" y2="3000" stroke-width="34"/><line stroke-linecap="round" stroke="#b25e23" x1="2900" y1="3000" x2="3155.56" y2="3000" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="1800" y1="2255.56" x2="2255.56" y2="2255.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2255.56" y1="2255.56" x2="2300" y2="2300" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2300" y1="2300" x2="2300" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="2300" y1="4966.67" x2="4166.67" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="4966.67" x2="4700" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="4966.67" x2="8533.33" y2="4966.67" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="8533.33" y1="4966.67" x2="8533.33" y2="3655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="8533.33" y1="3655.56" x2="7377.78" y2="3655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="4966.67" x2="4166.67" y2="5111.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5266.67" x2="4166.67" y2="5388.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5544.44" x2="4166.67" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="4966.67" x2="4700" y2="2911.11" stroke-width="34"/><line stroke-linecap="round" stroke="#293749" x1="4700" y1="2911.11" x2="4600" y2="2911.11" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="3500" y1="2811.11" x2="2866.67" y2="2811.11" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="2811.11" x2="2866.67" y2="433.333" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="433.333" x2="5211.11" y2="433.333" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="433.333" x2="5211.11" y2="1555.56" stroke-width="34"/><line stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="1555.56" x2="6022.22" y2="1555.56" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="4600" y1="1211.11" x2="5122.22" y2="1211.11" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="1211.11" x2="5122.22" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="3944.44" x2="6377.78" y2="3944.44" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="4600" y1="1311.11" x2="5000" y2="1311.11" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="5000" y1="1311.11" x2="5000" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#7256a6" x1="5000" y1="4233.33" x2="6377.78" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7377.78" y1="4233.33" x2="7711.11" y2="4233.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="4233.33" x2="7711.11" y2="4633.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="4633.33" x2="4877.78" y2="4633.33" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="4633.33" x2="4877.78" y2="1411.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="1411.11" x2="4600" y2="1411.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4600" y1="2611.11" x2="4788.89" y2="2611.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="2611.11" x2="4788.89" y2="4655.56" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5044.44" x2="4788.89" y2="5111.11" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5266.67" x2="4788.89" y2="5666.67" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5666.67" x2="5044.44" y2="5666.67" stroke-width="34"/><line stroke-linecap="round" stroke="#8c376d" x1="5044.44" y1="5666.67" x2="5044.44" y2="5888.89" stroke-width="34"/><line stroke-linecap="round" stroke="#537241" x1="5188.89" y1="6377.78" x2="6000" y2="6377.78" stroke-width="34"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#b25e23" d="M4600,4744.44C4644.44,4833.33, 4755.56,4833.33 4800,4744.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#293749" d="M4166.67,5111.11C4077.78,5144.44, 4077.78,5233.33 4166.67,5266.67"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#293749" d="M4166.67,5388.89C4077.78,5422.22, 4077.78,5511.11 4166.67,5544.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,4655.56C4911.11,4700, 4911.11,4855.56 4788.89,4900"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,4900C4888.89,4933.33, 4888.89,5011.11 4788.89,5044.44"/><path stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,5111.11C4888.89,5144.44, 4888.89,5233.33 4788.89,5266.67"/><circle fill="black" cx="844.444" cy="1922.22" r="9.72222" stroke="none"/><circle fill="black" cx="2900" cy="4744.44" r="9.72222" stroke="none"/><circle fill="black" cx="4166.67" cy="4966.67" r="9.72222" stroke="none"/><circle fill="black" cx="4700" cy="4966.67" r="9.72222" stroke="none"/></g>
-</svg><line x1="28" y1="767" x2="972" y2="767" stroke="#e3e9f0"/><line x1="36" y1="789" x2="62" y2="789" stroke="#c43b45" stroke-width="4" stroke-linecap="round"/><text x="71" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">5 V 供电</text><line x1="160" y1="789" x2="186" y2="789" stroke="#b25e23" stroke-width="4" stroke-linecap="round"/><text x="195" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">面包板 3.3 V</text><line x1="330" y1="789" x2="356" y2="789" stroke="#293749" stroke-width="4" stroke-linecap="round"/><text x="365" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">GND</text><line x1="430" y1="789" x2="456" y2="789" stroke="#00857a" stroke-width="4" stroke-linecap="round"/><text x="465" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">灯环数据</text><line x1="570" y1="789" x2="596" y2="789" stroke="#306caa" stroke-width="4" stroke-linecap="round"/><text x="605" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">麦克风 I²S</text><line x1="725" y1="789" x2="751" y2="789" stroke="#8c376d" stroke-width="4" stroke-linecap="round"/><text x="760" y="794" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">G21 → RF DATA</text><text x="36" y="818" fill="#54677b" font-size="13" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">发射 VCC 按 HW‑131 的 5 V 支路绘制。ESP32 供电正线接脚和麦克风 L/R 仍待实物确认。</text></svg>
+<line data-net="usb-5v" stroke-linecap="round" stroke="#83272e" x1="6055.56" y1="811.111" x2="5666.67" y2="811.111" stroke-width="56.2222"/>
+<line data-net="usb-5v" stroke-linecap="round" stroke="#83272e" x1="5666.67" y1="811.111" x2="5666.67" y2="1855.56" stroke-width="56.2222"/>
+<line data-net="usb-5v" stroke-linecap="round" stroke="#83272e" x1="5666.67" y1="1855.56" x2="6022.22" y2="1855.56" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="6855.56" y1="811.111" x2="6855.56" y2="1211.11" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="6855.56" y1="1211.11" x2="6588.89" y2="1211.11" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="6588.89" y1="1211.11" x2="6588.89" y2="2766.67" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="6588.89" y1="2766.67" x2="5844.44" y2="2766.67" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="5844.44" y1="2766.67" x2="5844.44" y2="2477.78" stroke-width="56.2222"/>
+<line data-net="usb-gnd" stroke-linecap="round" stroke="#1b2531" x1="5844.44" y1="2477.78" x2="6022.22" y2="2477.78" stroke-width="56.2222"/>
+<line data-net="rf-5v" stroke-linecap="round" stroke="#83272e" x1="933.333" y1="2622.22" x2="844.444" y2="2533.33" stroke-width="56.2222"/>
+<line data-net="rf-5v" stroke-linecap="round" stroke="#83272e" x1="844.444" y1="2533.33" x2="233.333" y2="2533.33" stroke-width="56.2222"/>
+<line data-net="rf-5v" stroke-linecap="round" stroke="#83272e" x1="233.333" y1="2533.33" x2="233.333" y2="6077.78" stroke-width="56.2222"/>
+<line data-net="rf-5v" stroke-linecap="round" stroke="#83272e" x1="233.333" y1="6077.78" x2="4611.11" y2="6077.78" stroke-width="56.2222"/>
+<line data-net="rf-5v" stroke-linecap="round" stroke="#83272e" x1="4611.11" y1="6077.78" x2="4611.11" y2="6500" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="1722.22" y1="2866.67" x2="1677.78" y2="2788.89" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="1677.78" y1="2788.89" x2="2522.22" y2="2788.89" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="2788.89" x2="2522.22" y2="5355.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="2522.22" y1="5355.56" x2="2900" y2="5355.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="2900" y1="5355.56" x2="4600" y2="5355.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="4800" y1="5355.56" x2="8200" y2="5355.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="8200" y1="5355.56" x2="8200" y2="4555.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="8200" y1="4555.56" x2="7377.78" y2="4555.56" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="2900" y1="5355.56" x2="2900" y2="3611.11" stroke-width="56.2222"/>
+<line data-net="board-3v3" stroke-linecap="round" stroke="#773f17" x1="2900" y1="3611.11" x2="3155.56" y2="3611.11" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="1800" y1="2866.67" x2="2255.56" y2="2866.67" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="2255.56" y1="2866.67" x2="2300" y2="2911.11" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="2300" y1="2911.11" x2="2300" y2="5577.78" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="2300" y1="5577.78" x2="4166.67" y2="5577.78" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5577.78" x2="4700" y2="5577.78" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4700" y1="5577.78" x2="8533.33" y2="5577.78" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="5577.78" x2="8533.33" y2="4266.67" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="8533.33" y1="4266.67" x2="7377.78" y2="4266.67" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="5577.78" x2="4166.67" y2="6000" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4166.67" y1="6155.56" x2="4166.67" y2="6500" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4700" y1="5577.78" x2="4700" y2="3522.22" stroke-width="56.2222"/>
+<line data-net="board-gnd" stroke-linecap="round" stroke="#1b2531" x1="4700" y1="3522.22" x2="4600" y2="3522.22" stroke-width="56.2222"/>
+<line data-net="ring-data" stroke-linecap="round" stroke="#005951" x1="3500" y1="3422.22" x2="2866.67" y2="3422.22" stroke-width="56.2222"/>
+<line data-net="ring-data" stroke-linecap="round" stroke="#005951" x1="2866.67" y1="3422.22" x2="2866.67" y2="1044.44" stroke-width="56.2222"/>
+<line data-net="ring-data" stroke-linecap="round" stroke="#005951" x1="2866.67" y1="1044.44" x2="5211.11" y2="1044.44" stroke-width="56.2222"/>
+<line data-net="ring-data" stroke-linecap="round" stroke="#005951" x1="5211.11" y1="1044.44" x2="5211.11" y2="2166.67" stroke-width="56.2222"/>
+<line data-net="ring-data" stroke-linecap="round" stroke="#005951" x1="5211.11" y1="2166.67" x2="6022.22" y2="2166.67" stroke-width="56.2222"/>
+<line data-net="mic-ws" stroke-linecap="round" stroke="#204871" x1="4600" y1="1822.22" x2="5122.22" y2="1822.22" stroke-width="56.2222"/>
+<line data-net="mic-ws" stroke-linecap="round" stroke="#204871" x1="5122.22" y1="1822.22" x2="5122.22" y2="4555.56" stroke-width="56.2222"/>
+<line data-net="mic-ws" stroke-linecap="round" stroke="#204871" x1="5122.22" y1="4555.56" x2="6377.78" y2="4555.56" stroke-width="56.2222"/>
+<line data-net="mic-sck" stroke-linecap="round" stroke="#4c396f" x1="4600" y1="1922.22" x2="5000" y2="1922.22" stroke-width="56.2222"/>
+<line data-net="mic-sck" stroke-linecap="round" stroke="#4c396f" x1="5000" y1="1922.22" x2="5000" y2="4844.44" stroke-width="56.2222"/>
+<line data-net="mic-sck" stroke-linecap="round" stroke="#4c396f" x1="5000" y1="4844.44" x2="6377.78" y2="4844.44" stroke-width="56.2222"/>
+<line data-net="mic-sd" stroke-linecap="round" stroke="#5f3d2e" x1="7377.78" y1="4844.44" x2="7711.11" y2="4844.44" stroke-width="56.2222"/>
+<line data-net="mic-sd" stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="4844.44" x2="7711.11" y2="5244.44" stroke-width="56.2222"/>
+<line data-net="mic-sd" stroke-linecap="round" stroke="#5f3d2e" x1="7711.11" y1="5244.44" x2="4877.78" y2="5244.44" stroke-width="56.2222"/>
+<line data-net="mic-sd" stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="5244.44" x2="4877.78" y2="2022.22" stroke-width="56.2222"/>
+<line data-net="mic-sd" stroke-linecap="round" stroke="#5f3d2e" x1="4877.78" y1="2022.22" x2="4600" y2="2022.22" stroke-width="56.2222"/>
+<line data-net="rf-data" stroke-linecap="round" stroke="#5d2549" x1="4600" y1="3222.22" x2="4788.89" y2="3222.22" stroke-width="56.2222"/>
+<line data-net="rf-data" stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="3222.22" x2="4788.89" y2="5266.67" stroke-width="56.2222"/>
+<line data-net="rf-data" stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="5655.56" x2="4788.89" y2="6277.78" stroke-width="56.2222"/>
+<line data-net="rf-data" stroke-linecap="round" stroke="#5d2549" x1="4788.89" y1="6277.78" x2="5044.44" y2="6277.78" stroke-width="56.2222"/>
+<line data-net="rf-data" stroke-linecap="round" stroke="#5d2549" x1="5044.44" y1="6277.78" x2="5044.44" y2="6500" stroke-width="56.2222"/>
+<line data-net="rf-antenna" stroke-linecap="round" stroke="#374c2b" x1="5188.89" y1="6988.89" x2="6000" y2="6988.89" stroke-width="56.2222"/>
+<path data-net="board-3v3" stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#773f17" d="M4600,5355.56C4644.44,5444.44, 4755.56,5444.44 4800,5355.56"/>
+<path data-net="board-gnd" stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#1b2531" d="M4166.67,6000C4077.78,6033.33, 4077.78,6122.22 4166.67,6155.56"/>
+<path data-net="rf-data" stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,5266.67C4911.11,5311.11, 4911.11,5466.67 4788.89,5511.11"/>
+<path data-net="rf-data" stroke-linecap="round" fill="none" stroke-width="56.2222" stroke="#5d2549" d="M4788.89,5511.11C4888.89,5544.44, 4888.89,5622.22 4788.89,5655.56"/>
+<line data-net="usb-5v" id="wire-8" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="6055.56" y1="811.111" x2="5666.67" y2="811.111" stroke-width="34"/>
+<line data-net="usb-5v" id="wire-9" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="5666.67" y1="811.111" x2="5666.67" y2="1855.56" stroke-width="34"/>
+<line data-net="usb-5v" id="wire-10" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="5666.67" y1="1855.56" x2="6022.22" y2="1855.56" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-11" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="6855.56" y1="811.111" x2="6855.56" y2="1211.11" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-12" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="6855.56" y1="1211.11" x2="6588.89" y2="1211.11" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-13" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="6588.89" y1="1211.11" x2="6588.89" y2="2766.67" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-14" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="6588.89" y1="2766.67" x2="5844.44" y2="2766.67" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-15" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="5844.44" y1="2766.67" x2="5844.44" y2="2477.78" stroke-width="34"/>
+<line data-net="usb-gnd" id="wire-16" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="5844.44" y1="2477.78" x2="6022.22" y2="2477.78" stroke-width="34"/>
+<line data-net="rf-5v" id="wire-17" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="933.333" y1="2622.22" x2="844.444" y2="2533.33" stroke-width="34"/>
+<line data-net="rf-5v" id="wire-18" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="844.444" y1="2533.33" x2="233.333" y2="2533.33" stroke-width="34"/>
+<line data-net="rf-5v" id="wire-19" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="2533.33" x2="233.333" y2="6077.78" stroke-width="34"/>
+<line data-net="rf-5v" id="wire-20" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="233.333" y1="6077.78" x2="4611.11" y2="6077.78" stroke-width="34"/>
+<line data-net="rf-5v" id="wire-21" data-wire-hit="" stroke-linecap="round" stroke="#c43b45" x1="4611.11" y1="6077.78" x2="4611.11" y2="6500" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-22" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="1722.22" y1="2866.67" x2="1677.78" y2="2788.89" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-23" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="1677.78" y1="2788.89" x2="2522.22" y2="2788.89" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-24" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="2788.89" x2="2522.22" y2="5355.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-25" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="2522.22" y1="5355.56" x2="2900" y2="5355.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-26" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="2900" y1="5355.56" x2="4600" y2="5355.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-27" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="4800" y1="5355.56" x2="8200" y2="5355.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-28" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="8200" y1="5355.56" x2="8200" y2="4555.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-29" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="8200" y1="4555.56" x2="7377.78" y2="4555.56" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-30" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="2900" y1="5355.56" x2="2900" y2="3611.11" stroke-width="34"/>
+<line data-net="board-3v3" id="wire-31" data-wire-hit="" stroke-linecap="round" stroke="#b25e23" x1="2900" y1="3611.11" x2="3155.56" y2="3611.11" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-32" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="1800" y1="2866.67" x2="2255.56" y2="2866.67" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-33" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="2255.56" y1="2866.67" x2="2300" y2="2911.11" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-34" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="2300" y1="2911.11" x2="2300" y2="5577.78" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-35" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="2300" y1="5577.78" x2="4166.67" y2="5577.78" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-36" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5577.78" x2="4700" y2="5577.78" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-37" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4700" y1="5577.78" x2="8533.33" y2="5577.78" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-38" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="8533.33" y1="5577.78" x2="8533.33" y2="4266.67" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-39" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="8533.33" y1="4266.67" x2="7377.78" y2="4266.67" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-40" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4166.67" y1="5577.78" x2="4166.67" y2="6000" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-41" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4166.67" y1="6155.56" x2="4166.67" y2="6500" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-42" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4700" y1="5577.78" x2="4700" y2="3522.22" stroke-width="34"/>
+<line data-net="board-gnd" id="wire-43" data-wire-hit="" stroke-linecap="round" stroke="#293749" x1="4700" y1="3522.22" x2="4600" y2="3522.22" stroke-width="34"/>
+<line data-net="ring-data" id="wire-44" data-wire-hit="" stroke-linecap="round" stroke="#00857a" x1="3500" y1="3422.22" x2="2866.67" y2="3422.22" stroke-width="34"/>
+<line data-net="ring-data" id="wire-45" data-wire-hit="" stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="3422.22" x2="2866.67" y2="1044.44" stroke-width="34"/>
+<line data-net="ring-data" id="wire-46" data-wire-hit="" stroke-linecap="round" stroke="#00857a" x1="2866.67" y1="1044.44" x2="5211.11" y2="1044.44" stroke-width="34"/>
+<line data-net="ring-data" id="wire-47" data-wire-hit="" stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="1044.44" x2="5211.11" y2="2166.67" stroke-width="34"/>
+<line data-net="ring-data" id="wire-48" data-wire-hit="" stroke-linecap="round" stroke="#00857a" x1="5211.11" y1="2166.67" x2="6022.22" y2="2166.67" stroke-width="34"/>
+<line data-net="mic-ws" id="wire-49" data-wire-hit="" stroke-linecap="round" stroke="#306caa" x1="4600" y1="1822.22" x2="5122.22" y2="1822.22" stroke-width="34"/>
+<line data-net="mic-ws" id="wire-50" data-wire-hit="" stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="1822.22" x2="5122.22" y2="4555.56" stroke-width="34"/>
+<line data-net="mic-ws" id="wire-51" data-wire-hit="" stroke-linecap="round" stroke="#306caa" x1="5122.22" y1="4555.56" x2="6377.78" y2="4555.56" stroke-width="34"/>
+<line data-net="mic-sck" id="wire-52" data-wire-hit="" stroke-linecap="round" stroke="#7256a6" x1="4600" y1="1922.22" x2="5000" y2="1922.22" stroke-width="34"/>
+<line data-net="mic-sck" id="wire-53" data-wire-hit="" stroke-linecap="round" stroke="#7256a6" x1="5000" y1="1922.22" x2="5000" y2="4844.44" stroke-width="34"/>
+<line data-net="mic-sck" id="wire-54" data-wire-hit="" stroke-linecap="round" stroke="#7256a6" x1="5000" y1="4844.44" x2="6377.78" y2="4844.44" stroke-width="34"/>
+<line data-net="mic-sd" id="wire-55" data-wire-hit="" stroke-linecap="round" stroke="#8f5c45" x1="7377.78" y1="4844.44" x2="7711.11" y2="4844.44" stroke-width="34"/>
+<line data-net="mic-sd" id="wire-56" data-wire-hit="" stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="4844.44" x2="7711.11" y2="5244.44" stroke-width="34"/>
+<line data-net="mic-sd" id="wire-57" data-wire-hit="" stroke-linecap="round" stroke="#8f5c45" x1="7711.11" y1="5244.44" x2="4877.78" y2="5244.44" stroke-width="34"/>
+<line data-net="mic-sd" id="wire-58" data-wire-hit="" stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="5244.44" x2="4877.78" y2="2022.22" stroke-width="34"/>
+<line data-net="mic-sd" id="wire-59" data-wire-hit="" stroke-linecap="round" stroke="#8f5c45" x1="4877.78" y1="2022.22" x2="4600" y2="2022.22" stroke-width="34"/>
+<line data-net="rf-data" id="wire-60" data-wire-hit="" stroke-linecap="round" stroke="#8c376d" x1="4600" y1="3222.22" x2="4788.89" y2="3222.22" stroke-width="34"/>
+<line data-net="rf-data" id="wire-61" data-wire-hit="" stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="3222.22" x2="4788.89" y2="5266.67" stroke-width="34"/>
+<line data-net="rf-data" id="wire-62" data-wire-hit="" stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="5655.56" x2="4788.89" y2="6277.78" stroke-width="34"/>
+<line data-net="rf-data" id="wire-63" data-wire-hit="" stroke-linecap="round" stroke="#8c376d" x1="4788.89" y1="6277.78" x2="5044.44" y2="6277.78" stroke-width="34"/>
+<line data-net="rf-data" id="wire-64" data-wire-hit="" stroke-linecap="round" stroke="#8c376d" x1="5044.44" y1="6277.78" x2="5044.44" y2="6500" stroke-width="34"/>
+<line data-net="rf-antenna" id="wire-65" data-wire-hit="" stroke-linecap="round" stroke="#537241" x1="5188.89" y1="6988.89" x2="6000" y2="6988.89" stroke-width="34"/>
+<path data-net="board-3v3" id="wire-66" data-wire-hit="" stroke-linecap="round" fill="none" stroke-width="34" stroke="#b25e23" d="M4600,5355.56C4644.44,5444.44, 4755.56,5444.44 4800,5355.56"/>
+<path data-net="board-gnd" id="wire-67" data-wire-hit="" stroke-linecap="round" fill="none" stroke-width="34" stroke="#293749" d="M4166.67,6000C4077.78,6033.33, 4077.78,6122.22 4166.67,6155.56"/>
+<path data-net="rf-data" id="wire-68" data-wire-hit="" stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,5266.67C4911.11,5311.11, 4911.11,5466.67 4788.89,5511.11"/>
+<path data-net="rf-data" id="wire-69" data-wire-hit="" stroke-linecap="round" fill="none" stroke-width="34" stroke="#8c376d" d="M4788.89,5511.11C4888.89,5544.44, 4888.89,5622.22 4788.89,5655.56"/>
+<circle data-net="board-3v3" fill="black" cx="2900" cy="5355.56" r="9.72222" stroke="none"/>
+<circle data-net="board-gnd" fill="black" cx="4166.67" cy="5577.78" r="9.72222" stroke="none"/>
+<circle data-net="board-gnd" fill="black" cx="4700" cy="5577.78" r="9.72222" stroke="none"/>
+</g>
+</svg><line x1="28" y1="874" x2="972" y2="874" stroke="#e3e9f0"/><line x1="36" y1="896" x2="62" y2="896" stroke="#c43b45" stroke-width="4" stroke-linecap="round"/><text x="71" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">5 V 供电</text><line x1="160" y1="896" x2="186" y2="896" stroke="#b25e23" stroke-width="4" stroke-linecap="round"/><text x="195" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">面包板 3.3 V</text><line x1="330" y1="896" x2="356" y2="896" stroke="#293749" stroke-width="4" stroke-linecap="round"/><text x="365" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">GND</text><line x1="430" y1="896" x2="456" y2="896" stroke="#00857a" stroke-width="4" stroke-linecap="round"/><text x="465" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">灯环数据</text><line x1="570" y1="896" x2="596" y2="896" stroke="#306caa" stroke-width="4" stroke-linecap="round"/><text x="605" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">麦克风 I²S</text><line x1="725" y1="896" x2="751" y2="896" stroke="#8c376d" stroke-width="4" stroke-linecap="round"/><text x="760" y="901" fill="#223249" font-size="15" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">G21 → RF DATA</text><text x="36" y="925" fill="#54677b" font-size="13" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">灯环由拆开的 USB 线直接供电。灯环和 ESP32 当前没有共地线。</text><text x="36" y="945" fill="#54677b" font-size="12" font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif">发射 VCC 仍按 HW-131 的 5 V 支路绘制。ESP32 供电正线接脚和麦克风 L/R 待实物确认。</text>
+<style>
+  .wire-hit { cursor: pointer; fill: none; stroke: transparent; pointer-events: stroke; vector-effect: non-scaling-stroke; }
+  .wire-hit:focus-visible { stroke: #215ba3; stroke-width: 4; }
+  .wire-muted { opacity: .23; }
+  [data-wire-hit].wire-selected { stroke: #1263bd; }
+  .wire-endpoint { fill: #eaf6ff; stroke: #1263bd; stroke-width: 2.5; animation: wire-flash .42s ease-out both; }
+  @keyframes wire-flash { from { opacity: 1; r: 5px; } to { opacity: 0; r: 13px; } }
+  @media (prefers-reduced-motion: reduce) { .wire-endpoint { animation: none; } }
+</style>
+<g id="wire-feedback" pointer-events="none">
+  <g id="wire-endpoints" aria-hidden="true"/>
+  <text id="wire-status" role="status" aria-live="polite" x="36" y="866" fill="#17528a"
+        font-family="PingFang SC, Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13"/>
+</g>
+<script><![CDATA[
+  (() => {
+    const svg = document.documentElement;
+    const { layer, nets } = JSON.parse(document.getElementById("wiring").textContent);
+    const byId = new Map(nets.map(net => [net.id, net]));
+    const wires = document.getElementById(layer);
+    const marks = document.getElementById("wire-endpoints");
+    const status = document.getElementById("wire-status");
+    const paths = [...wires.querySelectorAll("[data-net]")];
+    const primary = paths.filter(path => path.hasAttribute("data-wire-hit"));
+    const hint = "点按导线查看端点 · 按 Esc 清除";
+    const make = tag => document.createElementNS(svg.namespaceURI, tag);
+    const focusable = new Set();
+    let flashTimer;
+
+    const title = net => net.endpoints.map(({ device, pin }) => device + " " + pin).join(" ↔ ");
+    function select(id) {
+      const net = byId.get(id);
+      for (const path of paths) {
+        path.classList.toggle("wire-muted", !!net && path.dataset.net !== id);
+        path.classList.toggle("wire-selected", !!net && path.dataset.net === id);
+      }
+      status.textContent = net ? net.name + " · " + title(net) : hint;
+      marks.replaceChildren();
+      window.clearTimeout(flashTimer);
+      if (!net) return;
+      for (const { x, y } of net.endpoints) {
+        const circle = make("circle");
+        circle.setAttribute("cx", x);
+        circle.setAttribute("cy", y);
+        circle.setAttribute("r", "8");
+        circle.setAttribute("class", "wire-endpoint");
+        marks.append(circle);
+      }
+      flashTimer = window.setTimeout(() => marks.replaceChildren(), 450);
+    }
+
+    // Broad touch targets are below all centerlines so close parallel wires remain selectable.
+    for (const width of [14, 4]) {
+      const targets = make("g");
+      for (const path of primary) {
+        const hit = path.cloneNode(false);
+        hit.removeAttribute("id");
+        hit.removeAttribute("data-net");
+        hit.removeAttribute("data-wire-hit");
+        hit.setAttribute("class", "wire-hit");
+        hit.dataset.hitNet = path.dataset.net;
+        hit.setAttribute("stroke-width", width);
+        if (width === 4 && !focusable.has(hit.dataset.hitNet)) {
+          focusable.add(hit.dataset.hitNet);
+          hit.setAttribute("tabindex", "0");
+          hit.setAttribute("role", "button");
+          hit.setAttribute("aria-label", title(byId.get(hit.dataset.hitNet)));
+        }
+        targets.append(hit);
+      }
+      wires.append(targets);
+    }
+    svg.setAttribute("role", "group");
+    svg.addEventListener("click", event => select(event.target.dataset?.hitNet));
+    svg.addEventListener("keydown", event => {
+      if (event.key === "Escape") select();
+      if ((event.key === "Enter" || event.key === " ") && event.target.dataset?.hitNet) {
+        event.preventDefault();
+        select(event.target.dataset.hitNet);
+      }
+    });
+    status.textContent = hint;
+  })();
+]]></script>
+</svg>
